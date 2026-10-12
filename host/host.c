@@ -274,6 +274,30 @@ static void* run_runtime(void* arg)
     };
     int propertyCount = (int)(sizeof keys / sizeof keys[0]);
 
+    // Extra runtime properties from <game>/runtime.properties ("key=value" per line), for experiments.
+    const char* allKeys[64];
+    const char* allValues[64];
+    for (int i = 0; i < propertyCount; i++)
+    {
+        allKeys[i] = keys[i];
+        allValues[i] = values[i];
+    }
+    static char extraStorage[8192];
+    const char* extraLines[32];
+    char propsPath[1100];
+    snprintf(propsPath, sizeof propsPath, "%s/runtime.properties", game);
+    int extraCount = read_args(propsPath, extraLines, 32, extraStorage, sizeof extraStorage);
+    for (int i = 0; i < extraCount && propertyCount < 64; i++)
+    {
+        char* eq = strchr((char*)extraLines[i], '=');
+        if (!eq) continue;
+        *eq = 0;
+        allKeys[propertyCount] = extraLines[i];
+        allValues[propertyCount] = eq + 1;
+        LOGI("property %s=%s", extraLines[i], eq + 1);
+        propertyCount++;
+    }
+
     char cryptoPath[1100];
     snprintf(cryptoPath, sizeof cryptoPath, "%s/libSystem.Security.Cryptography.Native.Android.so", libdir);
     java_load_library(app, cryptoPath);
@@ -299,7 +323,7 @@ static void* run_runtime(void* arg)
     snprintf(exePath, sizeof exePath, "%s/RimWorld.dll", game);
     void* host = NULL;
     unsigned int domain = 0;
-    int rc = init(exePath, "port17", propertyCount, keys, values, &host, &domain);
+    int rc = init(exePath, "port17", propertyCount, allKeys, allValues, &host, &domain);
     if (rc < 0)
     {
         LOGE("coreclr_initialize failed: 0x%08x", rc);

@@ -32,6 +32,15 @@ internal static class Patch
 		["System.Void System.Console::remove_CancelKeyPress(System.ConsoleCancelEventHandler)"] = "RemoveCancelKeyPress",
 	};
 
+	// Rewrites that apply inside one method only: method full name -> (callee full name -> replacement in PortPlatform).
+	private static readonly Dictionary<string, Dictionary<string, string>> ScopedRewrites = new Dictionary<string, Dictionary<string, string>>
+	{
+		["System.String Waylith.Utils.ResourceFiles::ResolveCaseInsensitive(System.String,System.Boolean)"] = new Dictionary<string, string>
+		{
+			["Waylith.Utils.ResourceFiles/DirectoryListing Waylith.Utils.ResourceFiles::GetListing(System.String)"] = "GetListingForResolve",
+		},
+	};
+
 	private static int Main(string[] args)
 	{
 		string folder = args[0];
@@ -78,7 +87,8 @@ internal static class Patch
 							{
 								continue;
 							}
-							if (!Rewrites.TryGetValue(target.FullName, out string replacement))
+							if (!Rewrites.TryGetValue(target.FullName, out string replacement)
+								&& !(ScopedRewrites.TryGetValue(method.FullName, out Dictionary<string, string> scoped) && scoped.TryGetValue(target.FullName, out replacement)))
 							{
 								continue;
 							}

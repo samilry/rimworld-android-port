@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.Loader;
 
@@ -19,6 +20,56 @@ namespace PortHooks
 		public static bool IsOSPlatform(System.Runtime.InteropServices.OSPlatform platform)
 		{
 			return platform == System.Runtime.InteropServices.OSPlatform.Linux || platform.ToString().Equals("ANDROID", StringComparison.OrdinalIgnoreCase);
+		}
+
+		private static MethodInfo getListing, addDirectory;
+		private static FieldInfo unlistableField, diskDirectoriesField;
+		private static Type listingType;
+
+		/// <summary>
+		/// Stands in for ResourceFiles.GetListing inside ResolveCaseInsensitive (patch/Patch.cs rewrites that one call).
+		/// The engine resolves a path case-insensitively by listing every ancestor directory; on Android an app cannot
+		/// list "Android/data" (nor some directories above it), the listing comes back "unlistable" and the resolve
+		/// fails for everything below, which is how whole texture folders went missing. For an unlistable directory
+		/// a listing is made up from the paths this process knows it lives in.
+		/// </summary>
+		public static object GetListingForResolve(string directory)
+		{
+			if (getListing == null)
+			{
+				Type files = AppDomain.CurrentDomain.GetAssemblies().First(a => a.GetName().Name == "Waylith").GetType("Waylith.Utils.ResourceFiles");
+				const BindingFlags any = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance;
+				getListing = files.GetMethod("GetListing", any);
+				listingType = files.GetNestedType("DirectoryListing", BindingFlags.Public | BindingFlags.NonPublic);
+				unlistableField = listingType.GetField("Unlistable", any);
+				diskDirectoriesField = listingType.GetField("DiskDirectories", any);
+				addDirectory = listingType.GetMethod("AddDirectory", any);
+			}
+			object listing = getListing.Invoke(null, new object[] { directory });
+			if (listing == null || !ReferenceEquals(listing, unlistableField.GetValue(null)))
+			{
+				return listing;
+			}
+			object made = Activator.CreateInstance(listingType, true);
+			var diskDirectories = (System.Collections.Generic.HashSet<string>)diskDirectoriesField.GetValue(made);
+			string prefix = directory.TrimEnd('/') + "/";
+			foreach (string known in new[] { AppContext.BaseDirectory, Environment.GetEnvironmentVariable("HOME"), Environment.GetEnvironmentVariable("TMPDIR"), Environment.GetEnvironmentVariable("XDG_CONFIG_HOME") })
+			{
+				if (string.IsNullOrEmpty(known) || !known.StartsWith(prefix, StringComparison.Ordinal))
+				{
+					continue;
+				}
+				string rest = known.Substring(prefix.Length);
+				int slash = rest.IndexOf('/');
+				string child = slash < 0 ? rest : rest.Substring(0, slash);
+				if (child.Length == 0)
+				{
+					continue;
+				}
+				addDirectory.Invoke(made, new object[] { child, Path.Combine(directory, child) });
+				diskDirectories.Add(child);
+			}
+			return made;
 		}
 
 		/// <summary>Console.CancelKeyPress registers a POSIX signal handler underneath, which Android's runtime does not support; there is no console to press keys in anyway.</summary>
@@ -53,6 +104,7 @@ internal static class StartupHook
 		AssemblyLoadContext.Default.Resolving += Resolve;
 		PretendProcessPath();
 		Console.WriteLine("[port17] startup hook installed (Unity assembly names resolve to UnityStubs)");
+		PortDiag.StartIfRequested();
 	}
 
 	/// <summary>

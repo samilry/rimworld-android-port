@@ -18,6 +18,8 @@ EXPORT int wa_init(uint32_t sampleRate, uint32_t channels, int nullBackend) { (v
 EXPORT int wa_last_error(void) {  return 0; }
 EXPORT uint32_t wa_period_frames(void) {  return 0; }
 EXPORT int wa_playing_count(void) {  return 0; }
+EXPORT int wa_probe_file(uint8_t* path, uint64_t* frames, uint32_t* channels, uint32_t* rate) { (void)path; (void)frames; (void)channels; (void)rate; return 0; }
+EXPORT int wa_probe_memory(void* data, size_t length, uint64_t* frames, uint32_t* channels, uint32_t* rate) { (void)data; (void)length; (void)frames; (void)channels; (void)rate; return 0; }
 EXPORT uint32_t wa_sample_rate(void) {  return 48000; }
 EXPORT void wa_set_allocator(void* alloc, void* realloc, void* free) { (void)alloc; (void)realloc; (void)free;  }
 EXPORT void wa_set_listener(float px, float py, float pz, float fx, float fy, float fz, float ux, float uy, float uz) { (void)px; (void)py; (void)pz; (void)fx; (void)fy; (void)fz; (void)ux; (void)uy; (void)uz;  }
@@ -28,6 +30,7 @@ EXPORT uint32_t wa_sound_channels(uint64_t sound) { (void)sound; return 2; }
 EXPORT uint64_t wa_sound_create_user(uint32_t channels, uint32_t rate, uint64_t lengthFrames, void* read, void* seek, void* user) { (void)channels; (void)rate; (void)lengthFrames; (void)read; (void)seek; (void)user; return handle(); }
 EXPORT int wa_sound_kind(uint64_t sound) { (void)sound; return 0; }
 EXPORT uint64_t wa_sound_length_frames(uint64_t sound) { (void)sound; return 0; }
+EXPORT uint64_t wa_sound_load_file_stream(uint8_t* path) { (void)path; return handle(); }
 EXPORT uint64_t wa_sound_load_memory(void* data, size_t length) { (void)data; (void)length; return handle(); }
 EXPORT uint64_t wa_sound_load_memory_stream(void* data, size_t length, int copy) { (void)data; (void)length; (void)copy; return handle(); }
 EXPORT uint64_t wa_sound_load_pcm(void* data, uint64_t frames, uint32_t channels, uint32_t rate, int format) { (void)data; (void)frames; (void)channels; (void)rate; (void)format; return handle(); }
