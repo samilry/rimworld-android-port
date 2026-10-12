@@ -1,0 +1,15 @@
+# Third-party downloads, toolchains, decompiled references, build output and game files are not tracked.
+downloads/
+dotnet-x64/
+dotnet-android/
+pc-stock/
+ref/
+build/
+out/
+logs/
+*.nupkg
+*.zip
+*.apk
+*.dll
+*.so
+*.pdb
