@@ -32,6 +32,7 @@ if [ "$what" = game ] || [ "$what" = all ]; then
   done
   cp "$GAME/Assets.zip" "$GAME/Version.txt" "$GAME/RimWorld.runtimeconfig.json" "$GAME/RimWorld.deps.json" build/game/
   cp -r "$GAME/Data" "$GAME/Rendering" build/game/
+  [ -f build/PortHooks.dll ] && cp build/PortHooks.dll build/game/
   printf -- "-Headless\n-NoCrashDialog\n-Verbose\n" > build/game/args.txt
   echo "game staging: $(ls build/game/*.dll | wc -l) assemblies, $(du -sh build/game | cut -f1)"
   "$ADB" shell "rm -rf $D/game"

@@ -176,7 +176,14 @@ static void* run_runtime(void* arg)
     char nativeDirs[2200];
     snprintf(nativeDirs, sizeof nativeDirs, "%s:%s", libdir, game);
 
+    // Our startup hook (hooks/StartupHook.cs) runs before the launcher's Main when it is present.
+    char hooks[1100];
+    snprintf(hooks, sizeof hooks, "%s/PortHooks.dll", game);
+    if (!file_exists(hooks)) hooks[0] = 0;
+    else LOGI("startup hook %s", hooks);
+
     const char* keys[] = {
+        "STARTUP_HOOKS",
         "TRUSTED_PLATFORM_ASSEMBLIES",
         "APP_PATHS",
         "APP_NI_PATHS",
@@ -191,6 +198,7 @@ static void* run_runtime(void* arg)
         "System.Reflection.Metadata.MetadataUpdater.IsSupported",
     };
     const char* values[] = {
+        hooks,
         tpa,
         game,
         game,
