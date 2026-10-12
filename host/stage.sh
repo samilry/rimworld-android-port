@@ -32,10 +32,13 @@ if [ "$what" = game ] || [ "$what" = all ]; then
   done
   cp "$GAME/Assets.zip" "$GAME/Version.txt" "$GAME/RimWorld.runtimeconfig.json" "$GAME/RimWorld.deps.json" build/game/
   cp -r "$GAME/Data" "$GAME/Rendering" build/game/
+  node host/fix-arch.js build/game --prune-native
   [ -f build/PortHooks.dll ] && cp build/PortHooks.dll build/game/
   printf -- "-Headless\n-NoCrashDialog\n-Verbose\n" > build/game/args.txt
   echo "game staging: $(ls build/game/*.dll | wc -l) assemblies, $(du -sh build/game | cut -f1)"
   "$ADB" shell "rm -rf $D/game"
   "$ADB" push build/game "$D/game" | tail -1 | cut -c1-100
 fi
-"$ADB" shell "mkdir -p $D/home; ls $D"
+# Files pushed over adb belong to the shell user; the app must own them to read them.
+UID_=$("$ADB" shell "dumpsys package $PKG | grep -m1 -o 'appId=[0-9]*' | cut -d= -f2" | tr -d '\r')
+"$ADB" shell "su -c 'mkdir -p /data/media/0/Android/data/$PKG/files/home; chown -R $UID_:1078 /data/media/0/Android/data/$PKG/files; ls /data/media/0/Android/data/$PKG/files'"

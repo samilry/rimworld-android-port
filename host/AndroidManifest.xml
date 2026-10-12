@@ -8,7 +8,7 @@
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x403000" android:required="false" />
     <application
         android:label="Port17"
-        android:hasCode="false"
+        android:hasCode="true"
         android:extractNativeLibs="true"
         android:allowBackup="false"
         android:largeHeap="true">

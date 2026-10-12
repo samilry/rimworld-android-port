@@ -25,8 +25,16 @@ for f in libcoreclr.so libclrjit.so libSystem.Native.so libSystem.Globalization.
 done
 ls -la "$LIB" | awk 'NR>3 {print $5"\t"$9}'
 
+# The Java side: our Boot class plus the runtime's crypto helper classes, in one classes.dex.
+rm -rf "$OUT/classes" "$OUT/dex"
+mkdir -p "$OUT/classes" "$OUT/dex"
+"$JDK/bin/javac.exe" -source 8 -target 8 -nowarn -bootclasspath "$SDK/platforms/android-34/android.jar" -d "$OUT/classes" host/java/com/local/waylith/port/Boot.java
+# (d8.bat breaks on the space in the JDK path; the jar is run directly.)
+"$JDK/bin/java.exe" -cp "$BT/lib/d8.jar" com.android.tools.r8.D8 --release --min-api 26 --lib "$SDK/platforms/android-34/android.jar" --output "$OUT/dex" "$OUT/classes/com/local/waylith/port/Boot.class" dotnet-android-coreclr/runtimes/android-arm64/native/libSystem.Security.Cryptography.Native.Android.dex
+cp "$OUT/dex/classes.dex" "$OUT/apk/classes.dex"
+
 "$BT/aapt2.exe" link -o "$OUT/unsigned.apk" --manifest host/AndroidManifest.xml -I "$SDK/platforms/android-34/android.jar" --min-sdk-version 26 --target-sdk-version 34
-(cd "$OUT/apk" && "$JDK/bin/jar.exe" uf ../unsigned.apk lib)
+(cd "$OUT/apk" && "$JDK/bin/jar.exe" uf ../unsigned.apk lib classes.dex)
 "$BT/zipalign.exe" -f -p 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 if [ ! -f port17.keystore ]; then
   "$JDK/bin/keytool.exe" -genkeypair -keystore port17.keystore -alias port -keyalg RSA -keysize 2048 -validity 10000 -storepass ***REMOVED*** -keypass ***REMOVED*** -dname "CN=port17"

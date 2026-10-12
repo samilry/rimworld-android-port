@@ -61,17 +61,32 @@ static void* stdio_pump(void* arg)
     return NULL;
 }
 
-static void redirect_stdio(void)
+// stdout goes to logcat through the pump; stderr goes straight to a file as well, because the runtime's last words
+// before it aborts the process (an unhandled exception, a fatal error) would otherwise be lost with the process.
+static void redirect_stdio(const char* ext)
 {
     int fds[2];
     if (pipe(fds) != 0) return;
     dup2(fds[1], 1);
-    dup2(fds[1], 2);
     setvbuf(stdout, NULL, _IOLBF, 0);
-    setvbuf(stderr, NULL, _IONBF, 0);
     pthread_t t;
     pthread_create(&t, NULL, stdio_pump, (void*)(intptr_t)fds[0]);
     pthread_detach(t);
+
+    char dir[1024], path[1100];
+    snprintf(dir, sizeof dir, "%s/logs", ext);
+    mkdir(dir, 0775);
+    snprintf(path, sizeof path, "%s/stderr.txt", dir);
+    FILE* f = fopen(path, "w");
+    if (f)
+    {
+        dup2(fileno(f), 2);
+        setvbuf(stderr, NULL, _IONBF, 0);
+    }
+    else
+    {
+        dup2(fds[1], 2);
+    }
 }
 
 static int ends_with(const char* s, const char* suffix)
@@ -134,6 +149,49 @@ static int read_args(const char* path, const char** argv, int max, char* storage
     return argc;
 }
 
+// Calls the Java side (host/java/.../Boot.java): Boot.load(path) loads a native library through Java, so that its
+// JNI_OnLoad runs with the application's class loader. The runtime's crypto shim needs that (it works through
+// Java's crypto classes). The Boot class is found through the activity's class loader, because a thread we
+// attached ourselves only sees the system classes through FindClass.
+static void java_load_library(struct android_app* app, const char* path)
+{
+    JavaVM* vm = app->activity->vm;
+    JNIEnv* env = NULL;
+    if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK || env == NULL)
+    {
+        LOGE("could not attach to the Java VM");
+        return;
+    }
+    jobject activity = app->activity->clazz;
+    jclass activityClass = (*env)->GetObjectClass(env, activity);
+    jmethodID getClassLoader = (*env)->GetMethodID(env, activityClass, "getClassLoader", "()Ljava/lang/ClassLoader;");
+    jobject loader = (*env)->CallObjectMethod(env, activity, getClassLoader);
+    jclass loaderClass = (*env)->FindClass(env, "java/lang/ClassLoader");
+    jmethodID loadClass = (*env)->GetMethodID(env, loaderClass, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    jstring bootName = (*env)->NewStringUTF(env, "com.local.waylith.port.Boot");
+    jclass boot = (jclass)(*env)->CallObjectMethod(env, loader, loadClass, bootName);
+    if ((*env)->ExceptionCheck(env) || boot == NULL)
+    {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+        LOGE("Boot class not found");
+        return;
+    }
+    jmethodID load = (*env)->GetStaticMethodID(env, boot, "load", "(Ljava/lang/String;)Ljava/lang/String;");
+    jstring jpath = (*env)->NewStringUTF(env, path);
+    jstring problem = (jstring)(*env)->CallStaticObjectMethod(env, boot, load, jpath);
+    if (problem != NULL)
+    {
+        const char* text = (*env)->GetStringUTFChars(env, problem, NULL);
+        LOGE("Java could not load %s: %s", path, text);
+        (*env)->ReleaseStringUTFChars(env, problem, text);
+    }
+    else
+    {
+        LOGI("loaded through Java: %s", path);
+    }
+}
+
 static void* run_runtime(void* arg)
 {
     struct android_app* app = (struct android_app*)arg;
@@ -192,6 +250,7 @@ static void* run_runtime(void* arg)
         "APP_CONTEXT_BASE_DIRECTORY",
         "RUNTIME_IDENTIFIER",
         "System.Globalization.Invariant",
+        "System.Globalization.PredefinedCulturesOnly",
         "System.GC.Server",
         "System.GC.Concurrent",
         "System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization",
@@ -208,11 +267,16 @@ static void* run_runtime(void* arg)
         "android-arm64",
         "true",
         "false",
+        "false",
         "true",
         "true",
         "false",
     };
     int propertyCount = (int)(sizeof keys / sizeof keys[0]);
+
+    char cryptoPath[1100];
+    snprintf(cryptoPath, sizeof cryptoPath, "%s/libSystem.Security.Cryptography.Native.Android.so", libdir);
+    java_load_library(app, cryptoPath);
 
     char coreclrPath[1100];
     snprintf(coreclrPath, sizeof coreclrPath, "%s/libcoreclr.so", libdir);
@@ -275,7 +339,7 @@ static void* run_runtime(void* arg)
 void android_main(struct android_app* app)
 {
     g_app = app;
-    redirect_stdio();
+    redirect_stdio(app->activity->externalDataPath);
     LOGI("port17 host starting (internal %s, external %s)", app->activity->internalDataPath, app->activity->externalDataPath);
     pthread_t t;
     pthread_create(&t, NULL, run_runtime, app);

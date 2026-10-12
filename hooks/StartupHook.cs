@@ -3,6 +3,41 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.Loader;
 
+namespace PortHooks
+{
+	/// <summary>
+	/// What the game's platform checks are rewritten to call (patch/Patch.cs): the runtime says "Android", which the
+	/// engine does not know; it is treated as Linux, the Unix platform the engine has code for.
+	/// </summary>
+	public static class PortPlatform
+	{
+		public static bool IsLinux()
+		{
+			return true;
+		}
+
+		public static bool IsOSPlatform(System.Runtime.InteropServices.OSPlatform platform)
+		{
+			return platform == System.Runtime.InteropServices.OSPlatform.Linux || platform.ToString().Equals("ANDROID", StringComparison.OrdinalIgnoreCase);
+		}
+
+		/// <summary>Console.CancelKeyPress registers a POSIX signal handler underneath, which Android's runtime does not support; there is no console to press keys in anyway.</summary>
+		public static void AddCancelKeyPress(ConsoleCancelEventHandler handler)
+		{
+		}
+
+		public static void RemoveCancelKeyPress(ConsoleCancelEventHandler handler)
+		{
+		}
+
+		/// <summary>POSIX signal registration is not supported by the runtime on Android; the engine keeps the registrations as nullable and never needs them here.</summary>
+		public static System.Runtime.InteropServices.PosixSignalRegistration RegisterPosixSignal(System.Runtime.InteropServices.PosixSignal signal, Action<System.Runtime.InteropServices.PosixSignalContext> handler)
+		{
+			return null;
+		}
+	}
+}
+
 /// <summary>
 /// Runs before the launcher's Main (CoreCLR's STARTUP_HOOKS). It stands in for the assembly-binding behaviour of
 /// Ludeon's runtime fork that a stock runtime does not have: references to the Unity assemblies (mods were
