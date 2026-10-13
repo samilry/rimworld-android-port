@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds the engine's native libraries for arm64 Android from upstream sources (downloads/src, see README):
-#   libusage: native/build.sh [all|vma|stb|gli|imgui|freetype|slang|monomodc|waylithaudio]|vma|stb|gli|imgui|freetype|slang|monomodc].so            Vulkan Memory Allocator 3.3.0 (native/vma)
+#   libvma.so            Vulkan Memory Allocator 3.3.0 (native/vma)
 #   libstb.so            stb_image + stb_image_write (native/stb)
 #   libgli.so            the gli C API (native/gli, gli + glm)
 #   libimgui.so          Dear ImGui 1.92.2 docking + the generated flat C API (native/imgui)
@@ -8,7 +8,8 @@
 #   libslang.so          stand-in for the Slang compiler (native/slang)
 #   libmonomodc.so       MonoMod's glibc P/Invokes for bionic (native/monomodc), used by the patched 0Harmony.dll
 #   libwaylithaudio.so   the engine's audio library on miniaudio 0.11.22 + stb_vorbis (native/waylithaudio)
-# usage: native/build.sh [all|vma|stb|gli|imgui|freetype|slang]   (output: build/native/lib/*.so)
+#   libmm_exhelper.so    MonoMod's native exception helper rebuilt with a static libunwind (native/exhelper)
+# usage: native/build.sh [all|vma|stb|gli|imgui|freetype|slang|monomodc|waylithaudio|exhelper]   (output: build/native/lib/*.so)
 set -e
 cd "$(dirname "$0")/.."
 NDK="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/NDK"
@@ -48,6 +49,11 @@ fi
 if want monomodc; then
   echo "== monomodc (MonoMod's libc/libdl P/Invokes on bionic)"
   "$CC" $TARGET -O2 -fPIC -shared -fvisibility=hidden -Wall -o "$LIB/libmonomodc.so" native/monomodc/monomodc.c -llog -ldl
+fi
+
+if want exhelper; then
+  echo "== exhelper (MonoMod's exception helper with a static libunwind)"
+  "$CC" $TARGET -O2 -fPIC -shared -fvisibility=hidden -Wall -o "$LIB/libmm_exhelper.so" native/exhelper/exhelper.c native/exhelper/exhelper_arm64.S -lunwind -Wl,--exclude-libs,libunwind.a
 fi
 
 if want waylithaudio; then

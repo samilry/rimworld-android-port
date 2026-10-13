@@ -49,12 +49,11 @@ internal static class Patch
 		},
 	};
 
-	// Methods whose body becomes "return null": MonoMod's native exception helper (a trampoline library it drops under /tmp,
-	// which does not exist here) is optional, its users check for null.
-	private static readonly HashSet<string> NullBodies = new HashSet<string>
-	{
-		"MonoMod.Core.Platforms.INativeExceptionHelper MonoMod.Core.Platforms.Systems.LinuxSystem::get_NativeExceptionHelper()",
-	};
+	// MonoMod's native exception helper (trampolines that keep the runtime's C++ exceptions from unwinding through the
+	// managed JIT hook) comes from the APK as libmm_exhelper.so (native/exhelper) instead of the embedded
+	// exhelper_linux_arm64.so dropped under /tmp: there is no /tmp here, and that copy wants _Unwind_* from glibc's libgcc_s.
+	private const string CreateNativeExceptionHelper = "MonoMod.Core.Platforms.Systems.PosixExceptionHelper MonoMod.Core.Platforms.Systems.LinuxSystem::CreateNativeExceptionHelper()";
+	private const string ExceptionHelperLibrary = "libmm_exhelper.so";
 
 	// Calls inserted at the start of a method: method full name -> PortPlatform method (static, no arguments, void).
 	private static readonly Dictionary<string, string> EntryCalls = new Dictionary<string, string>
@@ -145,13 +144,21 @@ internal static class Patch
 						{
 							continue;
 						}
-						if (NullBodies.Contains(method.FullName) && !(method.Body.Instructions.Count == 2 && method.Body.Instructions[0].OpCode == OpCodes.Ldnull))
+						if (method.FullName == CreateNativeExceptionHelper && !(method.Body.Instructions.Count == 6 && method.Body.Instructions[2].Operand is string lib && lib == ExceptionHelperLibrary))
 						{
+							// return PosixExceptionHelper.CreateHelper(this.arch, "libmm_exhelper.so", deleteFile: false)
+							FieldDefinition arch = type.Fields.First(f => f.Name == "arch");
+							MethodDefinition createHelper = module.GetType("MonoMod.Core.Platforms.Systems.PosixExceptionHelper").Methods.First(m => m.Name == "CreateHelper" && m.Parameters.Count == 3);
 							method.Body.Instructions.Clear();
 							method.Body.ExceptionHandlers.Clear();
 							method.Body.Variables.Clear();
-							method.Body.Instructions.Add(Instruction.Create(OpCodes.Ldnull));
-							method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+							ILProcessor il = method.Body.GetILProcessor();
+							il.Emit(OpCodes.Ldarg_0);
+							il.Emit(OpCodes.Ldfld, arch);
+							il.Emit(OpCodes.Ldstr, ExceptionHelperLibrary);
+							il.Emit(OpCodes.Ldc_I4_0);
+							il.Emit(OpCodes.Call, createHelper);
+							il.Emit(OpCodes.Ret);
 							changes++;
 						}
 						if (EntryCalls.TryGetValue(method.FullName, out string entryCall))
