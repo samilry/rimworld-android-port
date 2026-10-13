@@ -650,6 +650,35 @@ API void glfwAndroidShowKeyboard(int show)
     if (attached) (*vm)->DetachCurrentThread(vm);
 }
 
+// ---- text from the soft keyboard (TextInputView, JNI) ----
+JNIEXPORT void JNICALL Java_com_local_waylith_port_TextInputView_nativeCommit(JNIEnv* env, jclass cls, jstring text)
+{
+    (void)cls;
+    if (!text) return;
+    const jchar* chars = (*env)->GetStringChars(env, text, NULL);
+    jsize n = (*env)->GetStringLength(env, text);
+    for (jsize i = 0; i < n; i++)
+    {
+        unsigned int cp = chars[i];
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < n && chars[i + 1] >= 0xDC00 && chars[i + 1] <= 0xDFFF)
+        {
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (chars[i + 1] - 0xDC00);
+            i++;
+        }
+        push(EV_CHAR, (int)cp, 0, 0, 0, 0, 0);
+    }
+    (*env)->ReleaseStringChars(env, text, chars);
+    LOGI("glfw: ime committed %d chars", (int)n);
+}
+
+JNIEXPORT void JNICALL Java_com_local_waylith_port_TextInputView_nativeKey(JNIEnv* env, jclass cls, jint keyCode, jint action)
+{
+    (void)env; (void)cls;
+    int glfwKey = key_from_android(keyCode);
+    if (glfwKey == GLFW_KEY_UNKNOWN) return;
+    push(EV_KEY, glfwKey, keyCode, action == 0 ? GLFW_PRESS : GLFW_RELEASE, 0, 0, 0);
+}
+
 API void glfwAndroidAttach(struct android_app* app)
 {
     g_app = app;

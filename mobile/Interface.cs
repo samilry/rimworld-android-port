@@ -50,6 +50,8 @@ namespace PortMobile
 		/// <summary>A new touch begins: what the last hold showed goes away.</summary>
 		public static void TouchBegan()
 		{
+			// The keyboard may have been dismissed by the system (Back) while the field kept the focus: a touch asks for it again.
+			keyboardShown = false;
 			if (keepTips)
 			{
 				keepTips = false;

@@ -4,6 +4,7 @@ import android.app.NativeActivity;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 
@@ -14,6 +15,8 @@ import android.view.inputmethod.InputMethodManager;
  */
 public final class MainActivity extends NativeActivity
 {
+    private TextInputView textInput;
+
     @Override
     protected void onCreate(Bundle savedInstanceState)
     {
@@ -29,6 +32,9 @@ public final class MainActivity extends NativeActivity
         }
         getWindow().setAttributes(attributes);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        // The view the soft keyboard talks to (TextInputView), one pixel in the corner; the game's own view keeps the touches.
+        textInput = new TextInputView(this);
+        addContentView(textInput, new ViewGroup.LayoutParams(1, 1));
         hideSystemBars();
     }
 
@@ -57,21 +63,16 @@ public final class MainActivity extends NativeActivity
                 }
                 if (show)
                 {
-                    // The keyboard serves the focused view (the NativeActivity's content view, which takes key input).
-                    View focused = getWindow().getDecorView().findFocus();
-                    if (focused == null)
-                    {
-                        focused = getWindow().getDecorView();
-                        focused.requestFocus();
-                    }
-                    if (!imm.showSoftInput(focused, InputMethodManager.SHOW_FORCED))
+                    textInput.setActive(true);
+                    if (!imm.showSoftInput(textInput, InputMethodManager.SHOW_FORCED))
                     {
                         imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
                     }
                 }
                 else
                 {
-                    imm.hideSoftInputFromWindow(getWindow().getDecorView().getWindowToken(), 0);
+                    imm.hideSoftInputFromWindow(textInput.getWindowToken(), 0);
+                    textInput.setActive(false);
                 }
             }
         });
