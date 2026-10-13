@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -89,6 +90,7 @@ namespace PortHooks
 		/// <summary>Called at the start of UIRoot_Entry.Init (patch/Patch.cs inserts the call): the game is fully loaded, the phone side (PortMobile.dll next to the game) starts here.</summary>
 		public static void OnEntryUIInit()
 		{
+			Console.WriteLine("[port17] " + modLoads + " mod assemblies asked for: checking that the mods are prepared " + Ms(ticksPrepared) + ", looking for one of the same name " + Ms(ticksNames) + ", checking the architecture mark " + Ms(ticksArchitecture) + ", loading " + Ms(ticksLoad) + "; the stack check of " + stackChecks + " patched methods " + Ms(ticksStackChecks));
 			try
 			{
 				ModPrepHost.Release();
@@ -122,18 +124,30 @@ namespace PortHooks
 		/// </summary>
 		public static Assembly LoadModAssembly(string path)
 		{
+			long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
 			PrepareModBeforeLoad(path);
+			long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+			modLoads++;
+			ticksPrepared += t1 - t0;
 			string name = Path.GetFileNameWithoutExtension(path);
-			foreach (Assembly loaded in AppDomain.CurrentDomain.GetAssemblies())
+			foreach (Assembly candidate in AppDomain.CurrentDomain.GetAssemblies())
 			{
-				if (string.Equals(loaded.GetName().Name, name, StringComparison.OrdinalIgnoreCase))
+				// (Each assembly is asked for its name once: that makes an AssemblyName object every time.)
+				if (namesSeen.Add(candidate) && !candidate.IsDynamic)
 				{
-					// Already loaded (the game folder's patched 0Harmony.dll, or a library another mod bundles too): the
-					// runtime would refuse a second assembly of the same name in its default context anyway.
-					Console.WriteLine("[port17] " + name + " is already loaded; " + path + " skipped");
-					return loaded;
+					loadedByName[candidate.GetName().Name] = candidate;
 				}
 			}
+			if (loadedByName.TryGetValue(name, out Assembly loaded))
+			{
+				// Already loaded (the game folder's patched 0Harmony.dll, or a library another mod bundles too): the
+				// runtime would refuse a second assembly of the same name in its default context anyway.
+				Console.WriteLine("[port17] " + name + " is already loaded; " + path + " skipped");
+				ticksNames += System.Diagnostics.Stopwatch.GetTimestamp() - t1;
+				return loaded;
+			}
+			long t2 = System.Diagnostics.Stopwatch.GetTimestamp();
+			ticksNames += t2 - t1;
 			if (name.Equals("0Harmony", StringComparison.OrdinalIgnoreCase))
 			{
 				string ours = Path.Combine(AppContext.BaseDirectory, "0Harmony.dll");
@@ -144,7 +158,24 @@ namespace PortHooks
 				}
 			}
 			string fixedCopy = FixedArchitectureCopy(path);
-			return Assembly.LoadFrom(fixedCopy ?? path);
+			long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
+			ticksArchitecture += t3 - t2;
+			Assembly assembly = Assembly.LoadFrom(fixedCopy ?? path);
+			ticksLoad += System.Diagnostics.Stopwatch.GetTimestamp() - t3;
+			return assembly;
+		}
+
+		private static readonly HashSet<Assembly> namesSeen = new HashSet<Assembly>();
+		private static readonly Dictionary<string, Assembly> loadedByName = new Dictionary<string, Assembly>(StringComparer.OrdinalIgnoreCase);
+
+		// How long the parts of LoadModAssembly took over all mod assemblies of this start (said once, in OnEntryUIInit).
+		private static int modLoads, stackChecks;
+		private static long ticksStackChecks;
+		private static long ticksPrepared, ticksNames, ticksArchitecture, ticksLoad;
+
+		private static string Ms(long ticks)
+		{
+			return (ticks * 1000 / System.Diagnostics.Stopwatch.Frequency) + " ms";
 		}
 
 		/// <summary>
@@ -190,21 +221,28 @@ namespace PortHooks
 		{
 			try
 			{
+				// The mark is in the file's first kilobyte; the whole file is read only when a copy has to be made
+				// (never for a prepared mod: preparation changes the mark in place).
+				var head = new byte[1024];
+				int got;
+				using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1, false))
+				{
+					got = stream.Read(head, 0, head.Length);
+				}
+				if (got < 0x40 || head[0] != (byte)'M' || head[1] != (byte)'Z')
+				{
+					return null;
+				}
+				int pe = BitConverter.ToInt32(head, 0x3c);
+				if (pe < 0 || pe + 24 > got || head[pe] != (byte)'P' || head[pe + 1] != (byte)'E')
+				{
+					return null;
+				}
+				if (BitConverter.ToUInt16(head, pe + 4) != 0x8664)
+				{
+					return null;
+				}
 				byte[] bytes = File.ReadAllBytes(path);
-				if (bytes.Length < 0x40 || bytes[0] != (byte)'M' || bytes[1] != (byte)'Z')
-				{
-					return null;
-				}
-				int pe = BitConverter.ToInt32(bytes, 0x3c);
-				if (pe + 24 > bytes.Length || bytes[pe] != (byte)'P' || bytes[pe + 1] != (byte)'E')
-				{
-					return null;
-				}
-				ushort machine = BitConverter.ToUInt16(bytes, pe + 4);
-				if (machine != 0x8664)
-				{
-					return null;
-				}
 				bytes[pe + 4] = 0x64;
 				bytes[pe + 5] = 0xaa;
 				string modFolder = "x";
@@ -331,6 +369,7 @@ namespace PortHooks
 		/// </summary>
 		public static void NormalizeHarmonyStack(object creator, object codes)
 		{
+			long began = System.Diagnostics.Stopwatch.GetTimestamp();
 			try
 			{
 				NormalizeStack(creator, codes);
@@ -339,6 +378,8 @@ namespace PortHooks
 			{
 				Console.WriteLine("[port17] the stack check of a patched method failed (the method is emitted as it is): " + e.GetType().Name + ": " + e.Message);
 			}
+			stackChecks++;
+			ticksStackChecks += System.Diagnostics.Stopwatch.GetTimestamp() - began;
 		}
 
 		// Apart, and not inlined: HarmonyCompat names Harmony's types, which are only there once Harmony is loaded.

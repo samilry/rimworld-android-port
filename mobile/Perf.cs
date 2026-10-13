@@ -45,6 +45,10 @@ namespace PortMobile
 		private static long allocatedAtStart;
 		private static double sceneReadyAt = -1;
 		private static bool sceneApplied;
+		// How many times the scene was set in this run, and when the last time: each report line carries both (the line
+		// "scene set" alone can be lost, the log daemon drops lines in the burst that follows a load).
+		private static int sceneCount;
+		private static double sceneSetAt;
 		private static DateTime commandsRead;
 
 		public static void Start(Harmony harmony)
@@ -131,6 +135,8 @@ namespace PortMobile
 			if (!sceneApplied && sceneReadyAt > 0 && now >= sceneReadyAt && Current.ProgramState == ProgramState.Playing && Find.CurrentMap != null)
 			{
 				sceneApplied = true;
+				sceneCount++;
+				sceneSetAt = now;
 				ApplyScene();
 				BeginWindow(now);
 				return;
@@ -219,7 +225,7 @@ namespace PortMobile
 				median * 1000f, high * 1000f, longestFrame * 1000.0,
 				mainCpu / seconds, mainCore, Clock(mainCore), renderCpu / seconds, renderCore, Clock(renderCore), processCpu / seconds,
 				GC.CollectionCount(0) - gen0AtStart, GC.CollectionCount(1) - gen1AtStart, GC.CollectionCount(2) - gen2AtStart,
-				(GC.GetTotalPauseDuration() - pauseAtStart).TotalMilliseconds, FrameRate.Describe() + " " + Sched.Describe(),
+				(GC.GetTotalPauseDuration() - pauseAtStart).TotalMilliseconds, FrameRate.Describe() + " " + FrameRate.DescribeWait() + " " + Sched.Describe() + "; scene " + sceneCount + " for " + (sceneCount > 0 ? now - sceneSetAt : 0).ToString("F1", CultureInfo.InvariantCulture) + " s",
 				(GC.GetTotalAllocatedBytes(false) - allocatedAtStart) / 1048576.0 / seconds, LastGen0Before() / 1048576.0, GC.GetGCMemoryInfo(GCKind.Ephemeral).PromotedBytes / 1048576.0));
 		}
 

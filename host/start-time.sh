@@ -24,7 +24,10 @@ fi
 "$ADB" logcat -c
 "$ADB" shell am start -n $PKG/com.local.waylith.port.MainActivity > /dev/null
 W=0
-until [ $W -gt 100 ] || "$ADB" logcat -d -v time 2>/dev/null | grep -q -F "[mobile] main menu "; do sleep 3; W=$((W + 1)); done
+until [ $W -gt 100 ] || "$ADB" logcat -d -v time 2>/dev/null | grep -q -F "[mobile] of that: "; do sleep 3; W=$((W + 1)); done
 LINE=$("$ADB" logcat -d -v time 2>/dev/null | grep -F "[mobile] main menu " | head -1 | sed -E 's/^.*\[mobile\] //')
+# What the runtime says about that time (mobile/Entry.cs): compiling, collector pauses, processor time.
+PARTS=$("$ADB" logcat -d -v time 2>/dev/null | grep -F "[mobile] of that: " | head -1 | sed -E 's/^.*\[mobile\] of that: //')
 echo "${LINE:-no main menu within 300 s} | arguments: $ARGS | environment: ${*:-default}" | tee -a logs/start-time.txt
+[ -n "$PARTS" ] && echo "    $PARTS" | tee -a logs/start-time.txt
 "$ADB" shell "su -c '[ -f $GAME/perftest.off ] && mv $GAME/perftest.off $GAME/perftest.txt'"

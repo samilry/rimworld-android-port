@@ -28,11 +28,32 @@ namespace PortMobile
 	///             interface), at least one tick a frame; game time runs slower when that is little
 	///   ticks     the game speed is kept: the caps go up (8 times the speed factor, 150 ms), so that the ticks the real
 	///             time calls for are run, and the frames take as long as that takes
+	///
+	/// The wait for the limit. The engine waits out the rest of a frame with Thread.Sleep in whole milliseconds, one
+	/// short of what is left, and then reads the clock in a loop until the frame's time is up: one to two milliseconds
+	/// of every frame at full load (Windows cannot sleep more finely). Measured here: 11 % of the main thread's
+	/// processor time with the game paused at 60 frames a second, 3 % in a scene too heavy to hold 60. This kernel
+	/// sleeps to a fraction of a millisecond, so the wait here sleeps (nanosleep) until a short margin before the
+	/// frame's end and only that margin is spent on the clock: "frameWaitSpin" in mobile.txt, microseconds, default
+	/// 300; 0 leaves the engine's own wait in place.
 	/// </summary>
 	internal static class FrameRate
 	{
 		[DllImport("glfw")] private static extern int glfwAndroidSetFrameRate(float framesPerSecond);
 		[DllImport("glfw")] private static extern float glfwAndroidDisplayRate();
+
+		[StructLayout(LayoutKind.Sequential)]
+		private struct TimeSpec
+		{
+			public long Seconds, Nanoseconds;
+		}
+
+		[DllImport("libc")] private static extern int nanosleep(ref TimeSpec wanted, IntPtr remaining);
+
+		private static int spinMicros = Mathf.Clamp(Settings.Get("frameWaitSpin", 300), 0, 2000);
+		// For the measuring report: how late the sleeps ended, and how long the loop on the clock ran.
+		private static int waits, sleeps;
+		private static double lateSum, lateMax, spinSum;
 
 		private static int displayRate;
 		private static float displayAskedAt = -10f;
@@ -99,6 +120,7 @@ namespace PortMobile
 				harmony.Patch(AccessTools.Method(typeof(Root), nameof(Root.Update)), postfix: new HarmonyMethod(typeof(FrameRate), nameof(EveryFrame)));
 				harmony.Patch(AccessTools.Method(typeof(Root), "OnGUI"), postfix: new HarmonyMethod(typeof(FrameRate), nameof(AfterGui)));
 				harmony.Patch(AccessTools.Method(typeof(Dialog_Options), "DoVideoOptions"), postfix: new HarmonyMethod(typeof(FrameRate), nameof(Options)));
+				harmony.Patch(AccessTools.Method(typeof(Waylith.EngineApplication), "ThrottleToTargetFrameRate"), prefix: new HarmonyMethod(typeof(FrameRate), nameof(WaitForFrameEnd)));
 				Console.WriteLine("[mobile] frame rate limit " + limit + ", schedule " + schedule + " (options, graphics page)");
 			}
 			catch (Exception e)
@@ -107,10 +129,71 @@ namespace PortMobile
 			}
 		}
 
-		/// <summary>For measuring (perfcmd.txt): "frames=30", "schedule=1".</summary>
+		/// <summary>
+		/// Prefix of EngineApplication.ThrottleToTargetFrameRate, in its place unless the margin is set to 0: sleeps until
+		/// the margin before the frame's end (again if a signal ended the sleep early: the collector suspends threads
+		/// with one), then reads the clock until the end.
+		/// </summary>
+		private static bool WaitForFrameEnd(float frameStartElapsed, System.Diagnostics.Stopwatch ____stopwatch)
+		{
+			if (spinMicros <= 0)
+			{
+				return true;
+			}
+			int target = Waylith.EngineWindow.TargetFrameRate;
+			if (target <= 0)
+			{
+				return false;
+			}
+			double end = (double)frameStartElapsed + 1.0 / target;
+			double margin = spinMicros * 1e-6;
+			double now = ____stopwatch.Elapsed.TotalSeconds;
+			for (int round = 0; round < 4 && end - now - margin > 0.00005; round++)
+			{
+				double sleep = end - now - margin;
+				var wanted = new TimeSpec { Seconds = (long)sleep, Nanoseconds = (long)((sleep - Math.Floor(sleep)) * 1e9) };
+				nanosleep(ref wanted, IntPtr.Zero);
+				double woke = ____stopwatch.Elapsed.TotalSeconds;
+				double late = woke - (now + sleep);
+				if (late > 0)
+				{
+					lateSum += late;
+					if (late > lateMax)
+					{
+						lateMax = late;
+					}
+				}
+				sleeps++;
+				now = woke;
+			}
+			double spinFrom = now;
+			while (now < end)
+			{
+				now = ____stopwatch.Elapsed.TotalSeconds;
+			}
+			spinSum += now - spinFrom;
+			waits++;
+			return false;
+		}
+
+		/// <summary>For the measuring report, since the last call: "wait=300 (sleeps late 85/410 us, clock loop 0.21 ms a frame)".</summary>
+		public static string DescribeWait()
+		{
+			string text = "wait=" + spinMicros;
+			if (waits > 0)
+			{
+				text += " (sleeps late " + (sleeps > 0 ? lateSum / sleeps * 1e6 : 0).ToString("F0") + "/" + (lateMax * 1e6).ToString("F0") + " us, clock loop " + (spinSum / waits * 1e3).ToString("F2") + " ms a frame)";
+			}
+			waits = sleeps = 0;
+			lateSum = lateMax = spinSum = 0;
+			return text;
+		}
+
+		/// <summary>For measuring (perfcmd.txt): "frames=30", "schedule=1", "wait=300" (the margin in microseconds, 0: the engine's own wait).</summary>
 		public static bool Set(string name, string value)
 		{
-			if (name == "frames") limit = Clamp(int.Parse(value));
+			if (name == "wait") spinMicros = Mathf.Clamp(int.Parse(value), 0, 2000);
+			else if (name == "frames") limit = Clamp(int.Parse(value));
 			else if (name == "schedule") schedule = Mathf.Clamp(int.Parse(value), Default, Ticks);
 			else return false;
 			return true;

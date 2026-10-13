@@ -21,6 +21,6 @@ fi
 "$ADB" logcat -c
 "$ADB" shell am start -n $PKG/com.local.waylith.port.MainActivity > /dev/null
 W=0
-until [ $W -gt 120 ] || "$ADB" logcat -d -v time 2>/dev/null | grep -q -F "[mobile] perf: scene set"; do sleep 3; W=$((W + 1)); done
+until [ $W -gt 120 ] || "$ADB" logcat -d -v time 2>/dev/null | grep -q -E "\] perf: [0-9.]+ fps, [0-9]+ tps"; do sleep 3; W=$((W + 1)); done
 if [ $W -gt 120 ]; then echo "the scene did not come up"; exit 1; fi
 echo "scene up after about $((W * 3)) s; environment: ${*:-default}"

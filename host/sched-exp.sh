@@ -7,7 +7,7 @@
 # colony asleep is a different load from the colony at work. Steps are still meant to be run back to back, alternating
 # with a baseline: the phone's own game service moves the clock limits around, and so does the temperature.
 # usage: host/sched-exp.sh <label> <seconds> [setting=value ...]     e.g. host/sched-exp.sh pin 30 pin=1 clear=1
-#        RELOAD=0 keeps the scene running; WARM=<seconds> between "scene set" and the measurement (10)
+#        RELOAD=0 keeps the scene running; WARM=<seconds>: how old the freshly loaded scene is when the measurement starts (20)
 ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
@@ -28,10 +28,21 @@ UID_=$("$ADB" shell "dumpsys package $PKG | grep -m1 -o 'appId=[0-9]*' | cut -d=
 "$ADB" shell "su -c 'cp /data/local/tmp/perfcmd.txt $GAME/perfcmd.txt; chown $UID_:1078 $GAME/perfcmd.txt'"
 # The game looks at the file at the end of each of its report intervals (5 s).
 if [ "${RELOAD:-1}" = 1 ]; then
-  W=0
-  until [ $W -gt 45 ] || "$ADB" logcat -d -v time 2>/dev/null | grep -F "[mobile] perf: scene set" | awk -v a="$T0" '{ split($2, t, "."); if (t[1] > a) found = 1 } END { exit !found }'; do sleep 2; W=$((W + 1)); done
-  [ $W -gt 45 ] && echo "$LABEL: the scene did not come back" && exit 1
-  sleep ${WARM:-10}
+  # Every report line ends in "scene N for S s": which setting of the scene it belongs to and how long ago that was.
+  # The step starts when a line after the reload shows a scene younger than the reload, and measures from the
+  # moment the scene is WARM seconds old (the line's own time and the scene's age on it give that moment).
+  W=0; AGE=""
+  until [ $W -gt 45 ] || [ -n "$AGE" ]; do
+    sleep 2; W=$((W + 1))
+    AGE=$("$ADB" logcat -d -v time 2>/dev/null | grep -E "\] perf: [0-9.]+ fps, [0-9]+ tps .*; scene [0-9]+ for " | tail -1 | awk -v a="$T0" '
+      { split($2, t, "."); split(t[1], h, ":"); line = h[1] * 3600 + h[2] * 60 + h[3]; split(a, s, ":"); sent = s[1] * 3600 + s[2] * 60 + s[3];
+        age = $(NF - 1); if (t[1] > a && line - age > sent) print line - age }')
+  done
+  [ -z "$AGE" ] && echo "$LABEL: the scene did not come back" && exit 1
+  # AGE is the second of the day at which the scene was set.
+  NOW=$("$ADB" shell "date +%H:%M:%S" | tr -d '\r' | awk -F: '{ print $1 * 3600 + $2 * 60 + $3 }')
+  REST=$(awk -v set="$AGE" -v now="$NOW" -v warm="${WARM:-20}" 'BEGIN { r = set + warm - now; print (r > 0 ? int(r + 0.5) : 0) }')
+  [ "$REST" -gt 0 ] && sleep "$REST"
 else
   sleep 11
 fi

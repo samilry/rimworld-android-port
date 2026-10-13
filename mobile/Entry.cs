@@ -40,6 +40,30 @@ namespace PortMobile
 			return PortHooks.PortPlatform.StartedAtTick > 0 ? (Environment.TickCount64 - PortHooks.PortPlatform.StartedAtTick) / 1000.0 : -1;
 		}
 
+		/// <summary>
+		/// What the runtime itself can say about the time until now: how long the compiler ran (on every thread together)
+		/// and for how many methods, how long the collector held the program, and the processor time of the whole process
+		/// (more than the wall time where threads worked side by side).
+		/// </summary>
+		private static string WhereTheStartWent()
+		{
+			try
+			{
+				var inv = System.Globalization.CultureInfo.InvariantCulture;
+				// /proc/self/stat: after the name in parentheses, the 12th and 13th fields are the user and system time in 1/100 s.
+				string stat = System.IO.File.ReadAllText("/proc/self/stat");
+				string[] fields = stat.Substring(stat.LastIndexOf(')') + 2).Split(' ');
+				TimeSpan cpu = TimeSpan.FromSeconds((long.Parse(fields[11]) + long.Parse(fields[12])) / 100.0);
+				return "compiling " + System.Runtime.JitInfo.GetCompilationTime().TotalSeconds.ToString("F1", inv) + " s (" + System.Runtime.JitInfo.GetCompilationTime(true).TotalSeconds.ToString("F1", inv) + " s of it on this thread) for " + System.Runtime.JitInfo.GetCompiledMethodCount() + " methods (" + (System.Runtime.JitInfo.GetCompiledILBytes() / 1048576.0).ToString("F1", inv) + " MB of IL)"
+					+ ", collector pauses " + GC.GetTotalPauseDuration().TotalSeconds.ToString("F1", inv) + " s in " + GC.CollectionCount(0) + "/" + GC.CollectionCount(1) + "/" + GC.CollectionCount(2) + " collections of " + (GC.GetTotalAllocatedBytes() / 1073741824.0).ToString("F1", inv) + " GB allocated"
+					+ ", processor time " + cpu.TotalSeconds.ToString("F1", inv) + " s, " + AppDomain.CurrentDomain.GetAssemblies().Length + " assemblies";
+			}
+			catch (Exception e)
+			{
+				return e.GetType().Name;
+			}
+		}
+
 		public static void AfterUIRootOnGUI()
 		{
 			if (!menuTimed && Verse.Current.ProgramState == Verse.ProgramState.Entry && !Verse.LongEventHandler.AnyEventNowOrWaiting)
@@ -47,6 +71,7 @@ namespace PortMobile
 				// Once: how long the start took, for comparing builds and settings.
 				menuTimed = true;
 				Console.WriteLine("[mobile] main menu " + SecondsSinceProcessStart().ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + " s after the runtime started");
+				Console.WriteLine("[mobile] of that: " + WhereTheStartWent());
 			}
 			frames++;
 			if (frames == 1 || frames == 600)

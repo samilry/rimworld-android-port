@@ -154,30 +154,122 @@ internal static class ModPrep
 		return Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Where(f => f.EndsWith(".dll", StringComparison.OrdinalIgnoreCase));
 	}
 
-	/// <summary>What the stamp of a prepared folder says: the rules' version, and how many assemblies of what total size.</summary>
+	/// <summary>
+	/// What the stamp of a prepared folder says: the rules' version on the first line, then every assembly below the
+	/// folder with its size ("path below the folder", a tab, the bytes). Finding the assemblies means walking every
+	/// file of the mod (textures, sounds, definitions: 50 000 files for a hundred mods), so that is done once, when the
+	/// stamp is written; a start reads the list and looks at the files it names (StampHolds).
+	/// </summary>
 	public static string StampOf(string root)
 	{
-		int count = 0;
-		long bytes = 0;
-		foreach (string file in AssembliesBelow(root))
+		var lines = new List<string> { "v" + RulesVersion };
+		foreach (string file in AssembliesBelow(root).OrderBy(f => f, StringComparer.Ordinal))
 		{
-			count++;
-			bytes += new FileInfo(file).Length;
+			lines.Add(Path.GetRelativePath(root, file).Replace('\\', '/') + "\t" + new FileInfo(file).Length);
 		}
-		return "v" + RulesVersion + ":" + count + ":" + bytes;
+		return string.Join("\n", lines);
 	}
 
-	public static bool IsPrepared(string root)
+	/// <summary>
+	/// The assemblies a folder's stamp lists, with their sizes; null when there is no stamp, or one of other rules.
+	/// (A stamp of the first kind, "v8:count:bytes" on one line, is checked the old way once and written anew.)
+	/// </summary>
+	public static Dictionary<string, long> ReadStamp(string root)
 	{
 		try
 		{
-			string stamp = Path.Combine(root, StampName);
-			return File.Exists(stamp) && File.ReadAllText(stamp).Trim() == StampOf(root);
+			string path = Path.Combine(root, StampName);
+			if (!File.Exists(path))
+			{
+				return null;
+			}
+			string[] lines = File.ReadAllText(path).Split('\n');
+			string first = lines[0].Trim();
+			if (lines.Length == 1 && first.StartsWith("v" + RulesVersion + ":", StringComparison.Ordinal))
+			{
+				int count = 0;
+				long bytes = 0;
+				foreach (string file in AssembliesBelow(root))
+				{
+					count++;
+					bytes += new FileInfo(file).Length;
+				}
+				if (first != "v" + RulesVersion + ":" + count + ":" + bytes)
+				{
+					return null;
+				}
+				WriteStamp(root);
+				lines = File.ReadAllText(path).Split('\n');
+				first = lines[0].Trim();
+			}
+			if (first != "v" + RulesVersion)
+			{
+				return null;
+			}
+			var listed = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+			for (int i = 1; i < lines.Length; i++)
+			{
+				int tab = lines[i].LastIndexOf('\t');
+				if (tab > 0)
+				{
+					listed[lines[i].Substring(0, tab)] = long.Parse(lines[i].Substring(tab + 1).Trim());
+				}
+			}
+			return listed;
+		}
+		catch (Exception)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>
+	/// Whether the folder is as the stamp describes it: every assembly listed is there at its size, and the folders
+	/// that hold them hold no other assembly. An assembly in a folder that had none when the stamp was written is not
+	/// seen here; the loader's hook asks for each assembly the game loads whether the stamp lists it (hooks/ModPrepHost.cs).
+	/// </summary>
+	public static bool StampHolds(string root, Dictionary<string, long> listed)
+	{
+		try
+		{
+			var perFolder = new Dictionary<string, int>(StringComparer.Ordinal);
+			foreach (KeyValuePair<string, long> entry in listed)
+			{
+				var info = new FileInfo(Path.Combine(root, entry.Key));
+				if (!info.Exists || info.Length != entry.Value)
+				{
+					return false;
+				}
+				perFolder.TryGetValue(info.DirectoryName, out int count);
+				perFolder[info.DirectoryName] = count + 1;
+			}
+			foreach (KeyValuePair<string, int> folder in perFolder)
+			{
+				int found = 0;
+				foreach (string file in Directory.EnumerateFiles(folder.Key))
+				{
+					if (file.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+					{
+						found++;
+					}
+				}
+				if (found != folder.Value)
+				{
+					return false;
+				}
+			}
+			return true;
 		}
 		catch (Exception)
 		{
 			return false;
 		}
+	}
+
+	public static bool IsPrepared(string root)
+	{
+		Dictionary<string, long> listed = ReadStamp(root);
+		return listed != null && StampHolds(root, listed);
 	}
 
 	public static void WriteStamp(string root)

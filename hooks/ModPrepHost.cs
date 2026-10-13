@@ -16,7 +16,8 @@ namespace PortHooks
 	internal static class ModPrepHost
 	{
 		private static readonly object gate = new object();
-		private static readonly HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		// The mods met in this run, with what their stamps list (null: prepared here and now, nothing more to ask).
+		private static readonly Dictionary<string, Dictionary<string, long>> seen = new Dictionary<string, Dictionary<string, long>>(StringComparer.OrdinalIgnoreCase);
 		private static InMemoryResolver resolver;
 
 		/// <summary>The folder of the mod an assembly belongs to: the nearest one above it that has About/About.xml.</summary>
@@ -40,7 +41,12 @@ namespace PortHooks
 			return null;
 		}
 
-		/// <summary>Before a mod assembly loads: once per mod and run, prepares the mod's folder unless its stamp says it is.</summary>
+		/// <summary>
+		/// Before a mod assembly loads. Once per mod and run the mod's stamp is read and held against the files it lists;
+		/// then each assembly of the mod is looked up in that list (no file is touched for it). The mod's folder is
+		/// prepared when the stamp is missing, of other rules or no longer true, or does not know the assembly (it lies
+		/// in a folder that held no assembly when the stamp was written).
+		/// </summary>
 		public static void BeforeLoad(string assemblyPath)
 		{
 			string root = ModRootOf(assemblyPath);
@@ -50,14 +56,33 @@ namespace PortHooks
 			}
 			lock (gate)
 			{
-				if (!seen.Add(root) || ModPrep.IsPrepared(root))
+				if (!seen.TryGetValue(root, out Dictionary<string, long> listed))
 				{
+					listed = ModPrep.ReadStamp(root);
+					if (listed != null && !ModPrep.StampHolds(root, listed))
+					{
+						listed = null;
+					}
+					seen[root] = listed;
+					if (listed == null)
+					{
+						PrepareNow(root);
+					}
 					return;
 				}
-				var watch = System.Diagnostics.Stopwatch.StartNew();
-				ModPrep.Result result = Prepare(root, line => Console.WriteLine("[port17] mod prep: " + line));
-				Console.WriteLine("[port17] mod prep: " + Path.GetFileName(root) + " prepared before loading: " + result + " (" + watch.ElapsedMilliseconds + " ms)");
+				if (listed != null && !listed.ContainsKey(Path.GetRelativePath(root, Path.GetFullPath(assemblyPath)).Replace('\\', '/')))
+				{
+					seen[root] = null;
+					PrepareNow(root);
+				}
 			}
+		}
+
+		private static void PrepareNow(string root)
+		{
+			var watch = System.Diagnostics.Stopwatch.StartNew();
+			ModPrep.Result result = Prepare(root, line => Console.WriteLine("[port17] mod prep: " + line));
+			Console.WriteLine("[port17] mod prep: " + Path.GetFileName(root) + " prepared before loading: " + result + " (" + watch.ElapsedMilliseconds + " ms)");
 		}
 
 		/// <summary>Prepares a mod's folder now (the import does this for each mod it installs).</summary>
@@ -70,7 +95,7 @@ namespace PortHooks
 					// The game's assemblies and the runtime's: Cecil resolves a mod's references against them while it writes.
 					resolver = ModPrep.NewResolver(new[] { AppContext.BaseDirectory, Path.GetDirectoryName(typeof(object).Assembly.Location) });
 				}
-				seen.Add(root);
+				seen[root] = null;
 				return ModPrep.PrepareFolder(root, resolver, log);
 			}
 		}
