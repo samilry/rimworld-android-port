@@ -4,9 +4,13 @@
 // first (build/modstage/<id>, a copy) and their assemblies prepared for the phone's runtime by
 // patch.dll --mods (machine type, IgnoresAccessChecksTo, no initonly statics). A mod is pushed again when its
 // Workshop folder changed since (a stamp of the newest file time and the file count).
-// usage: node host/mods-set.js <workshopId>...        (no ids: official content only)
+// Lunar Framework mods (Map Preview and its kin) check each component assembly against an MD5 kept next to it; the
+// patched copies get their checksums recomputed.
+// usage: node host/mods-set.js <workshopId>...        (no ids: official content only; host/mods-full.txt is the owner's list)
+//        node host/mods-set.js --list <ModsConfig.xml> (the active mods of that config, in its order; e.g. the PC's own
+//                                                       %LOCALAPPDATA%\..\LocalLow\Ludeon Studios\RimWorld by Ludeon Studios\Config\ModsConfig.xml)
 const { execFileSync } = require('child_process');
-const fs = require('fs'), path = require('path');
+const fs = require('fs'), path = require('path'), crypto = require('crypto');
 const ADB = 'C:/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe';
 const WORKSHOP = 'D:/SteamLibrary/steamapps/workshop/content/294100';
 const PKG = 'com.local.waylith.port';
@@ -15,6 +19,9 @@ const MODS = `${FILES}/game/Mods`;
 const CONFIG = `${FILES}/home/unity3d/Ludeon Studios/RimWorld by Ludeon Studios/Config`;
 const VERSION = '1.7.4976 rev1043';
 const STAGE = 'build/modstage';
+// Mods with assemblies are staged again when the patcher changed (its build time is part of their stamp).
+const PATCHER = 'build/patch/patch.dll';
+const patcherStamp = ':patch' + Math.round(fs.statSync(PATCHER).mtimeMs);
 const adb = (...args) => execFileSync(ADB, args, { encoding: 'utf8', maxBuffer: 64 << 20 });
 
 function walk(dir, visit) {
@@ -36,7 +43,56 @@ function hasAssemblies(dir) {
   return found;
 }
 
-const ids = process.argv.slice(2);
+// The mod's own packageId from About.xml (not those of the dependencies it lists), lower case.
+function packageIdOf(about) {
+  const own = about.replace(/<modDependencies(ByVersion)?>[^]*?<\/modDependencies(ByVersion)?>/g, '');
+  const m = /<packageId>([^<]+)</i.exec(own);
+  return m ? m[1].trim().toLowerCase() : null;
+}
+
+// The Workshop ids of a ModsConfig.xml's active mods, in its order (the official content is implied; entries without a
+// Workshop folder here, such as local mods, are reported and skipped).
+function idsFromConfig(file) {
+  const xml = fs.readFileSync(file, 'utf8');
+  const active = (/<activeMods>([^]*?)<\/activeMods>/.exec(xml)[1].match(/<li>[^<]+<\/li>/g) || []).map(m => m.slice(4, -5).trim().toLowerCase().replace(/_steam$/, ''));
+  const byPackage = new Map();
+  for (const id of fs.readdirSync(WORKSHOP)) {
+    const aboutFile = path.join(WORKSHOP, id, 'About', 'About.xml');
+    if (!fs.existsSync(aboutFile)) continue;
+    const pkg = packageIdOf(fs.readFileSync(aboutFile, 'utf8'));
+    if (pkg && !byPackage.has(pkg)) byPackage.set(pkg, id);
+  }
+  const ids = [];
+  for (const pkg of active) {
+    if (pkg.startsWith('ludeon.')) continue;
+    const id = byPackage.get(pkg);
+    if (id) ids.push(id); else console.log(`${pkg}: no Workshop folder here, skipped`);
+  }
+  console.log(`${file}: ${active.length} active entries, ${ids.length} Workshop mods`);
+  return ids;
+}
+
+// Lunar's check: <name>.lfc = MD5(<name>.dll) XOR MD5(mod version). A patched assembly gets MD5(new) XOR the version
+// term, which is the old checksum XOR MD5(original).
+function refreshLunarChecksums(original, staged) {
+  const md5 = bytes => crypto.createHash('md5').update(bytes).digest();
+  let refreshed = 0;
+  walk(staged, f => {
+    if (!f.endsWith('.lfc')) return;
+    const dll = f.slice(0, -4) + '.dll';
+    const source = path.join(original, path.relative(staged, dll));
+    if (!fs.existsSync(dll) || !fs.existsSync(source)) return;
+    const before = fs.readFileSync(source), after = fs.readFileSync(dll);
+    if (before.equals(after)) return;
+    const old = fs.readFileSync(f), a = md5(before), b = md5(after);
+    if (old.length !== a.length) return;
+    fs.writeFileSync(f, Buffer.from(old.map((x, i) => x ^ a[i] ^ b[i])));
+    refreshed++;
+  });
+  return refreshed;
+}
+
+const ids = process.argv[2] === '--list' ? idsFromConfig(process.argv[3]) : process.argv.slice(2);
 adb('shell', `am force-stop ${PKG}`);
 const present = adb('shell', `ls ${MODS}`).split(/\s+/).filter(Boolean);
 fs.mkdirSync(STAGE, { recursive: true });
@@ -45,22 +101,22 @@ let pushed = 0;
 for (const id of ids) {
   const dir = path.join(WORKSHOP, id);
   const about = fs.readFileSync(path.join(dir, 'About', 'About.xml'), 'utf8');
-  // The mod's own id and name, not those of the dependencies it lists.
-  const own = about.replace(/<modDependencies(ByVersion)?>[^]*?<\/modDependencies(ByVersion)?>/g, '');
-  const pkg = /<packageId>([^<]+)</i.exec(own)[1].trim().toLowerCase();
-  const name = (/<name>([^<]+)</.exec(own) || [, id])[1];
+  const pkg = packageIdOf(about);
+  const name = (/<name>([^<]+)</.exec(about) || [, id])[1];
   packages.push(pkg);
   const stampFile = path.join(STAGE, id + '.stamp');
-  const stamp = stampOf(dir);
+  const withAssemblies = hasAssemblies(dir);
+  const stamp = stampOf(dir) + (withAssemblies ? patcherStamp : '');
   const stale = !present.includes(id) || !fs.existsSync(stampFile) || fs.readFileSync(stampFile, 'utf8') !== stamp;
   if (!stale) continue;
   let source = dir;
-  if (hasAssemblies(dir)) {
+  if (withAssemblies) {
     const staged = path.join(STAGE, id);
     fs.rmSync(staged, { recursive: true, force: true });
     fs.cpSync(dir, staged, { recursive: true });
-    const report = execFileSync('dotnet', ['build/patch/patch.dll', '--mods', staged], { encoding: 'utf8' }).trim().split('\n');
-    console.log(`${id} ${name}: ${report[report.length - 1]}`);
+    const report = execFileSync('dotnet', [PATCHER, '--mods', staged], { encoding: 'utf8' }).trim().split('\n');
+    const checksums = refreshLunarChecksums(dir, staged);
+    console.log(`${id} ${name}: ${report[report.length - 1]}` + (checksums ? `, ${checksums} Lunar checksums refreshed` : ''));
     source = staged;
   }
   if (present.includes(id)) adb('shell', `rm -rf ${MODS}/${id}`);

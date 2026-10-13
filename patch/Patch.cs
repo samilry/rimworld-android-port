@@ -360,11 +360,15 @@ internal static class Patch
 
 	private static readonly string[] GameAssemblies = { "Assembly-CSharp", "UnityStubs", "Waylith", "Waylith.UnityCompat", "RimWorld", "0Harmony" };
 
+	// The framework assemblies whose private members mods reach into (Fishery reads List<T>._items): the runtime checks the
+	// attribute against the defining assembly, System.Private.CoreLib and friends, not the facade the mod references.
+	private static readonly string[] FrameworkInternals = { "System.Private.CoreLib", "System.Private.Xml", "System.Private.Xml.Linq", "System.Private.Uri", "System.Collections", "System.Collections.Concurrent", "System.Linq", "System.Text.RegularExpressions" };
+
 	/// <summary>Adds [assembly: System.Runtime.CompilerServices.IgnoresAccessChecksTo("name")] for the game's assemblies and everything referenced (the attribute type is declared in the assembly itself, as the runtime expects).</summary>
 	private static int AddAccessCheckExemptions(AssemblyDefinition assembly)
 	{
 		ModuleDefinition module = assembly.MainModule;
-		var wanted = new HashSet<string>(GameAssemblies);
+		var wanted = new HashSet<string>(GameAssemblies.Concat(FrameworkInternals));
 		foreach (AssemblyNameReference r in module.AssemblyReferences)
 		{
 			if (!r.Name.StartsWith("System", StringComparison.Ordinal) && r.Name != "mscorlib" && r.Name != "netstandard" && !r.Name.StartsWith("Microsoft.", StringComparison.Ordinal))
