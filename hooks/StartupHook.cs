@@ -186,32 +186,18 @@ internal static class StartupHook
 		}
 	}
 
+	/// <summary>
+	/// Unity assembly names (UnityEngine.CoreModule and the other modules mods were compiled against) are served by
+	/// type-forwarding facades in the game folder (patch/Patch.cs --forwarders); the runtime refuses a resolver that
+	/// answers a request with an assembly of another name, so nothing can be done here but say what was asked for.
+	/// </summary>
 	private static Assembly Resolve(AssemblyLoadContext context, AssemblyName name)
 	{
 		string n = name.Name ?? "";
-		bool unity = n.StartsWith("UnityEngine", StringComparison.Ordinal)
-			|| (n.StartsWith("Unity.", StringComparison.Ordinal) && n != "Unity.Newtonsoft.Json")
-			|| n == "Assembly-CSharp-firstpass";
-		if (!unity)
+		if (n.StartsWith("UnityEngine", StringComparison.Ordinal) || n.StartsWith("Unity.", StringComparison.Ordinal))
 		{
-			return null;
+			Console.WriteLine("[port17] no facade for " + n + " (add it to the forwarders list in host/stage.sh)");
 		}
-		if (stubs == null)
-		{
-			foreach (Assembly loaded in AppDomain.CurrentDomain.GetAssemblies())
-			{
-				if (loaded.GetName().Name == "UnityStubs")
-				{
-					stubs = loaded;
-					break;
-				}
-			}
-			if (stubs == null)
-			{
-				string path = Path.Combine(AppContext.BaseDirectory, "UnityStubs.dll");
-				stubs = context.LoadFromAssemblyPath(path);
-			}
-		}
-		return stubs;
+		return null;
 	}
 }

@@ -34,6 +34,8 @@ if [ "$what" = game ] || [ "$what" = all ]; then
   cp -r "$GAME/Data" "$GAME/Rendering" build/game/
   node host/fix-arch.js build/game --prune-native
   [ -f build/PortHooks.dll ] && cp build/PortHooks.dll build/game/
+  # Type-forwarding facades for the Unity assembly names mods were compiled against (all types -> UnityStubs).
+  [ -d build/forwarders ] && cp build/forwarders/*.dll build/game/
   printf -- "-Headless\n-NoCrashDialog\n-Verbose\n" > build/game/args.txt
   echo "game staging: $(ls build/game/*.dll | wc -l) assemblies, $(du -sh build/game | cut -f1)"
   "$ADB" shell "rm -rf $D/game"

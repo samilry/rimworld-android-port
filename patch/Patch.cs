@@ -83,6 +83,14 @@ internal static class Patch
 		{
 			return ListMembers(args[1], args[2]);
 		}
+		if (args[0] == "--refs")
+		{
+			return ListReferences(args[1]);
+		}
+		if (args[0] == "--forwarders")
+		{
+			return WriteForwarders(args[1], args[2], args.Skip(3).ToArray());
+		}
 		string folder = args[0];
 		var resolver = new InMemoryResolver();
 		foreach (string dir in args)
@@ -199,6 +207,83 @@ internal static class Patch
 			}
 		}
 		Console.WriteLine($"{filesChanged} assemblies changed");
+		return 0;
+	}
+
+	/// <summary>
+	/// Writes type-forwarding facades: an assembly of each given name (UnityEngine.CoreModule, ...) whose every type is
+	/// forwarded to the stub assembly (UnityStubs.dll). Mods were compiled against Unity's assemblies; Ludeon's runtime
+	/// fork redirects those names to UnityStubs, the stock runtime refuses a resolver that answers with another name,
+	/// and type forwarding is the standard way to say the same thing.
+	/// </summary>
+	private static int WriteForwarders(string stubsPath, string outDir, string[] names)
+	{
+		AssemblyDefinition stubs = AssemblyDefinition.ReadAssembly(stubsPath, new ReaderParameters { ReadingMode = ReadingMode.Deferred, InMemory = true });
+		var publicTypes = new List<TypeDefinition>();
+		foreach (TypeDefinition type in stubs.MainModule.Types)
+		{
+			if (type.IsPublic)
+			{
+				publicTypes.Add(type);
+			}
+		}
+		Directory.CreateDirectory(outDir);
+		foreach (string name in names)
+		{
+			var assemblyName = new AssemblyNameDefinition(name, new Version(0, 0, 0, 0));
+			AssemblyDefinition facade = AssemblyDefinition.CreateAssembly(assemblyName, name + ".dll", ModuleKind.Dll);
+			ModuleDefinition module = facade.MainModule;
+			var scope = new AssemblyNameReference(stubs.Name.Name, stubs.Name.Version);
+			module.AssemblyReferences.Add(scope);
+			int count = 0;
+			foreach (TypeDefinition type in publicTypes)
+			{
+				count += Forward(module, scope, type, null);
+			}
+			facade.Write(Path.Combine(outDir, name + ".dll"));
+			Console.WriteLine(name + ".dll: " + count + " types forwarded");
+		}
+		return 0;
+	}
+
+	private static int Forward(ModuleDefinition module, AssemblyNameReference scope, TypeDefinition type, ExportedType declaring)
+	{
+		var exported = new ExportedType(declaring == null ? type.Namespace : null, type.Name, module, scope) { IsForwarder = true, DeclaringType = declaring };
+		module.ExportedTypes.Add(exported);
+		int count = 1;
+		foreach (TypeDefinition nested in type.NestedTypes)
+		{
+			if (nested.IsNestedPublic)
+			{
+				count += Forward(module, scope, nested, exported);
+			}
+		}
+		return count;
+	}
+
+	/// <summary>Counts the assembly references of every .dll below a folder (which Unity modules the mods were compiled against).</summary>
+	private static int ListReferences(string root)
+	{
+		var counts = new Dictionary<string, int>();
+		int files = 0;
+		foreach (string file in Directory.EnumerateFiles(root, "*.dll", SearchOption.AllDirectories))
+		{
+			AssemblyDefinition assembly;
+			try { assembly = AssemblyDefinition.ReadAssembly(file, new ReaderParameters { ReadingMode = ReadingMode.Deferred, InMemory = true }); } catch { continue; }
+			files++;
+			using (assembly)
+			{
+				foreach (AssemblyNameReference r in assembly.MainModule.AssemblyReferences)
+				{
+					counts[r.Name] = counts.TryGetValue(r.Name, out int n) ? n + 1 : 1;
+				}
+			}
+		}
+		Console.WriteLine(files + " assemblies");
+		foreach (var pair in counts.OrderByDescending(p => p.Value))
+		{
+			Console.WriteLine(pair.Value + "	" + pair.Key);
+		}
 		return 0;
 	}
 
