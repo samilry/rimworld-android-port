@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 // GLFW for the Android host: the GLFW 3.4 C API (the part a Vulkan application uses) on top of a NativeActivity.
 // Built as libglfw.so; the engine's Brutal.Glfw binds it by name ("glfw" -> libglfw.so).
 //
@@ -184,6 +185,7 @@ static char g_title[256] = "Waylith";
 static char* g_clipboard;
 static struct timespec g_start;
 static void* g_vulkan;
+static int g_surfaceCreated; // a Vulkan surface was made on some window of this activity
 static PFN_vkGetInstanceProcAddr g_vkGetInstanceProcAddr;
 
 static GLFWerrorfun cb_error;
@@ -249,6 +251,13 @@ static void on_app_cmd(struct android_app* app, int32_t cmd)
         g_height = ANativeWindow_getHeight(app->window);
         if (app->config) g_density = AConfiguration_getDensity(app->config) / 160.0f;
         LOGI("glfw: window %dx%d (density %.2f)", g_width, g_height, g_density);
+        if (g_surfaceCreated && g_vulkan)
+        {
+            // A new window after the surface was made on the old one: the Vulkan interposer (our libvulkan.so) makes the
+            // engine recreate its surface and swapchain.
+            void (*changed)(void) = (void (*)(void))dlsym(g_vulkan, "port17_vulkan_window_changed");
+            if (changed) changed();
+        }
         Event e = { EV_WINDOW_INIT, g_width, g_height, 0, 0, 0, 0 };
         push_locked(&e);
         pthread_mutex_unlock(&g_lock);
@@ -680,6 +689,14 @@ static void dispatch(const Event* e)
         if (g_windowCreated && cb_refresh && e->type == EV_WINDOW_INIT) cb_refresh(w);
         break;
     case EV_WINDOW_TERM:
+        // No window: the framebuffer is 0x0, which the engine treats as minimized and stops rendering; the size is
+        // announced again with the next window.
+        g_sizeAnnounced = 0;
+        if (g_windowCreated)
+        {
+            if (cb_size) cb_size(w, 0, 0);
+            if (cb_fbsize) cb_fbsize(w, 0, 0);
+        }
         break;
     case EV_FOCUS:
         if (g_reportedFocused != e->a)
@@ -1057,7 +1074,18 @@ API GLFWglproc glfwGetProcAddress(const char* name) { (void)name; return NULL; }
 static int load_vulkan(void)
 {
     if (g_vulkan) return 1;
-    g_vulkan = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+    // Our own libvulkan.so (the interposer next to this library), by full path: by name the linker would hand back
+    // the system's, which the process already has loaded.
+    Dl_info self;
+    char path[512];
+    if (dladdr((void*)&load_vulkan, &self) && self.dli_fname)
+    {
+        snprintf(path, sizeof path, "%s", self.dli_fname);
+        char* slash = strrchr(path, '/');
+        if (slash) { snprintf(slash + 1, sizeof path - (slash + 1 - path), "libvulkan.so"); g_vulkan = dlopen(path, RTLD_NOW | RTLD_LOCAL); }
+    }
+    if (!g_vulkan) g_vulkan = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+    if (g_vulkan && dladdr(dlsym(g_vulkan, "vkGetInstanceProcAddr"), &self)) LOGI("glfw: Vulkan from %s", self.dli_fname);
     if (!g_vulkan)
     {
         LOGE("glfw: libvulkan.so: %s", dlerror());
@@ -1132,6 +1160,7 @@ API VkResult glfwCreateWindowSurface(VkInstance instance, GLFWwindow* w, const V
     else
     {
         LOGI("glfw: Vulkan surface created on window %p", (void*)window);
+        g_surfaceCreated = 1;
     }
     return result;
 }

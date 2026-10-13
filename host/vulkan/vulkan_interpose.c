@@ -190,9 +190,48 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_GetSurfaceCaps2(VkPhysicalDevice pd, 
     return r;
 }
 
+// ---- the window going away and coming back (Home, lock screen) ----
+// Android destroys the activity's window in the background and makes a new one afterwards; the engine's surface
+// (and swapchain) belong to the dead window and presenting to them shows nothing. The GLFW shim reports the new
+// window here; from then on acquires and presents on the swapchain of the old surface answer SURFACE_LOST, which
+// the engine handles by destroying the surface, asking GLFW for a new one and rebuilding the swapchain.
+static VkSurfaceKHR g_lastSwapchainSurface, g_staleSurface;
+static struct { VkSwapchainKHR swapchain; VkSurfaceKHR surface; } g_swapchainSurfaces[8];
+static PFN_vkDestroySurfaceKHR real_DestroySurface;
+
+static void remember_swapchain(VkSwapchainKHR swapchain, VkSurfaceKHR surface)
+{
+    for (int i = 0; i < 8; i++) if (!g_swapchainSurfaces[i].swapchain) { g_swapchainSurfaces[i].swapchain = swapchain; g_swapchainSurfaces[i].surface = surface; return; }
+    g_swapchainSurfaces[0].swapchain = swapchain; g_swapchainSurfaces[0].surface = surface;
+}
+
+static int swapchain_is_stale(VkSwapchainKHR swapchain)
+{
+    if (!g_staleSurface) return 0;
+    for (int i = 0; i < 8; i++) if (g_swapchainSurfaces[i].swapchain == swapchain) return g_swapchainSurfaces[i].surface == g_staleSurface;
+    return 0;
+}
+
+API void port17_vulkan_window_changed(void)
+{
+    if (g_lastSwapchainSurface)
+    {
+        g_staleSurface = g_lastSwapchainSurface;
+        LOGI("vulkan: the window changed; surface %p is stale, the engine will be told SURFACE_LOST", (void*)g_staleSurface);
+    }
+}
+
+static VKAPI_ATTR void VKAPI_CALL hook_DestroySurface(VkInstance instance, VkSurfaceKHR surface, const VkAllocationCallbacks* alloc)
+{
+    if (surface && surface == g_staleSurface) { LOGI("vulkan: stale surface %p destroyed", (void*)surface); g_staleSurface = VK_NULL_HANDLE; }
+    if (surface == g_lastSwapchainSurface) g_lastSwapchainSurface = VK_NULL_HANDLE;
+    real_DestroySurface(instance, surface, alloc);
+}
+
 static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateSwapchain(VkDevice device, const VkSwapchainCreateInfoKHR* info, const VkAllocationCallbacks* alloc, VkSwapchainKHR* out)
 {
     VkResult r = real_CreateSwapchain(device, info, alloc, out);
+    if (r == VK_SUCCESS) { remember_swapchain(*out, info->surface); g_lastSwapchainSurface = info->surface; }
     LOGI("vulkan: swapchain %ux%u, format %d, %u images, transform 0x%x, alpha 0x%x, present mode %d, usage 0x%x, old %s: %s",
          info->imageExtent.width, info->imageExtent.height, (int)info->imageFormat, info->minImageCount, info->preTransform,
          info->compositeAlpha, (int)info->presentMode, info->imageUsage, info->oldSwapchain ? "yes" : "no", result_name(r));
@@ -214,6 +253,7 @@ static VkResult quiet_suboptimal(VkResult r, const char* what)
 
 static VKAPI_ATTR VkResult VKAPI_CALL hook_AcquireNextImage(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t* index)
 {
+    if (swapchain_is_stale(swapchain)) { static int n; if (n++ < 3) LOGI("vulkan: acquire on the stale surface: SURFACE_LOST"); return VK_ERROR_SURFACE_LOST_KHR; }
     VkResult r = quiet_suboptimal(real_AcquireNextImage(device, swapchain, timeout, semaphore, fence, index), "acquire");
     g_acquires++;
     if (r != VK_SUCCESS)
@@ -230,6 +270,12 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_AcquireNextImage(VkDevice device, VkS
 
 static VKAPI_ATTR VkResult VKAPI_CALL hook_QueuePresent(VkQueue queue, const VkPresentInfoKHR* info)
 {
+    if (info->swapchainCount > 0 && swapchain_is_stale(info->pSwapchains[0]))
+    {
+        for (uint32_t i = 0; info->pResults && i < info->swapchainCount; i++) info->pResults[i] = VK_ERROR_SURFACE_LOST_KHR;
+        LOGI("vulkan: present on the stale surface: SURFACE_LOST");
+        return VK_ERROR_SURFACE_LOST_KHR;
+    }
     VkResult r = quiet_suboptimal(real_QueuePresent(queue, info), "present");
     g_presents++;
     if (r != VK_SUCCESS)
@@ -587,6 +633,7 @@ API VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance in
     if (strcmp(name, "vkCreateInstance") == 0) { real_CreateInstance = (PFN_vkCreateInstance)real; return (PFN_vkVoidFunction)hook_CreateInstance; }
     if (strcmp(name, "vkCreateDevice") == 0) { real_CreateDevice = (PFN_vkCreateDevice)real; return (PFN_vkVoidFunction)hook_CreateDevice; }
     if (strcmp(name, "vkGetDeviceProcAddr") == 0) { g_gdpa = (PFN_vkGetDeviceProcAddr)real; return (PFN_vkVoidFunction)hook_GetDeviceProcAddr; }
+    if (strcmp(name, "vkDestroySurfaceKHR") == 0) { real_DestroySurface = (PFN_vkDestroySurfaceKHR)real; return (PFN_vkVoidFunction)hook_DestroySurface; }
     if (strcmp(name, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR") == 0) { real_GetSurfaceCaps = (PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)real; return (PFN_vkVoidFunction)hook_GetSurfaceCaps; }
     if (strcmp(name, "vkGetPhysicalDeviceSurfaceCapabilities2KHR") == 0) { real_GetSurfaceCaps2 = (PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR)real; return (PFN_vkVoidFunction)hook_GetSurfaceCaps2; }
     if (strcmp(name, "vkGetPhysicalDeviceMemoryProperties") == 0) { real_GetMemoryProperties = (PFN_vkGetPhysicalDeviceMemoryProperties)real; return (PFN_vkVoidFunction)hook_GetMemoryProperties; }
