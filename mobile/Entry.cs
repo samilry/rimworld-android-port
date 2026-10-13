@@ -28,8 +28,25 @@ namespace PortMobile
 			Perf.Start(harmony);
 		}
 
+		private static bool menuTimed;
+
+		/// <summary>
+		/// Seconds since the startup hook ran. (The kernel's start time of the process is no use: Android hands an app a
+		/// process it forked minutes earlier.)
+		/// </summary>
+		internal static double SecondsSinceProcessStart()
+		{
+			return PortHooks.PortPlatform.StartedAtTick > 0 ? (Environment.TickCount64 - PortHooks.PortPlatform.StartedAtTick) / 1000.0 : -1;
+		}
+
 		public static void AfterUIRootOnGUI()
 		{
+			if (!menuTimed && Verse.Current.ProgramState == Verse.ProgramState.Entry && !Verse.LongEventHandler.AnyEventNowOrWaiting)
+			{
+				// Once: how long the start took, for comparing builds and settings.
+				menuTimed = true;
+				Console.WriteLine("[mobile] main menu " + SecondsSinceProcessStart().ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + " s after the runtime started");
+			}
 			frames++;
 			if (frames == 1 || frames == 600)
 			{

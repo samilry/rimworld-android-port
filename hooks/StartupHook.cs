@@ -12,6 +12,9 @@ namespace PortHooks
 	/// </summary>
 	public static class PortPlatform
 	{
+		/// <summary>Environment.TickCount64 when the startup hook ran: the earliest moment of the game's process that managed code sees (for timing the start).</summary>
+		public static long StartedAtTick;
+
 		public static bool IsLinux()
 		{
 			return true;
@@ -369,6 +372,7 @@ internal static class StartupHook
 
 	public static void Initialize()
 	{
+		PortHooks.PortPlatform.StartedAtTick = Environment.TickCount64;
 		AssemblyLoadContext.Default.Resolving += Resolve;
 		PretendProcessPath();
 		LimitGraphicsMemory();
