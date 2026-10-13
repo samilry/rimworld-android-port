@@ -112,15 +112,18 @@ namespace PortHooks
 		public static Assembly LoadModAssembly(string path)
 		{
 			string name = Path.GetFileNameWithoutExtension(path);
+			foreach (Assembly loaded in AppDomain.CurrentDomain.GetAssemblies())
+			{
+				if (string.Equals(loaded.GetName().Name, name, StringComparison.OrdinalIgnoreCase))
+				{
+					// Already loaded (the game folder's patched 0Harmony.dll, or a library another mod bundles too): the
+					// runtime would refuse a second assembly of the same name in its default context anyway.
+					Console.WriteLine("[port17] " + name + " is already loaded; " + path + " skipped");
+					return loaded;
+				}
+			}
 			if (name.Equals("0Harmony", StringComparison.OrdinalIgnoreCase))
 			{
-				foreach (Assembly loaded in AppDomain.CurrentDomain.GetAssemblies())
-				{
-					if (loaded.GetName().Name == "0Harmony")
-					{
-						return loaded;
-					}
-				}
 				string ours = Path.Combine(AppContext.BaseDirectory, "0Harmony.dll");
 				if (File.Exists(ours))
 				{
@@ -128,7 +131,63 @@ namespace PortHooks
 					return Assembly.LoadFrom(ours);
 				}
 			}
-			return Assembly.LoadFrom(path);
+			string fixedCopy = FixedArchitectureCopy(path);
+			return Assembly.LoadFrom(fixedCopy ?? path);
+		}
+
+		/// <summary>
+		/// A mod assembly built for x64 only (PE machine type AMD64, pure IL all the same) is refused by the runtime on
+		/// arm64; a copy with the machine type changed to ARM64 is kept next to the game (modcache/<mod folder>/) and
+		/// loaded instead. Returns null when the file needs no change.
+		/// </summary>
+		private static string FixedArchitectureCopy(string path)
+		{
+			try
+			{
+				byte[] bytes = File.ReadAllBytes(path);
+				if (bytes.Length < 0x40 || bytes[0] != (byte)'M' || bytes[1] != (byte)'Z')
+				{
+					return null;
+				}
+				int pe = BitConverter.ToInt32(bytes, 0x3c);
+				if (pe + 24 > bytes.Length || bytes[pe] != (byte)'P' || bytes[pe + 1] != (byte)'E')
+				{
+					return null;
+				}
+				ushort machine = BitConverter.ToUInt16(bytes, pe + 4);
+				if (machine != 0x8664)
+				{
+					return null;
+				}
+				bytes[pe + 4] = 0x64;
+				bytes[pe + 5] = 0xaa;
+				string modFolder = "x";
+				try
+				{
+					// <Mods>/<id>/<version>/Assemblies/<file>.dll (or <Mods>/<id>/Assemblies/...): the mod's folder name keeps copies apart.
+					string assemblies = Path.GetDirectoryName(path);
+					string above = Path.GetDirectoryName(assemblies);
+					string aboveThat = Path.GetDirectoryName(above);
+					modFolder = Path.GetFileName(Path.GetFileName(above).Contains(".") ? aboveThat : above);
+				}
+				catch (Exception)
+				{
+				}
+				string folder = Path.Combine(AppContext.BaseDirectory, "..", "modcache", modFolder);
+				Directory.CreateDirectory(folder);
+				string copy = Path.Combine(folder, Path.GetFileName(path));
+				if (!File.Exists(copy) || File.GetLastWriteTimeUtc(copy) < File.GetLastWriteTimeUtc(path) || new FileInfo(copy).Length != bytes.Length)
+				{
+					File.WriteAllBytes(copy, bytes);
+				}
+				Console.WriteLine("[port17] " + Path.GetFileName(path) + " is marked AMD64; loading an ARM64-marked copy from " + copy);
+				return copy;
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[port17] could not check the architecture of " + path + ": " + e.Message);
+				return null;
+			}
 		}
 
 		public static bool SteamInitializedForMenu()
@@ -194,6 +253,14 @@ internal static class StartupHook
 	private static Assembly Resolve(AssemblyLoadContext context, AssemblyName name)
 	{
 		string n = name.Name ?? "";
+		foreach (Assembly loaded in AppDomain.CurrentDomain.GetAssemblies())
+		{
+			if (loaded.GetName().Name == n)
+			{
+				// Loaded under another version (mods bundle different versions of the same library): the loaded one serves.
+				return loaded;
+			}
+		}
 		if (n.StartsWith("UnityEngine", StringComparison.Ordinal) || n.StartsWith("Unity.", StringComparison.Ordinal))
 		{
 			Console.WriteLine("[port17] no facade for " + n + " (add it to the forwarders list in host/stage.sh)");

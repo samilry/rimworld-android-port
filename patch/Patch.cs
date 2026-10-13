@@ -91,6 +91,10 @@ internal static class Patch
 		{
 			return WriteForwarders(args[1], args[2], args.Skip(3).ToArray());
 		}
+		if (args[0] == "--mods")
+		{
+			return PatchModAssemblies(args[1]);
+		}
 		string folder = args[0];
 		var resolver = new InMemoryResolver();
 		foreach (string dir in args)
@@ -259,6 +263,150 @@ internal static class Patch
 			}
 		}
 		return count;
+	}
+
+	/// <summary>
+	/// Prepares the copies of mod assemblies that go to the phone (host/mods-set.js stages them first): every .dll below
+	/// the folder gets
+	///   - the PE machine type ARM64 when it says AMD64 (pure IL, but the runtime refuses the mark on arm64);
+	///   - [assembly: IgnoresAccessChecksTo("...")] for every assembly it references plus the game's own: mods are built
+	///     against "publicized" game assemblies and touch private members straight from IL, which Mono let pass and
+	///     this runtime checks;
+	///   - static fields that are no longer initonly: the game fills DefOf fields by reflection, which this runtime
+	///     refuses for a readonly field once the type is initialized (it aborts the whole DefOf binding).
+	/// </summary>
+	private static int PatchModAssemblies(string root)
+	{
+		int changed = 0, files = 0;
+		foreach (string file in Directory.EnumerateFiles(root, "*.dll", SearchOption.AllDirectories))
+		{
+			files++;
+			try
+			{
+				if (FixMachineType(file))
+				{
+					Console.WriteLine(Path.GetFileName(file) + ": AMD64 -> ARM64");
+				}
+				AssemblyDefinition assembly;
+				try { assembly = AssemblyDefinition.ReadAssembly(file, new ReaderParameters { ReadingMode = ReadingMode.Immediate, InMemory = true }); }
+				catch { continue; }
+				int edits = 0;
+				using (assembly)
+				{
+					ModuleDefinition module = assembly.MainModule;
+					if (module.Kind != ModuleKind.Dll || module.AssemblyReferences.Count == 0)
+					{
+						continue;
+					}
+					edits += AddAccessCheckExemptions(assembly);
+					foreach (TypeDefinition type in module.GetTypes())
+					{
+						foreach (FieldDefinition field in type.Fields)
+						{
+							if (field.IsStatic && field.IsInitOnly && !field.HasConstant)
+							{
+								field.IsInitOnly = false;
+								edits++;
+							}
+						}
+					}
+					if (edits > 0)
+					{
+						assembly.Write(file);
+						changed++;
+					}
+				}
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine(Path.GetFileName(file) + ": not patched (" + e.GetType().Name + ": " + e.Message + ")");
+			}
+		}
+		Console.WriteLine(files + " assemblies seen, " + changed + " rewritten");
+		return 0;
+	}
+
+	private static bool FixMachineType(string file)
+	{
+		byte[] bytes = File.ReadAllBytes(file);
+		if (bytes.Length < 0x40 || bytes[0] != (byte)'M' || bytes[1] != (byte)'Z') return false;
+		int pe = BitConverter.ToInt32(bytes, 0x3c);
+		if (pe + 24 > bytes.Length || bytes[pe] != (byte)'P' || bytes[pe + 1] != (byte)'E') return false;
+		if (BitConverter.ToUInt16(bytes, pe + 4) != 0x8664) return false;
+		bytes[pe + 4] = 0x64;
+		bytes[pe + 5] = 0xaa;
+		File.WriteAllBytes(file, bytes);
+		return true;
+	}
+
+	private static readonly string[] GameAssemblies = { "Assembly-CSharp", "UnityStubs", "Waylith", "Waylith.UnityCompat", "RimWorld", "0Harmony" };
+
+	/// <summary>Adds [assembly: System.Runtime.CompilerServices.IgnoresAccessChecksTo("name")] for the game's assemblies and everything referenced (the attribute type is declared in the assembly itself, as the runtime expects).</summary>
+	private static int AddAccessCheckExemptions(AssemblyDefinition assembly)
+	{
+		ModuleDefinition module = assembly.MainModule;
+		var wanted = new HashSet<string>(GameAssemblies);
+		foreach (AssemblyNameReference r in module.AssemblyReferences)
+		{
+			if (!r.Name.StartsWith("System", StringComparison.Ordinal) && r.Name != "mscorlib" && r.Name != "netstandard" && !r.Name.StartsWith("Microsoft.", StringComparison.Ordinal))
+			{
+				wanted.Add(r.Name);
+			}
+		}
+		foreach (CustomAttribute existing in assembly.CustomAttributes)
+		{
+			if (existing.AttributeType.Name == "IgnoresAccessChecksToAttribute" && existing.ConstructorArguments.Count == 1)
+			{
+				wanted.Remove(existing.ConstructorArguments[0].Value as string ?? "");
+			}
+		}
+		if (wanted.Count == 0)
+		{
+			return 0;
+		}
+		TypeDefinition attribute = module.GetType("System.Runtime.CompilerServices.IgnoresAccessChecksToAttribute");
+		MethodDefinition ctor;
+		if (attribute == null)
+		{
+			TypeReference attributeBase = module.ImportReference(typeof(Attribute));
+			TypeReference stringType = module.TypeSystem.String;
+			attribute = new TypeDefinition("System.Runtime.CompilerServices", "IgnoresAccessChecksToAttribute", TypeAttributes.NotPublic | TypeAttributes.Class | TypeAttributes.BeforeFieldInit, attributeBase);
+			var field = new FieldDefinition("assemblyName", FieldAttributes.Private | FieldAttributes.InitOnly, stringType);
+			attribute.Fields.Add(field);
+			ctor = new MethodDefinition(".ctor", MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName, module.TypeSystem.Void);
+			ctor.Parameters.Add(new ParameterDefinition("assemblyName", ParameterAttributes.None, stringType));
+			MethodReference baseCtor = module.ImportReference(typeof(Attribute).GetConstructor(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance, null, Type.EmptyTypes, null));
+			ILProcessor il = ctor.Body.GetILProcessor();
+			il.Emit(OpCodes.Ldarg_0);
+			il.Emit(OpCodes.Call, baseCtor);
+			il.Emit(OpCodes.Ldarg_0);
+			il.Emit(OpCodes.Ldarg_1);
+			il.Emit(OpCodes.Stfld, field);
+			il.Emit(OpCodes.Ret);
+			attribute.Methods.Add(ctor);
+			var getter = new MethodDefinition("get_AssemblyName", MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.SpecialName, stringType);
+			ILProcessor gil = getter.Body.GetILProcessor();
+			gil.Emit(OpCodes.Ldarg_0);
+			gil.Emit(OpCodes.Ldfld, field);
+			gil.Emit(OpCodes.Ret);
+			attribute.Methods.Add(getter);
+			var property = new PropertyDefinition("AssemblyName", PropertyAttributes.None, stringType) { GetMethod = getter };
+			attribute.Properties.Add(property);
+			module.Types.Add(attribute);
+		}
+		else
+		{
+			ctor = attribute.Methods.First(m => m.IsConstructor && m.Parameters.Count == 1);
+		}
+		int added = 0;
+		foreach (string name in wanted.OrderBy(n => n))
+		{
+			var custom = new CustomAttribute(ctor);
+			custom.ConstructorArguments.Add(new CustomAttributeArgument(module.TypeSystem.String, name));
+			assembly.CustomAttributes.Add(custom);
+			added++;
+		}
+		return added;
 	}
 
 	/// <summary>Counts the assembly references of every .dll below a folder (which Unity modules the mods were compiled against).</summary>
