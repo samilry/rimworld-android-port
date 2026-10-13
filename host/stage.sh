@@ -34,6 +34,11 @@ if [ "$what" = game ] || [ "$what" = all ]; then
   cp -r "$GAME/Data" "$GAME/Rendering" build/game/
   node host/fix-arch.js build/game --prune-native
   [ -f build/PortHooks.dll ] && cp build/PortHooks.dll build/game/
+  # The 1.6 Chinese language packs (this 1.7 test build ships English only; most 1.6 strings still apply).
+  for p in Core Royalty Ideology Biotech Anomaly Odyssey; do
+    t="/d/Harness/rimworld/Builds/AndroidData/Data/$p/Languages/ChineseSimplified (简体中文).tar"
+    [ -f "$t" ] && mkdir -p "build/game/Data/$p/Languages" && cp "$t" "build/game/Data/$p/Languages/"
+  done
   # Type-forwarding facades for the Unity assembly names mods were compiled against (all types -> UnityStubs).
   [ -d build/forwarders ] && cp build/forwarders/*.dll build/game/
   printf -- "-Headless\n-NoCrashDialog\n-Verbose\n" > build/game/args.txt
