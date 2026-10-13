@@ -278,6 +278,14 @@ internal static class Patch
 	private static int PatchModAssemblies(string root)
 	{
 		int changed = 0, files = 0;
+		var resolver = new InMemoryResolver();
+		foreach (string dir in new[] { "build/game", "dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0" })
+		{
+			if (Directory.Exists(dir))
+			{
+				resolver.AddSearchDirectory(dir);
+			}
+		}
 		foreach (string file in Directory.EnumerateFiles(root, "*.dll", SearchOption.AllDirectories))
 		{
 			files++;
@@ -288,7 +296,8 @@ internal static class Patch
 					Console.WriteLine(Path.GetFileName(file) + ": AMD64 -> ARM64");
 				}
 				AssemblyDefinition assembly;
-				try { assembly = AssemblyDefinition.ReadAssembly(file, new ReaderParameters { ReadingMode = ReadingMode.Immediate, InMemory = true }); }
+				resolver.AddSearchDirectory(Path.GetDirectoryName(file));
+				try { assembly = AssemblyDefinition.ReadAssembly(file, new ReaderParameters { ReadingMode = ReadingMode.Immediate, InMemory = true, AssemblyResolver = resolver }); }
 				catch { continue; }
 				int edits = 0;
 				using (assembly)
@@ -312,7 +321,10 @@ internal static class Patch
 					}
 					if (edits > 0)
 					{
-						assembly.Write(file);
+						string temp = file + ".patched";
+						assembly.Write(temp);
+						File.Copy(temp, file, true);
+						File.Delete(temp);
 						changed++;
 					}
 				}
