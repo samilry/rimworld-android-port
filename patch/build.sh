@@ -8,9 +8,9 @@ mkdir -p build/patch
 {
   echo "-nologo -target:exe -optimize+ -nullable:disable -langversion:latest -nostdlib+ -noconfig -deterministic+"
   echo "-out:build/patch/patch.dll"
-  for f in System.Runtime System.Collections System.Console System.Linq System.IO.FileSystem System.Reflection System.Private.CoreLib netstandard; do echo "-r:\"$(cygpath -w "$RT/$f.dll")\""; done
+  for f in System.Runtime System.Collections System.Console System.Linq System.IO.FileSystem System.Reflection System.Security.Cryptography System.Private.CoreLib netstandard; do echo "-r:\"$(cygpath -w "$RT/$f.dll")\""; done
   echo "-r:\"$(cygpath -w "$CECIL/Mono.Cecil.dll")\""
-  echo "patch/Patch.cs"
+  echo "patch/Patch.cs patch/ModPrep.cs"
 } > build/patch/patch.rsp
 dotnet /d/Harness/rimworld/tools/roslyn/pkg/tasks/netcore/bincore/csc.dll @build/patch/patch.rsp
 cp "$CECIL/Mono.Cecil.dll" build/patch/

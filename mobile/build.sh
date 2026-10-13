@@ -8,8 +8,10 @@ mkdir -p build
 {
   echo "-nologo -target:library -optimize+ -nullable:disable -langversion:latest -nostdlib+ -noconfig -deterministic+ -unsafe+"
   echo "-out:build/PortMobile.dll"
-  for f in System.Runtime System.Runtime.Loader System.Console System.Collections System.Linq System.Threading System.Threading.Thread System.Private.CoreLib System.Runtime.InteropServices System.Numerics.Vectors; do echo "-r:\"$(cygpath -w "$RT/$f.dll")\""; done
+  for f in System.Runtime System.Runtime.Loader System.Console System.Collections System.Linq System.Threading System.Threading.Thread System.Private.CoreLib System.Runtime.InteropServices System.Numerics.Vectors System.Private.Xml System.Text.RegularExpressions System.Reflection.Primitives System.Reflection.Emit.ILGeneration; do echo "-r:\"$(cygpath -w "$RT/$f.dll")\""; done
   for f in Assembly-CSharp UnityStubs 0Harmony Waylith Waylith.UnityCompat; do echo "-r:\"$(cygpath -w "build/game/$f.dll")\""; done
+  # The startup hook assembly: the mod import asks it to prepare a mod's assemblies (hooks/ModPrepHost.cs).
+  echo "-r:\"$(cygpath -w build/PortHooks.dll)\""
   ls mobile/*.cs | tr '\n' ' '
 } > build/mobile.rsp
 dotnet /d/Harness/rimworld/tools/roslyn/pkg/tasks/netcore/bincore/csc.dll @build/mobile.rsp

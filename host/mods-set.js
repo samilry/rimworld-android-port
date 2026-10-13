@@ -72,26 +72,6 @@ function idsFromConfig(file) {
   return ids;
 }
 
-// Lunar's check: <name>.lfc = MD5(<name>.dll) XOR MD5(mod version). A patched assembly gets MD5(new) XOR the version
-// term, which is the old checksum XOR MD5(original).
-function refreshLunarChecksums(original, staged) {
-  const md5 = bytes => crypto.createHash('md5').update(bytes).digest();
-  let refreshed = 0;
-  walk(staged, f => {
-    if (!f.endsWith('.lfc')) return;
-    const dll = f.slice(0, -4) + '.dll';
-    const source = path.join(original, path.relative(staged, dll));
-    if (!fs.existsSync(dll) || !fs.existsSync(source)) return;
-    const before = fs.readFileSync(source), after = fs.readFileSync(dll);
-    if (before.equals(after)) return;
-    const old = fs.readFileSync(f), a = md5(before), b = md5(after);
-    if (old.length !== a.length) return;
-    fs.writeFileSync(f, Buffer.from(old.map((x, i) => x ^ a[i] ^ b[i])));
-    refreshed++;
-  });
-  return refreshed;
-}
-
 const ids = process.argv[2] === '--list' ? idsFromConfig(process.argv[3]) : process.argv.slice(2);
 adb('shell', `am force-stop ${PKG}`);
 const present = adb('shell', `ls ${MODS}`).split(/\s+/).filter(Boolean);
@@ -115,8 +95,7 @@ for (const id of ids) {
     fs.rmSync(staged, { recursive: true, force: true });
     fs.cpSync(dir, staged, { recursive: true });
     const report = execFileSync('dotnet', [PATCHER, '--mods', staged], { encoding: 'utf8' }).trim().split('\n');
-    const checksums = refreshLunarChecksums(dir, staged);
-    console.log(`${id} ${name}: ${report[report.length - 1]}` + (checksums ? `, ${checksums} Lunar checksums refreshed` : ''));
+    console.log(`${id} ${name}: ${report[report.length - 1]}`);
     source = staged;
   }
   if (present.includes(id)) adb('shell', `rm -rf ${MODS}/${id}`);

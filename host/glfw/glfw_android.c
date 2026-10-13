@@ -626,28 +626,52 @@ API void glfwAndroidInjectKey(int key, int action, int mods) { push(EV_KEY, key,
 API void glfwAndroidInjectChar(unsigned int codepoint, int mods) { push(EV_CHAR, (int)codepoint, mods, 0, 0, 0, 0); }
 API float glfwAndroidGetDensity(void) { return g_density; }
 
-// The soft keyboard, through the activity's showKeyboard(boolean) (host/java MainActivity): the NDK's
-// ANativeActivity_showSoftInput does nothing on this phone.
-API void glfwAndroidShowKeyboard(int show)
+// Calls a "void name(boolean)" method of the activity (host/java MainActivity) from whatever thread this is.
+static int call_activity(const char* name, int value)
 {
-    if (!g_app || !g_app->activity || !g_app->activity->vm) return;
+    if (!g_app || !g_app->activity || !g_app->activity->vm) return 0;
     JavaVM* vm = g_app->activity->vm;
     JNIEnv* env = NULL;
     int attached = 0;
     if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK)
     {
-        if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return;
+        if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return 0;
         attached = 1;
     }
     jobject activity = g_app->activity->clazz;
     jclass cls = (*env)->GetObjectClass(env, activity);
-    jmethodID method = (*env)->GetMethodID(env, cls, "showKeyboard", "(Z)V");
-    if (method) (*env)->CallVoidMethod(env, activity, method, (jboolean)(show != 0));
-    else LOGW("glfw: no showKeyboard on the activity");
-    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); LOGW("glfw: showKeyboard threw"); }
+    jmethodID method = (*env)->GetMethodID(env, cls, name, "(Z)V");
+    int ok = 0;
+    if (method) { (*env)->CallVoidMethod(env, activity, method, (jboolean)(value != 0)); ok = 1; }
+    else LOGW("glfw: no %s on the activity", name);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); LOGW("glfw: %s threw", name); ok = 0; }
     (*env)->DeleteLocalRef(env, cls);
-    LOGI("glfw: soft keyboard %s", show ? "shown" : "hidden");
     if (attached) (*vm)->DetachCurrentThread(vm);
+    return ok;
+}
+
+// The soft keyboard, through the activity's showKeyboard(boolean): the NDK's ANativeActivity_showSoftInput does nothing
+// on this phone.
+API void glfwAndroidShowKeyboard(int show)
+{
+    if (call_activity("showKeyboard", show)) LOGI("glfw: soft keyboard %s", show ? "shown" : "hidden");
+}
+
+// The system's file chooser for the mod import, through the activity's pickFiles(boolean folder): archives (several) or
+// one folder. What was picked is copied to files/ModImport by the activity, which reports in files/ModImport.state.
+API int glfwAndroidPickFiles(int folder)
+{
+    int ok = call_activity("pickFiles", folder);
+    LOGI("glfw: file chooser for %s %s", folder ? "a folder" : "archives", ok ? "asked for" : "could not be opened");
+    return ok;
+}
+
+// The game's restart, through the activity's restartGame(boolean): the activity's task is started afresh and this process
+// is killed. Returns 0 when the activity could not be asked (the caller then goes on as on a PC).
+API int glfwAndroidRestart(void)
+{
+    LOGI("glfw: restart of the game asked for");
+    return call_activity("restartGame", 1);
 }
 
 // ---- text from the soft keyboard (TextInputView, JNI) ----

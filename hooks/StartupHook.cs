@@ -88,6 +88,14 @@ namespace PortHooks
 		{
 			try
 			{
+				ModPrepHost.Release();
+			}
+			catch (Exception)
+			{
+				// Mono.Cecil.dll is not there; said already when the first mod loaded
+			}
+			try
+			{
 				string path = Path.Combine(AppContext.BaseDirectory, "PortMobile.dll");
 				if (!File.Exists(path))
 				{
@@ -111,6 +119,7 @@ namespace PortHooks
 		/// </summary>
 		public static Assembly LoadModAssembly(string path)
 		{
+			PrepareModBeforeLoad(path);
 			string name = Path.GetFileNameWithoutExtension(path);
 			foreach (Assembly loaded in AppDomain.CurrentDomain.GetAssemblies())
 			{
@@ -133,6 +142,40 @@ namespace PortHooks
 			}
 			string fixedCopy = FixedArchitectureCopy(path);
 			return Assembly.LoadFrom(fixedCopy ?? path);
+		}
+
+		/// <summary>
+		/// A mod that was not prepared for this runtime yet (imported raw, or copied into Mods by hand) has its assemblies
+		/// prepared in place now (ModPrepHost, patch/ModPrep.cs). A failure, Mono.Cecil.dll missing from the game folder
+		/// included, is reported and the mod loads as it is.
+		/// </summary>
+		private static void PrepareModBeforeLoad(string path)
+		{
+			try
+			{
+				ModPrepHost.BeforeLoad(path);
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[port17] mod prep failed for " + path + ": " + e.GetType().Name + ": " + e.Message);
+			}
+		}
+
+		/// <summary>
+		/// For the in-game mod import (mobile/ModImport.cs): prepares the assemblies of a mod folder that was just installed
+		/// and returns a one-line report ("12 assemblies seen, 12 rewritten"); problems lists the assemblies that could not
+		/// be rewritten and that the game of the given version may load (not those in the folders of other game versions).
+		/// Throws when it cannot prepare at all.
+		/// </summary>
+		public static string PrepareModFolder(string root, int gameMajor, int gameMinor, out string[] problems)
+		{
+			return ModPrepHost.PrepareForImport(root, new Version(gameMajor, gameMinor), out problems);
+		}
+
+		/// <summary>The import calls this when it is done: the preparation's copies of the game assemblies are let go.</summary>
+		public static void ReleaseModPrep()
+		{
+			ModPrepHost.Release();
 		}
 
 		/// <summary>

@@ -18,6 +18,7 @@ namespace PortMobile
 			harmony.Patch(AccessTools.Method(typeof(Verse.UIRoot), "UIRootOnGUI"), postfix: new HarmonyMethod(typeof(Entry), nameof(AfterUIRootOnGUI)));
 			Console.WriteLine("[mobile] patched UIRoot.UIRootOnGUI");
 			Touch.Start();
+			ModImport.Start(harmony);
 		}
 
 		public static void AfterUIRootOnGUI()
