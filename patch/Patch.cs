@@ -316,6 +316,7 @@ internal static class Patch
 	///     refuses for a readonly field once the type is initialized (it aborts the whole DefOf binding);
 	///   - calls to Mono's Array.UnsafeLoad<T>/UnsafeStore<T> (Fishery, Adaptive Storage) turned into ldelem/stelem: this
 	///     runtime's CoreLib has no such methods.
+	/// Assemblies embedded as resources get the same (a mod that loads its real code from memory never shows it as a file).
 	/// </summary>
 	private static int PatchModAssemblies(string root)
 	{
@@ -349,25 +350,7 @@ internal static class Patch
 					{
 						continue;
 					}
-					edits += AddAccessCheckExemptions(assembly);
-					foreach (TypeDefinition type in module.GetTypes())
-					{
-						foreach (FieldDefinition field in type.Fields)
-						{
-							if (field.IsStatic && field.IsInitOnly && !field.HasConstant)
-							{
-								field.IsInitOnly = false;
-								edits++;
-							}
-						}
-						foreach (MethodDefinition method in type.Methods)
-						{
-							if (method.HasBody)
-							{
-								edits += ReplaceMonoArrayHelpers(method.Body);
-							}
-						}
-					}
+					edits += PrepareModAssembly(assembly, resolver, Path.GetFileName(file));
 					if (edits > 0)
 					{
 						string temp = file + ".patched";
@@ -385,6 +368,87 @@ internal static class Patch
 		}
 		Console.WriteLine(files + " assemblies seen, " + changed + " rewritten");
 		return 0;
+	}
+
+	/// <summary>The edits of --mods on one assembly, the assemblies in its resources included; returns how many were made.</summary>
+	private static int PrepareModAssembly(AssemblyDefinition assembly, InMemoryResolver resolver, string label)
+	{
+		ModuleDefinition module = assembly.MainModule;
+		int edits = AddAccessCheckExemptions(assembly);
+		foreach (TypeDefinition type in module.GetTypes())
+		{
+			foreach (FieldDefinition field in type.Fields)
+			{
+				if (field.IsStatic && field.IsInitOnly && !field.HasConstant)
+				{
+					field.IsInitOnly = false;
+					edits++;
+				}
+			}
+			foreach (MethodDefinition method in type.Methods)
+			{
+				if (method.HasBody)
+				{
+					edits += ReplaceMonoArrayHelpers(method.Body);
+				}
+			}
+		}
+		return edits + PrepareEmbeddedAssemblies(module, resolver, label);
+	}
+
+	/// <summary>
+	/// Some mods keep their real code as an assembly in a resource and load it with Assembly.Load(byte[]) (Brrainz's
+	/// CrossPromotion.dll holds two and picks one by game version): such code never passes through the files prepared
+	/// here, so its private-member access failed on the phone (the prefix on Page_ModsConfig.DoModInfo threw every frame
+	/// and the mod page's detail pane stayed empty). Each embedded resource that is a managed assembly is prepared in
+	/// place. Compressed or encrypted ones (Costura's *.compressed) are not recognised.
+	/// </summary>
+	private static int PrepareEmbeddedAssemblies(ModuleDefinition module, InMemoryResolver resolver, string label)
+	{
+		int replaced = 0;
+		for (int i = 0; i < module.Resources.Count; i++)
+		{
+			if (!(module.Resources[i] is EmbeddedResource resource))
+			{
+				continue;
+			}
+			byte[] data = resource.GetResourceData();
+			if (data.Length < 0x80 || data[0] != (byte)'M' || data[1] != (byte)'Z')
+			{
+				continue;
+			}
+			string name = label + " :: " + resource.Name;
+			bool changed = FixMachineType(data);
+			try
+			{
+				using (AssemblyDefinition embedded = AssemblyDefinition.ReadAssembly(new MemoryStream(data), new ReaderParameters { ReadingMode = ReadingMode.Immediate, InMemory = true, AssemblyResolver = resolver }))
+				{
+					if (embedded.MainModule.Kind == ModuleKind.Dll && embedded.MainModule.AssemblyReferences.Count > 0 && PrepareModAssembly(embedded, resolver, name) > 0)
+					{
+						var output = new MemoryStream();
+						embedded.Write(output);
+						data = output.ToArray();
+						changed = true;
+					}
+				}
+			}
+			catch (BadImageFormatException)
+			{
+				// a native library or something else that starts like one
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine(name + ": embedded assembly not patched (" + e.GetType().Name + ": " + e.Message + ")");
+				continue;
+			}
+			if (changed)
+			{
+				module.Resources[i] = new EmbeddedResource(resource.Name, resource.Attributes, data);
+				Console.WriteLine(name + ": embedded assembly prepared");
+				replaced++;
+			}
+		}
+		return replaced;
 	}
 
 	/// <summary>
@@ -531,19 +595,26 @@ internal static class Patch
 	private static bool FixMachineType(string file)
 	{
 		byte[] bytes = File.ReadAllBytes(file);
+		if (!FixMachineType(bytes)) return false;
+		File.WriteAllBytes(file, bytes);
+		return true;
+	}
+
+	/// <summary>Changes the PE machine type AMD64 to ARM64 in place; false when the bytes are not such an image.</summary>
+	private static bool FixMachineType(byte[] bytes)
+	{
 		if (bytes.Length < 0x40 || bytes[0] != (byte)'M' || bytes[1] != (byte)'Z') return false;
 		int pe = BitConverter.ToInt32(bytes, 0x3c);
-		if (pe + 24 > bytes.Length || bytes[pe] != (byte)'P' || bytes[pe + 1] != (byte)'E') return false;
+		if (pe < 0 || pe + 24 > bytes.Length || bytes[pe] != (byte)'P' || bytes[pe + 1] != (byte)'E') return false;
 		if (BitConverter.ToUInt16(bytes, pe + 4) != 0x8664) return false;
 		bytes[pe + 4] = 0x64;
 		bytes[pe + 5] = 0xaa;
-		File.WriteAllBytes(file, bytes);
 		return true;
 	}
 
 	// Bumped whenever what --mods does to an assembly changes: host/mods-set.js keeps it in the stamp of every staged mod and
 	// re-stages them when it differs (--mods-version prints it).
-	private const int ModsPatchVersion = 3;
+	private const int ModsPatchVersion = 4;
 
 	/// <summary>
 	/// Mono's CoreLib has internal T Array.UnsafeLoad<T>(T[], int) and void Array.UnsafeStore<T>(T[], int, T), which some
