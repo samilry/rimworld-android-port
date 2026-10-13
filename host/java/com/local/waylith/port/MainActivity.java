@@ -5,6 +5,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
 
 /**
  * The game's activity: a NativeActivity (the host library is named by the manifest's android.app.lib_name) that
@@ -39,6 +40,41 @@ public final class MainActivity extends NativeActivity
         {
             hideSystemBars();
         }
+    }
+
+    /** Shows or hides the soft keyboard; called from the native side (the GLFW shim) when a text field takes or loses the focus. */
+    public void showKeyboard(final boolean show)
+    {
+        runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (imm == null)
+                {
+                    return;
+                }
+                if (show)
+                {
+                    // The keyboard serves the focused view (the NativeActivity's content view, which takes key input).
+                    View focused = getWindow().getDecorView().findFocus();
+                    if (focused == null)
+                    {
+                        focused = getWindow().getDecorView();
+                        focused.requestFocus();
+                    }
+                    if (!imm.showSoftInput(focused, InputMethodManager.SHOW_FORCED))
+                    {
+                        imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
+                    }
+                }
+                else
+                {
+                    imm.hideSoftInputFromWindow(getWindow().getDecorView().getWindowToken(), 0);
+                }
+            }
+        });
     }
 
     @SuppressWarnings("deprecation")

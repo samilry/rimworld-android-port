@@ -63,6 +63,7 @@ namespace PortMobile
 			Pan,
 			Box,       // a hold on the map with nothing to order: the selection box stays and the finger drags it
 			Tool,      // a designator or targeter took the press (as a mouse for now)
+			Held,      // a hold on the interface: tooltips, no click
 			Two,       // two fingers: zoom and pan (for the map) or wheel and middle drag (for a window)
 			Finished   // nothing more to recognise in this touch; wait for all fingers to lift
 		}
@@ -93,6 +94,8 @@ namespace PortMobile
 
 		public static bool Verbose;
 
+		public static int FingerCount => fingers.Count;
+
 		public static void Start()
 		{
 			density = glfwAndroidGetDensity();
@@ -101,6 +104,7 @@ namespace PortMobile
 			harmony.Patch(AccessTools.Method(typeof(UIRoot), nameof(UIRoot.UIRootUpdate)), prefix: new HarmonyMethod(typeof(Touch), nameof(Update)));
 			glfwAndroidSetTouchMode(1);
 			Diag.Start(harmony);
+			Interface.Start(harmony);
 			DiagFloatMenu.Start(harmony);
 			Log("touch layer on (density " + density.ToString("F2") + ", drag threshold " + DragThreshold.ToString("F0") + " px)");
 		}
@@ -217,6 +221,7 @@ namespace PortMobile
 				Button(Right, false);
 			}
 			Replay.Feed();
+			Interface.Update();
 			bool changed = Drain();
 			int count = fingers.Count;
 			if (count == 0)
@@ -228,6 +233,10 @@ namespace PortMobile
 				if (mode == Mode.Two && gestureWindow != null)
 				{
 					EndWindowGesture();
+				}
+				if (mode == Mode.Held)
+				{
+					Interface.HoldEnded();
 				}
 				// The last finger has lifted: the release reaches the game where the finger was.
 				if (leftDown) Button(Left, false);
@@ -267,6 +276,7 @@ namespace PortMobile
 			{
 				// A new touch: the press goes to the game at once, so that the interface responds like to a mouse.
 				mode = Mode.Pending;
+				Interface.TouchBegan();
 				first.seen = true;
 				framesDown = 0;
 				last = first.pos;
@@ -325,6 +335,14 @@ namespace PortMobile
 				case Mode.Pan:
 					KeepBoxOff();
 					Pan(delta);
+					break;
+				case Mode.Interface:
+					if (held && !moved && !DragAndDropWidget.Dragging && !ReorderableWidget.Dragging && !Widgets.Painting)
+					{
+						// A finger resting on the interface is reading: the tooltips show now and nothing is clicked.
+						mode = Mode.Held;
+						Interface.HoldOnInterface();
+					}
 					break;
 				default:
 					break;

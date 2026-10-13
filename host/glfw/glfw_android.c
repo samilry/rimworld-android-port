@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <jni.h>
 #define VK_USE_PLATFORM_ANDROID_KHR
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
@@ -616,12 +617,28 @@ API void glfwAndroidInjectKey(int key, int action, int mods) { push(EV_KEY, key,
 API void glfwAndroidInjectChar(unsigned int codepoint, int mods) { push(EV_CHAR, (int)codepoint, mods, 0, 0, 0, 0); }
 API float glfwAndroidGetDensity(void) { return g_density; }
 
-// The system's soft keyboard (the activity's own, which only delivers key events: fine for Latin text).
+// The soft keyboard, through the activity's showKeyboard(boolean) (host/java MainActivity): the NDK's
+// ANativeActivity_showSoftInput does nothing on this phone.
 API void glfwAndroidShowKeyboard(int show)
 {
-    if (!g_app || !g_app->activity) return;
-    if (show) ANativeActivity_showSoftInput(g_app->activity, ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED);
-    else ANativeActivity_hideSoftInput(g_app->activity, 0);
+    if (!g_app || !g_app->activity || !g_app->activity->vm) return;
+    JavaVM* vm = g_app->activity->vm;
+    JNIEnv* env = NULL;
+    int attached = 0;
+    if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK)
+    {
+        if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return;
+        attached = 1;
+    }
+    jobject activity = g_app->activity->clazz;
+    jclass cls = (*env)->GetObjectClass(env, activity);
+    jmethodID method = (*env)->GetMethodID(env, cls, "showKeyboard", "(Z)V");
+    if (method) (*env)->CallVoidMethod(env, activity, method, (jboolean)(show != 0));
+    else LOGW("glfw: no showKeyboard on the activity");
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); LOGW("glfw: showKeyboard threw"); }
+    (*env)->DeleteLocalRef(env, cls);
+    LOGI("glfw: soft keyboard %s", show ? "shown" : "hidden");
+    if (attached) (*vm)->DetachCurrentThread(vm);
 }
 
 API void glfwAndroidAttach(struct android_app* app)
