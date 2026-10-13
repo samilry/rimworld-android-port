@@ -109,6 +109,7 @@ namespace PortMobile
 			Diag.Start(harmony);
 			Interface.Start(harmony);
 			MapTools.Start(harmony);
+			UiScale.Start(harmony);
 			DiagFloatMenu.Start(harmony);
 			Log("touch layer on (density " + density.ToString("F2") + ", drag threshold " + DragThreshold.ToString("F0") + " px)");
 		}
@@ -225,6 +226,7 @@ namespace PortMobile
 				Button(Right, false);
 			}
 			Replay.Feed();
+			UiScale.Update();
 			Interface.Update();
 			MapTools.Update();
 			bool changed = Drain();
