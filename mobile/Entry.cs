@@ -24,6 +24,7 @@ namespace PortMobile
 			HarmonyDiag.Start();
 			SpawnDiag.Start(harmony);
 			Sched.Start(harmony);
+			FrameRate.Start(harmony);
 			Perf.Start(harmony);
 		}
 

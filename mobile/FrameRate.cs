@@ -1,0 +1,294 @@
+using System;
+using System.Collections.Generic;
+using System.Reflection;
+using System.Reflection.Emit;
+using System.Runtime.InteropServices;
+using HarmonyLib;
+using RimWorld;
+using UnityEngine;
+using Verse;
+
+namespace PortMobile
+{
+	/// <summary>
+	/// Two choices on the graphics page of the options, as the 1.6 port had them (tools/portmobile/FrameRate.cs and
+	/// Schedule.cs there), kept in mobile.txt as "frameRate=" and "schedule=".
+	///
+	/// Frame rate limit: 30, 60 or 90 frames a second. Fewer frames mean less heat, and a cooler phone keeps its
+	/// processor faster for the simulation. The engine holds the limit with its own timer (Application.targetFrameRate);
+	/// the compositor is told the rate, so that the display can run at it or at a multiple.
+	///
+	/// Performance: what gives way when the phone cannot keep up with both the frames and the game speed. The game's
+	/// tick loop (TickManager.TickManagerUpdate) ticks through the real time that passed since the last frame, but no
+	/// further than two caps allow: a number of ticks (the speed factor times 2: 12 at the third speed) and a stretch of
+	/// time (45 ms of ticking in one frame). What it could not tick through is dropped.
+	///   default   the game's own caps. The count cap is scaled with the frame rate limit: at 30 frames a second a frame
+	///             needs exactly the game's maximum, so every frame that is a little late would lose game time
+	///   frames    the frame rate limit is kept: ticks get the time a frame has left after everything else (drawing,
+	///             interface), at least one tick a frame; game time runs slower when that is little
+	///   ticks     the game speed is kept: the caps go up (8 times the speed factor, 150 ms), so that the ticks the real
+	///             time calls for are run, and the frames take as long as that takes
+	/// </summary>
+	internal static class FrameRate
+	{
+		[DllImport("glfw")] private static extern int glfwAndroidSetFrameRate(float framesPerSecond);
+		[DllImport("glfw")] private static extern float glfwAndroidDisplayRate();
+
+		private static int displayRate;
+		private static float displayAskedAt = -10f;
+
+		/// <summary>The display's refresh rate, asked at most once a second (0: not known).</summary>
+		private static int DisplayRate()
+		{
+			if (Time.realtimeSinceStartup - displayAskedAt > 1f)
+			{
+				displayAskedAt = Time.realtimeSinceStartup;
+				try
+				{
+					displayRate = Mathf.RoundToInt(glfwAndroidDisplayRate());
+				}
+				catch (Exception)
+				{
+					displayRate = 0;
+				}
+			}
+			return displayRate;
+		}
+
+		public static readonly int[] Choices = { 30, 60, 90 };
+		public const int Default = 0, Frames = 1, Ticks = 2;
+		private const float GameTimeCapMs = 45.454544f, TicksTimeCapMs = 150f;
+
+		private static int limit = Clamp(Settings.Get("frameRate", 60));
+		private static int schedule = Mathf.Clamp(Settings.Get("schedule", Default), Default, Ticks);
+		private static int told = -1, toldCountdown;
+
+		// The part of the last frame that was neither ticking nor idle (drawing, interface), smoothed. The frame's work
+		// ends with the interface's repaint; what follows until the next frame's ticks is the wait for the frame rate
+		// limit, which must not count: ticks may use it to catch up.
+		private static float otherMs, lastEnd = -1f, start, drawEnd = -1f;
+
+		private static int Clamp(int rate)
+		{
+			return rate <= 30 ? 30 : rate >= 90 ? 90 : 60;
+		}
+
+		/// <summary>What the game multiplies its speed factor with to get the most ticks it runs in one frame (2 in the game's code).</summary>
+		public static float TicksPerFrame => 2f * Mathf.Max(1f, 60f / limit) * (schedule == Ticks ? 4f : 1f);
+
+		/// <summary>Stands in for the game's 45 ms: how long one frame may spend ticking.</summary>
+		public static float TimeCapMs
+		{
+			get
+			{
+				switch (schedule)
+				{
+					case Frames: return Mathf.Clamp(1000f / limit - otherMs, 0f, GameTimeCapMs);
+					case Ticks: return TicksTimeCapMs;
+					default: return GameTimeCapMs;
+				}
+			}
+		}
+
+		public static void Start(Harmony harmony)
+		{
+			try
+			{
+				MethodInfo update = AccessTools.Method(typeof(TickManager), nameof(TickManager.TickManagerUpdate));
+				harmony.Patch(update, prefix: new HarmonyMethod(typeof(FrameRate), nameof(BeforeTicks)), postfix: new HarmonyMethod(typeof(FrameRate), nameof(AfterTicks)), transpiler: new HarmonyMethod(typeof(FrameRate), nameof(ScaleTickCaps)));
+				harmony.Patch(AccessTools.Method(typeof(Root), nameof(Root.Update)), postfix: new HarmonyMethod(typeof(FrameRate), nameof(EveryFrame)));
+				harmony.Patch(AccessTools.Method(typeof(Root), "OnGUI"), postfix: new HarmonyMethod(typeof(FrameRate), nameof(AfterGui)));
+				harmony.Patch(AccessTools.Method(typeof(Dialog_Options), "DoVideoOptions"), postfix: new HarmonyMethod(typeof(FrameRate), nameof(Options)));
+				Console.WriteLine("[mobile] frame rate limit " + limit + ", schedule " + schedule + " (options, graphics page)");
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] frame rate options not installed: " + e);
+			}
+		}
+
+		/// <summary>For measuring (perfcmd.txt): "frames=30", "schedule=1".</summary>
+		public static bool Set(string name, string value)
+		{
+			if (name == "frames") limit = Clamp(int.Parse(value));
+			else if (name == "schedule") schedule = Mathf.Clamp(int.Parse(value), Default, Ticks);
+			else return false;
+			return true;
+		}
+
+		public static string Describe()
+		{
+			return "frames=" + limit + " schedule=" + schedule;
+		}
+
+		/// <summary>Postfix of Root.Update. The game sets the target once at its start (to the display's rate); it is kept up here.</summary>
+		public static void EveryFrame()
+		{
+			if (Application.targetFrameRate != limit)
+			{
+				Application.targetFrameRate = limit;
+			}
+			// The window is made anew when the game comes back from the background, so the compositor is told again
+			// now and then (the shim only logs a change).
+			if (told != limit || --toldCountdown < 0)
+			{
+				told = limit;
+				toldCountdown = 600;
+				try
+				{
+					glfwAndroidSetFrameRate(limit);
+				}
+				catch (Exception)
+				{
+				}
+			}
+		}
+
+		public static void BeforeTicks()
+		{
+			start = Time.realtimeSinceStartup;
+			if (lastEnd >= 0f)
+			{
+				float workEnd = drawEnd > lastEnd && drawEnd <= start ? drawEnd : start;
+				float other = Mathf.Max(0f, (workEnd - lastEnd) * 1000f);
+				otherMs = otherMs <= 0f ? other : Mathf.Lerp(otherMs, other, 0.25f);
+			}
+		}
+
+		public static void AfterTicks()
+		{
+			lastEnd = Time.realtimeSinceStartup;
+		}
+
+		/// <summary>Postfix of Root.OnGUI: the repaint is the last work of a frame.</summary>
+		public static void AfterGui()
+		{
+			if (Event.current != null && Event.current.type == EventType.Repaint)
+			{
+				drawEnd = Time.realtimeSinceStartup;
+			}
+		}
+
+		/// <summary>
+		/// Transpiler of TickManager.TickManagerUpdate: "speed factor * 2" becomes "speed factor * TicksPerFrame", and the
+		/// 45 ms a frame may spend ticking becomes TimeCapMs.
+		/// </summary>
+		public static IEnumerable<CodeInstruction> ScaleTickCaps(IEnumerable<CodeInstruction> instructions)
+		{
+			bool count = false, time = false;
+			foreach (CodeInstruction instruction in instructions)
+			{
+				if (instruction.opcode == OpCodes.Ldc_R4 && instruction.operand is float value && (!count && value == 2f || !time && value > 45.4f && value < 45.5f))
+				{
+					MethodInfo getter;
+					if (value == 2f)
+					{
+						count = true;
+						getter = AccessTools.PropertyGetter(typeof(FrameRate), nameof(TicksPerFrame));
+					}
+					else
+					{
+						time = true;
+						getter = AccessTools.PropertyGetter(typeof(FrameRate), nameof(TimeCapMs));
+					}
+					var call = new CodeInstruction(OpCodes.Call, getter);
+					call.labels.AddRange(instruction.labels);
+					yield return call;
+				}
+				else
+				{
+					yield return instruction;
+				}
+			}
+			if (!count || !time)
+			{
+				Console.WriteLine("[mobile] frame rate: the tick loop looks different from what was expected (count cap " + (count ? "found" : "not found") + ", time cap " + (time ? "found" : "not found") + "); the performance setting may not work");
+			}
+		}
+
+		private static string Name(int mode)
+		{
+			switch (mode)
+			{
+				case Frames: return Texts.Chinese ? "帧率优先" : "Frame rate first";
+				case Ticks: return Texts.Chinese ? "游戏速度优先" : "Game speed first";
+				default: return Texts.Chinese ? "默认" : "Default";
+			}
+		}
+
+		private static string Explanation(int mode)
+		{
+			switch (mode)
+			{
+				case Frames:
+					return Texts.Chinese
+						? "跟不上时保住帧率上限：每帧只跑画面之外剩下的时间够跑的 tick（至少一个），游戏时间走得慢一些。"
+						: "When the phone cannot keep up, the frame rate limit is kept: a frame runs only the ticks the time left after drawing allows (at least one), and game time runs slower.";
+				case Ticks:
+					return Texts.Chinese
+						? "跟不上时保住游戏速度：一帧跑完该跑的 tick 再画，帧率跟着降（最低六帧左右）。"
+						: "When the phone cannot keep up, the game speed is kept: a frame runs all the ticks that are due before it is drawn, and the frame rate drops (to about six at the least).";
+				default:
+					return Texts.Chinese
+						? "游戏自己的规矩：一帧最多跑速度倍数的两倍个 tick、最多 45 毫秒；跟不上时帧率和游戏速度一起降。"
+						: "The game's own rule: at most twice the speed factor in ticks and 45 ms of them per frame; when the phone cannot keep up, both the frame rate and the game speed drop.";
+			}
+		}
+
+		/// <summary>Postfix of Dialog_Options.DoVideoOptions: the two rows, at the end of the graphics page.</summary>
+		public static void Options(Listing_Standard listing)
+		{
+			try
+			{
+				string unit = Texts.Chinese ? " 帧" : " fps";
+				if (listing.ButtonTextLabeledPct(Texts.Chinese ? "帧率上限" : "Frame rate limit", limit + unit, 0.6f, TextAnchor.MiddleLeft))
+				{
+					var choices = new List<FloatMenuOption>();
+					foreach (int choice in Choices)
+					{
+						int rate = choice;
+						choices.Add(new FloatMenuOption(rate + unit, delegate
+						{
+							limit = rate;
+							Settings.Set("frameRate", rate.ToString());
+						}));
+					}
+					Find.WindowStack.Add(new FloatMenu(choices));
+				}
+				int display = DisplayRate();
+				if (display > 0 && limit > display)
+				{
+					// The phone decides the display's rate (its display settings, its game mode); the game can only ask.
+					GUI.color = new Color(1f, 0.85f, 0.4f);
+					listing.Label(Texts.Chinese
+						? "屏幕现在是 " + display + " Hz，所以实际最多显示 " + display + " 帧（刷新率由手机系统的显示设置决定）。"
+						: "The screen is at " + display + " Hz now, so " + display + " is the most it shows (the phone's display settings decide the rate).");
+					GUI.color = Color.white;
+				}
+				if (listing.ButtonTextLabeledPct(Texts.Chinese ? "性能" : "Performance", Name(schedule), 0.6f, TextAnchor.MiddleLeft))
+				{
+					var choices = new List<FloatMenuOption>();
+					foreach (int mode in new[] { Default, Frames, Ticks })
+					{
+						int chosen = mode;
+						choices.Add(new FloatMenuOption(Name(chosen), delegate
+						{
+							schedule = chosen;
+							Settings.Set("schedule", chosen.ToString());
+						}));
+					}
+					Find.WindowStack.Add(new FloatMenu(choices));
+				}
+				GUI.color = new Color(0.75f, 0.75f, 0.75f);
+				Text.Font = GameFont.Tiny;
+				listing.Label(Explanation(schedule));
+				Text.Font = GameFont.Small;
+				GUI.color = Color.white;
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] frame rate options not drawn: " + e.Message);
+			}
+		}
+	}
+}

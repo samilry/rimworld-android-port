@@ -16,7 +16,7 @@ GAME=/data/media/0/Android/data/$PKG/files/game
 LABEL=$1; SECS=$2; shift 2
 now() { "$ADB" shell "date +%H:%M:%S" | tr -d '\r'; }
 # Everything that is not given goes back to the game's default, so that a step never inherits the one before.
-declare -A SET=([pin]=0 [clear]=0 [workers]=sys [render]=sys [batches]=0 [speed]=3 [hint]=0 [rate]=0)
+declare -A SET=([pin]=0 [clear]=0 [workers]=sys [render]=sys [batches]=8 [speed]=3 [hint]=0 [frames]=60 [schedule]=0)
 for kv in "$@"; do SET[${kv%%=*}]=${kv#*=}; done
 : > build/perfcmd.txt
 for k in "${!SET[@]}"; do echo "$k=${SET[$k]}" >> build/perfcmd.txt; done

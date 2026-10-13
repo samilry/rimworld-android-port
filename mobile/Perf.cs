@@ -219,7 +219,7 @@ namespace PortMobile
 				median * 1000f, high * 1000f, longestFrame * 1000.0,
 				mainCpu / seconds, mainCore, Clock(mainCore), renderCpu / seconds, renderCore, Clock(renderCore), processCpu / seconds,
 				GC.CollectionCount(0) - gen0AtStart, GC.CollectionCount(1) - gen1AtStart, GC.CollectionCount(2) - gen2AtStart,
-				(GC.GetTotalPauseDuration() - pauseAtStart).TotalMilliseconds, Sched.Describe(),
+				(GC.GetTotalPauseDuration() - pauseAtStart).TotalMilliseconds, FrameRate.Describe() + " " + Sched.Describe(),
 				(GC.GetTotalAllocatedBytes(false) - allocatedAtStart) / 1048576.0 / seconds, LastGen0Before() / 1048576.0, GC.GetGCMemoryInfo(GCKind.Ephemeral).PromotedBytes / 1048576.0));
 		}
 
@@ -352,7 +352,7 @@ namespace PortMobile
 							Find.TickManager.CurTimeSpeed = (TimeSpeed)speed;
 						}
 					}
-					else
+					else if (!FrameRate.Set(parts[0].Trim(), parts.Length == 2 ? parts[1].Trim() : "1"))
 					{
 						Sched.Set(parts[0].Trim(), parts.Length == 2 ? parts[1].Trim() : "1");
 					}

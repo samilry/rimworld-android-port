@@ -48,6 +48,31 @@ namespace PortMobile
 			return values.TryGetValue(key, out string v) && int.TryParse(v, out int n) ? n : fallback;
 		}
 
+		/// <summary>A setting chosen in the game: kept, and written to mobile.txt (its line replaced or added; the rest of the file stays).</summary>
+		public static void Set(string key, string value)
+		{
+			values[key] = value;
+			try
+			{
+				string path = System.IO.Path.Combine(AppContext.BaseDirectory, "mobile.txt");
+				var lines = new List<string>(File.Exists(path) ? File.ReadAllLines(path) : new string[0]);
+				int at = lines.FindIndex(l => !l.StartsWith("#") && l.IndexOf('=') > 0 && l.Substring(0, l.IndexOf('=')).Trim() == key);
+				if (at >= 0)
+				{
+					lines[at] = key + "=" + value;
+				}
+				else
+				{
+					lines.Add(key + "=" + value);
+				}
+				File.WriteAllLines(path, lines.ToArray());
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] mobile.txt not written: " + e.Message);
+			}
+		}
+
 		/// <summary>Buildings and drags are placed by a confirm button rather than by the finger lifting.</summary>
 		public static readonly bool PlaceConfirm = Get("placeConfirm", true);
 	}

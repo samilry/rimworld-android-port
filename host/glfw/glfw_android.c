@@ -724,9 +724,50 @@ API int glfwAndroidSetFrameRate(float framesPerSecond)
     void* lib = dlopen("libandroid.so", RTLD_NOW);
     int32_t (*setFrameRate)(ANativeWindow*, float, int8_t) = lib ? (int32_t (*)(ANativeWindow*, float, int8_t))dlsym(lib, "ANativeWindow_setFrameRate") : NULL;
     if (!window || !setFrameRate) return 0;
+    static float last = -1.0f;
     int32_t r = setFrameRate(window, framesPerSecond, 0);
-    LOGI("glfw: frame rate %.0f told to the compositor: %d", framesPerSecond, (int)r);
+    if (framesPerSecond != last) LOGI("glfw: frame rate %.0f told to the compositor: %d", framesPerSecond, (int)r);
+    last = framesPerSecond;
     return r == 0;
+}
+
+// The display's refresh rate at the moment (Display.getRefreshRate through the activity), 0 when it cannot be asked.
+API float glfwAndroidDisplayRate(void)
+{
+    if (!g_app || !g_app->activity || !g_app->activity->vm) return 0.0f;
+    JavaVM* vm = g_app->activity->vm;
+    JNIEnv* env = NULL;
+    int attached = 0;
+    if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK)
+    {
+        if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return 0.0f;
+        attached = 1;
+    }
+    float rate = 0.0f;
+    jobject activity = g_app->activity->clazz;
+    jclass cls = (*env)->GetObjectClass(env, activity);
+    jmethodID getManager = (*env)->GetMethodID(env, cls, "getWindowManager", "()Landroid/view/WindowManager;");
+    jobject manager = getManager ? (*env)->CallObjectMethod(env, activity, getManager) : NULL;
+    if (manager)
+    {
+        jclass managerClass = (*env)->GetObjectClass(env, manager);
+        jmethodID getDisplay = (*env)->GetMethodID(env, managerClass, "getDefaultDisplay", "()Landroid/view/Display;");
+        jobject display = getDisplay ? (*env)->CallObjectMethod(env, manager, getDisplay) : NULL;
+        if (display)
+        {
+            jclass displayClass = (*env)->GetObjectClass(env, display);
+            jmethodID getRate = (*env)->GetMethodID(env, displayClass, "getRefreshRate", "()F");
+            if (getRate) rate = (*env)->CallFloatMethod(env, display, getRate);
+            (*env)->DeleteLocalRef(env, displayClass);
+            (*env)->DeleteLocalRef(env, display);
+        }
+        (*env)->DeleteLocalRef(env, managerClass);
+        (*env)->DeleteLocalRef(env, manager);
+    }
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); rate = 0.0f; }
+    (*env)->DeleteLocalRef(env, cls);
+    if (attached) (*vm)->DetachCurrentThread(vm);
+    return rate;
 }
 
 // ---- text from the soft keyboard (TextInputView, JNI) ----
