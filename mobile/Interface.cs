@@ -87,7 +87,7 @@ namespace PortMobile
 			}
 		}
 
-		public static bool FingerDown => Touch.FingerCount > 0;
+		public static bool FingerDown => Touch.TouchInProgress;
 
 		// ---- scrolling ----
 

@@ -96,6 +96,9 @@ namespace PortMobile
 
 		public static int FingerCount => fingers.Count;
 
+		/// <summary>A touch is being delivered to the game: a finger is down, or the press of a finger that already lifted (a quick tap) is still on its way.</summary>
+		public static bool TouchInProgress => fingers.Count > 0 || leftDown;
+
 		public static void Start()
 		{
 			density = glfwAndroidGetDensity();
@@ -105,6 +108,7 @@ namespace PortMobile
 			glfwAndroidSetTouchMode(1);
 			Diag.Start(harmony);
 			Interface.Start(harmony);
+			MapTools.Start(harmony);
 			DiagFloatMenu.Start(harmony);
 			Log("touch layer on (density " + density.ToString("F2") + ", drag threshold " + DragThreshold.ToString("F0") + " px)");
 		}
@@ -222,6 +226,7 @@ namespace PortMobile
 			}
 			Replay.Feed();
 			Interface.Update();
+			MapTools.Update();
 			bool changed = Drain();
 			int count = fingers.Count;
 			if (count == 0)
@@ -336,6 +341,16 @@ namespace PortMobile
 					KeepBoxOff();
 					Pan(delta);
 					break;
+				case Mode.Tool:
+					if (MapTools.Deferred && moved)
+					{
+						// Looking for the place rather than pointing at it: the held-back press is dropped and the finger pans.
+						MapTools.CancelDeferred();
+						mode = Mode.Pan;
+						KeepBoxOff();
+						Pan(first.pos - first.start);
+					}
+					break;
 				case Mode.Interface:
 					if (held && !moved && !DragAndDropWidget.Dragging && !ReorderableWidget.Dragging && !Widgets.Painting)
 					{
@@ -418,6 +433,7 @@ namespace PortMobile
 		private static void CancelWhatTheFirstFingerStarted()
 		{
 			KeepBoxOff();
+			MapTools.CancelDeferred();
 			if (Playing && Find.DesignatorManager != null && Find.DesignatorManager.Dragger.Dragging)
 			{
 				Find.DesignatorManager.Dragger.EndDrag();
