@@ -83,6 +83,26 @@ namespace PortHooks
 
 		/// <summary>POSIX signal registration is not supported by the runtime on Android; the engine keeps the registrations as nullable and never needs them here.</summary>
 		/// <summary>Stands in for SteamManager.Initialized inside UIRoot_Entry.Init only: without it the main menu opens a "Could not initialize Steam API" box on every start (there is no Steam client on the phone). Everything else still sees Steam as absent.</summary>
+		/// <summary>Called at the start of UIRoot_Entry.Init (patch/Patch.cs inserts the call): the game is fully loaded, the phone side (PortMobile.dll next to the game) starts here.</summary>
+		public static void OnEntryUIInit()
+		{
+			try
+			{
+				string path = Path.Combine(AppContext.BaseDirectory, "PortMobile.dll");
+				if (!File.Exists(path))
+				{
+					Console.WriteLine("[port17] no PortMobile.dll next to the game; running without the phone layer");
+					return;
+				}
+				Assembly mobile = AssemblyLoadContext.Default.LoadFromAssemblyPath(path);
+				mobile.GetType("PortMobile.Entry").GetMethod("Start").Invoke(null, null);
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[port17] the phone layer failed to start: " + e);
+			}
+		}
+
 		public static bool SteamInitializedForMenu()
 		{
 			return true;

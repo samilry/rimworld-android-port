@@ -45,6 +45,19 @@ internal static class Patch
 		},
 	};
 
+	// Methods whose body becomes "return null": MonoMod's native exception helper (a trampoline library it drops under /tmp,
+	// which does not exist here) is optional, its users check for null.
+	private static readonly HashSet<string> NullBodies = new HashSet<string>
+	{
+		"MonoMod.Core.Platforms.INativeExceptionHelper MonoMod.Core.Platforms.Systems.LinuxSystem::get_NativeExceptionHelper()",
+	};
+
+	// Calls inserted at the start of a method: method full name -> PortPlatform method (static, no arguments, void).
+	private static readonly Dictionary<string, string> EntryCalls = new Dictionary<string, string>
+	{
+		["System.Void Verse.UIRoot_Entry::Init()"] = "OnEntryUIInit",
+	};
+
 	// String literals to replace wherever they appear (ldstr): the launcher looks for fallback fonts (CJK, symbols) at
 	// Linux paths; these are the phone's.
 	private static readonly Dictionary<string, string> StringRewrites = new Dictionary<string, string>
@@ -56,6 +69,8 @@ internal static class Patch
 		["/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"] = "/system/fonts/NotoSansCJK-Regular.ttc",
 		["/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"] = "/system/fonts/DroidSansFallback.ttf",
 		["/usr/share/fonts/noto/NotoSansThai-Regular.ttf"] = "/system/fonts/NotoSansThai-Regular.ttf",
+		// MonoMod (inside 0Harmony.dll) calls the phone "Android" when this file exists and then has no system support for it; as "Linux" its LinuxSystem works here (bionic has the same mmap/mprotect, arm64 ABI is implemented).
+		["/system/build.prop"] = "/system/build.prop.treated-as-linux",
 	};
 
 	private static int Main(string[] args)
@@ -98,9 +113,43 @@ internal static class Patch
 				{
 					foreach (MethodDefinition method in type.Methods)
 					{
+						// MonoMod's P/Invokes into glibc (libc, libdl.so.2) go to the bionic shim libmonomodc.so (native/monomodc), prefixed mm_.
+						if (name == "0Harmony.dll" && method.HasPInvokeInfo && (method.PInvokeInfo.Module.Name == "libc" || method.PInvokeInfo.Module.Name == "libdl.so.2"))
+						{
+							ModuleReference shim = module.ModuleReferences.FirstOrDefault(m => m.Name == "monomodc");
+							if (shim == null)
+							{
+								module.ModuleReferences.Add(shim = new ModuleReference("monomodc"));
+							}
+							method.PInvokeInfo.EntryPoint = "mm_" + (string.IsNullOrEmpty(method.PInvokeInfo.EntryPoint) ? method.Name : method.PInvokeInfo.EntryPoint);
+							method.PInvokeInfo.Module = shim;
+							changes++;
+						}
 						if (!method.HasBody)
 						{
 							continue;
+						}
+						if (NullBodies.Contains(method.FullName) && !(method.Body.Instructions.Count == 2 && method.Body.Instructions[0].OpCode == OpCodes.Ldnull))
+						{
+							method.Body.Instructions.Clear();
+							method.Body.ExceptionHandlers.Clear();
+							method.Body.Variables.Clear();
+							method.Body.Instructions.Add(Instruction.Create(OpCodes.Ldnull));
+							method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+							changes++;
+						}
+						if (EntryCalls.TryGetValue(method.FullName, out string entryCall))
+						{
+							if (!imported.TryGetValue(entryCall, out MethodReference entry))
+							{
+								imported[entryCall] = entry = Import(module, resolver, entryCall);
+							}
+							Instruction first = method.Body.Instructions[0];
+							if (!(first.OpCode == OpCodes.Call && first.Operand is MethodReference already && already.FullName == entry.FullName))
+							{
+								method.Body.GetILProcessor().InsertBefore(first, Instruction.Create(OpCodes.Call, entry));
+								changes++;
+							}
 						}
 						foreach (Instruction i in method.Body.Instructions)
 						{

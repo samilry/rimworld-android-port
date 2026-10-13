@@ -1,11 +1,12 @@
 #!/bin/bash
 # Builds the engine's native libraries for arm64 Android from upstream sources (downloads/src, see README):
-#   libvma.so            Vulkan Memory Allocator 3.3.0 (native/vma)
+#   libusage: native/build.sh [all|vma|stb|gli|imgui|freetype|slang|monomodc].so            Vulkan Memory Allocator 3.3.0 (native/vma)
 #   libstb.so            stb_image + stb_image_write (native/stb)
 #   libgli.so            the gli C API (native/gli, gli + glm)
 #   libimgui.so          Dear ImGui 1.92.2 docking + the generated flat C API (native/imgui)
 #   libimgui_freetype.so ImGui's FreeType loader with FreeType 2.13.3 inside (native/imgui_freetype)
 #   libslang.so          stand-in for the Slang compiler (native/slang)
+#   libmonomodc.so       MonoMod's glibc P/Invokes for bionic (native/monomodc), used by the patched 0Harmony.dll
 # usage: native/build.sh [all|vma|stb|gli|imgui|freetype|slang]   (output: build/native/lib/*.so)
 set -e
 cd "$(dirname "$0")/.."
@@ -41,6 +42,11 @@ fi
 if want gli; then
   echo "== gli"
   "$CXX" $TARGET $CXXFLAGS -shared -I "$SRC/gli-master" -I "$SRC/glm-1.0.1" -DGLM_ENABLE_EXPERIMENTAL -DGLM_FORCE_SILENT_WARNINGS -o "$LIB/libgli.so" native/gli/gli_c.cpp
+fi
+
+if want monomodc; then
+  echo "== monomodc (MonoMod's libc/libdl P/Invokes on bionic)"
+  "$CC" $TARGET -O2 -fPIC -shared -fvisibility=hidden -Wall -o "$LIB/libmonomodc.so" native/monomodc/monomodc.c -llog -ldl
 fi
 
 if want slang; then
