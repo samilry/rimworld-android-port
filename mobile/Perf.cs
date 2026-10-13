@@ -15,7 +15,8 @@ namespace PortMobile
 	/// Measuring for the scheduling work, on when perftest.txt lies next to the game. Its lines:
 	///     load NAME       from the main menu, load this saved game (a test save made with spawntest.txt's "save NAME")
 	///     speed N         once the map is there: game speed 0..4 (3 is the triple speed players run at)
-	///     camera SIZE     the camera to the middle of the map at this zoom (the same picture every run)
+	///     camera SIZE     the camera to the middle of the map at this zoom (the same picture every run);
+	///                     "camera SIZE X Z": to that cell
 	///     interval N      seconds between report lines (5)
 	/// Every interval one line goes to the log: frames and ticks per second, the longest frame, how busy the main and
 	/// the render thread were and on which cores at what clock, collections and their pauses. perfcmd.txt beside it is
@@ -30,6 +31,7 @@ namespace PortMobile
 		private static string loadName;
 		private static int speed = -1;
 		private static float cameraSize = -1f;
+		private static int cameraX = -1, cameraZ = -1;
 		private static double interval = 5.0;
 
 		private static readonly Stopwatch clock = Stopwatch.StartNew();
@@ -71,7 +73,14 @@ namespace PortMobile
 					{
 						case "load": loadName = parts[1]; break;
 						case "speed": speed = int.Parse(parts[1]); break;
-						case "camera": cameraSize = float.Parse(parts[1], CultureInfo.InvariantCulture); break;
+						case "camera":
+							cameraSize = float.Parse(parts[1], CultureInfo.InvariantCulture);
+							if (parts.Length >= 4)
+							{
+								cameraX = int.Parse(parts[2]);
+								cameraZ = int.Parse(parts[3]);
+							}
+							break;
 						case "interval": interval = Math.Max(1.0, double.Parse(parts[1], CultureInfo.InvariantCulture)); break;
 					}
 				}
@@ -161,7 +170,7 @@ namespace PortMobile
 				Map map = Find.CurrentMap;
 				if (cameraSize > 0)
 				{
-					Find.CameraDriver.SetRootPosAndSize(map.Center.ToVector3Shifted(), cameraSize);
+					Find.CameraDriver.SetRootPosAndSize((cameraX >= 0 ? new IntVec3(cameraX, 0, cameraZ) : map.Center).ToVector3Shifted(), cameraSize);
 				}
 				// No raids, traders or breakdowns while measuring: every run of the scene should do the same work.
 				DebugSettings.enableStoryteller = false;
