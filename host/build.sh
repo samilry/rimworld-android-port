@@ -19,7 +19,6 @@ mkdir -p "$LIB"
 
 "$CLANG" $TARGET -shared -fPIC -O2 -Wall -Wno-unused-function -I host -o "$LIB/libporthost.so" host/host.c host/android_native_app_glue.c -llog -landroid -ldl -Wl,-u,ANativeActivity_onCreate
 "$CLANG" $TARGET -shared -fPIC -O2 -o "$LIB/libsteam_api64.so" host/stubs/steam_api64.c
-"$CLANG" $TARGET -shared -fPIC -O2 -o "$LIB/libwaylithaudio.so" host/stubs/waylithaudio.c
 # The Android GLFW (window, input, Vulkan surface), bound by the engine as libglfw.so.
 "$CLANG" $TARGET -shared -fPIC -O2 -Wall -Wno-unused-function -I host -o "$LIB/libglfw.so" host/glfw/glfw_android.c -landroid -llog -ldl
 # The Vulkan interposer (identity surface transform, swapchain and present logging), found before the system loader.
