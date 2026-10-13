@@ -1,0 +1,368 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Runtime.InteropServices;
+using HarmonyLib;
+using RimWorld;
+using UnityEngine;
+using Verse;
+
+namespace PortMobile
+{
+	/// <summary>
+	/// Measuring for the scheduling work, on when perftest.txt lies next to the game. Its lines:
+	///     load NAME       from the main menu, load this saved game (a test save made with spawntest.txt's "save NAME")
+	///     speed N         once the map is there: game speed 0..4 (3 is the triple speed players run at)
+	///     camera SIZE     the camera to the middle of the map at this zoom (the same picture every run)
+	///     interval N      seconds between report lines (5)
+	/// Every interval one line goes to the log: frames and ticks per second, the longest frame, how busy the main and
+	/// the render thread were and on which cores at what clock, collections and their pauses. perfcmd.txt beside it is
+	/// read at every interval and handed to Sched (settings that can be switched while the game runs, for comparing
+	/// back to back: the phone's clock limit moves with its temperature, so two runs minutes apart do not compare).
+	/// </summary>
+	internal static class Perf
+	{
+		[DllImport("libc")] private static extern int gettid();
+
+		private static bool active;
+		private static string loadName;
+		private static int speed = -1;
+		private static float cameraSize = -1f;
+		private static double interval = 5.0;
+
+		private static readonly Stopwatch clock = Stopwatch.StartNew();
+		private static double windowStart;
+		private static int frames;
+		private static int ticksAtStart = -1;
+		private static double lastFrameAt, longestFrame;
+		private static readonly List<float> frameTimes = new List<float>(4096);
+		private static int mainTid, renderTid;
+		private static long mainCpuAtStart, renderCpuAtStart, processCpuAtStart;
+		private static int gen0AtStart, gen1AtStart, gen2AtStart;
+		private static TimeSpan pauseAtStart;
+		private static long allocatedAtStart;
+		private static double sceneReadyAt = -1;
+		private static bool sceneApplied;
+		private static DateTime commandsRead;
+
+		public static void Start(Harmony harmony)
+		{
+			string file = Path.Combine(AppContext.BaseDirectory, "perftest.txt");
+			if (!File.Exists(file))
+			{
+				return;
+			}
+			try
+			{
+				foreach (string raw in File.ReadAllLines(file))
+				{
+					string[] parts = raw.Trim().Split(new[] { ' ', '\t', '=' }, StringSplitOptions.RemoveEmptyEntries);
+					if (parts.Length < 2 || parts[0][0] == '#')
+					{
+						continue;
+					}
+					switch (parts[0])
+					{
+						case "load": loadName = parts[1]; break;
+						case "speed": speed = int.Parse(parts[1]); break;
+						case "camera": cameraSize = float.Parse(parts[1], CultureInfo.InvariantCulture); break;
+						case "interval": interval = Math.Max(1.0, double.Parse(parts[1], CultureInfo.InvariantCulture)); break;
+					}
+				}
+				harmony.Patch(AccessTools.Method(typeof(Root), nameof(Root.Update)), postfix: new HarmonyMethod(typeof(Perf), nameof(AfterUpdate)));
+				harmony.Patch(AccessTools.Method(typeof(Game), nameof(Game.FinalizeInit)), postfix: new HarmonyMethod(typeof(Perf), nameof(AfterGameInit)));
+				active = true;
+				Console.WriteLine("[mobile] perf: measuring every " + interval + " s" + (loadName != null ? ", loading '" + loadName + "'" : "") + (speed >= 0 ? ", speed " + speed : "") + (cameraSize > 0 ? ", camera " + cameraSize : ""));
+				if (loadName != null)
+				{
+					LongEventHandler.ExecuteWhenFinished(delegate
+					{
+						if (Current.ProgramState == ProgramState.Entry)
+						{
+							Console.WriteLine("[mobile] perf: loading the saved game " + loadName);
+							GameDataSaveLoader.LoadGame(loadName);
+						}
+					});
+				}
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] perf not installed: " + e);
+			}
+		}
+
+		public static void AfterGameInit()
+		{
+			sceneApplied = false;
+			sceneReadyAt = -1;
+			LongEventHandler.ExecuteWhenFinished(delegate { sceneReadyAt = clock.Elapsed.TotalSeconds + 3.0; });
+		}
+
+		/// <summary>Postfix of Root.Update: once per frame, on the main thread.</summary>
+		public static void AfterUpdate()
+		{
+			if (!active)
+			{
+				return;
+			}
+			double now = clock.Elapsed.TotalSeconds;
+			if (mainTid == 0)
+			{
+				mainTid = gettid();
+				Sched.MainThreadId = mainTid;
+				BeginWindow(now);
+				lastFrameAt = now;
+				return;
+			}
+			Sched.OnFrame();
+			double frame = now - lastFrameAt;
+			lastFrameAt = now;
+			frames++;
+			if (frame > longestFrame)
+			{
+				longestFrame = frame;
+			}
+			if (frameTimes.Count < 4096)
+			{
+				frameTimes.Add((float)frame);
+			}
+			if (!sceneApplied && sceneReadyAt > 0 && now >= sceneReadyAt && Current.ProgramState == ProgramState.Playing && Find.CurrentMap != null)
+			{
+				sceneApplied = true;
+				ApplyScene();
+				BeginWindow(now);
+				return;
+			}
+			if (now - windowStart >= interval)
+			{
+				Report(now);
+				ReadCommands();
+				// The game pauses itself for letters and threats; the scene is for measuring at a set speed.
+				if (sceneApplied && speed > 0 && Current.ProgramState == ProgramState.Playing && Find.TickManager != null && (Find.TickManager.Paused || (int)Find.TickManager.CurTimeSpeed != speed))
+				{
+					Find.TickManager.CurTimeSpeed = (TimeSpeed)speed;
+				}
+				BeginWindow(clock.Elapsed.TotalSeconds);
+			}
+		}
+
+		private static void ApplyScene()
+		{
+			try
+			{
+				Map map = Find.CurrentMap;
+				if (cameraSize > 0)
+				{
+					Find.CameraDriver.SetRootPosAndSize(map.Center.ToVector3Shifted(), cameraSize);
+				}
+				// No raids, traders or breakdowns while measuring: every run of the scene should do the same work.
+				DebugSettings.enableStoryteller = false;
+				DebugSettings.enableRandomMentalStates = false;
+				if (speed >= 0)
+				{
+					Find.TickManager.CurTimeSpeed = (TimeSpeed)speed;
+				}
+				Console.WriteLine("[mobile] perf: scene set (map " + map.Size.x + "x" + map.Size.z + ", " + map.mapPawns.AllPawnsSpawnedCount + " pawns spawned, " + map.mapPawns.FreeColonistsSpawnedCount + " colonists, speed " + Find.TickManager.CurTimeSpeed + ")");
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] perf: scene not set: " + e.Message);
+			}
+		}
+
+		private static void BeginWindow(double now)
+		{
+			windowStart = now;
+			frames = 0;
+			longestFrame = 0;
+			frameTimes.Clear();
+			ticksAtStart = Current.ProgramState == ProgramState.Playing && Find.TickManager != null ? Find.TickManager.TicksGame : -1;
+			if (renderTid == 0)
+			{
+				renderTid = FindThread("RenderThread");
+			}
+			mainCpuAtStart = ThreadCpu(mainTid, out _);
+			renderCpuAtStart = renderTid != 0 ? ThreadCpu(renderTid, out _) : 0;
+			processCpuAtStart = ProcessCpu();
+			gen0AtStart = GC.CollectionCount(0);
+			gen1AtStart = GC.CollectionCount(1);
+			gen2AtStart = GC.CollectionCount(2);
+			pauseAtStart = GC.GetTotalPauseDuration();
+			allocatedAtStart = GC.GetTotalAllocatedBytes(false);
+		}
+
+		private static void Report(double now)
+		{
+			double seconds = now - windowStart;
+			int ticks = -1;
+			string speedText = "menu";
+			if (Current.ProgramState == ProgramState.Playing && Find.TickManager != null)
+			{
+				if (ticksAtStart >= 0)
+				{
+					ticks = Find.TickManager.TicksGame - ticksAtStart;
+				}
+				speedText = Find.TickManager.Paused ? "paused" : Find.TickManager.CurTimeSpeed.ToString();
+			}
+			frameTimes.Sort();
+			float median = frameTimes.Count > 0 ? frameTimes[frameTimes.Count / 2] : 0f;
+			float high = frameTimes.Count > 0 ? frameTimes[Math.Min(frameTimes.Count - 1, (int)(frameTimes.Count * 0.99))] : 0f;
+			long mainCpu = ThreadCpu(mainTid, out int mainCore) - mainCpuAtStart;
+			int renderCore = -1;
+			long renderCpu = renderTid != 0 ? ThreadCpu(renderTid, out renderCore) - renderCpuAtStart : 0;
+			long processCpu = ProcessCpu() - processCpuAtStart;
+			Console.WriteLine(string.Format(CultureInfo.InvariantCulture,
+				"[mobile] perf: {0:F1} fps, {1} tps ({2}), frame median {3:F1} ms, 99% {4:F1}, longest {5:F0}; main {6:F0}% on cpu{7} at {8}, render {9:F0}% on cpu{10} at {11}, process {12:F0}%; gc {13}/{14}/{15} pause {16:F0} ms, alloc {18:F1} MB/s, gen0 at last gc {19:F2} MB, promoted {20:F2} MB; {17}",
+				frames / seconds, ticks >= 0 ? (ticks / seconds).ToString("F0", CultureInfo.InvariantCulture) : "-", speedText,
+				median * 1000f, high * 1000f, longestFrame * 1000.0,
+				mainCpu / seconds, mainCore, Clock(mainCore), renderCpu / seconds, renderCore, Clock(renderCore), processCpu / seconds,
+				GC.CollectionCount(0) - gen0AtStart, GC.CollectionCount(1) - gen1AtStart, GC.CollectionCount(2) - gen2AtStart,
+				(GC.GetTotalPauseDuration() - pauseAtStart).TotalMilliseconds, Sched.Describe(),
+				(GC.GetTotalAllocatedBytes(false) - allocatedAtStart) / 1048576.0 / seconds, LastGen0Before() / 1048576.0, GC.GetGCMemoryInfo(GCKind.Ephemeral).PromotedBytes / 1048576.0));
+		}
+
+		private static long LastGen0Before()
+		{
+			try
+			{
+				ReadOnlySpan<GCGenerationInfo> generations = GC.GetGCMemoryInfo(GCKind.Ephemeral).GenerationInfo;
+				return generations.Length > 0 ? generations[0].SizeBeforeBytes : 0;
+			}
+			catch (Exception)
+			{
+				return 0;
+			}
+		}
+
+		/// <summary>The clock of a core and the limit the phone holds it to at the moment, in MHz ("2534/3014").</summary>
+		private static string Clock(int core)
+		{
+			if (core < 0)
+			{
+				return "?";
+			}
+			try
+			{
+				string dir = "/sys/devices/system/cpu/cpu" + core + "/cpufreq/";
+				return int.Parse(File.ReadAllText(dir + "scaling_cur_freq").Trim()) / 1000 + "/" + int.Parse(File.ReadAllText(dir + "scaling_max_freq").Trim()) / 1000;
+			}
+			catch (Exception)
+			{
+				return "?";
+			}
+		}
+
+		/// <summary>CPU time of a thread of this process in clock ticks (10 ms), and the core it last ran on.</summary>
+		internal static long ThreadCpu(int tid, out int core)
+		{
+			core = -1;
+			try
+			{
+				string stat = File.ReadAllText("/proc/self/task/" + tid + "/stat");
+				string[] fields = stat.Substring(stat.LastIndexOf(')') + 2).Split(' ');
+				core = int.Parse(fields[36]);
+				return long.Parse(fields[11]) + long.Parse(fields[12]);
+			}
+			catch (Exception)
+			{
+				return 0;
+			}
+		}
+
+		/// <summary>CPU time of the whole process in clock ticks (10 ms).</summary>
+		private static long ProcessCpu()
+		{
+			try
+			{
+				string stat = File.ReadAllText("/proc/self/stat");
+				string[] fields = stat.Substring(stat.LastIndexOf(')') + 2).Split(' ');
+				return long.Parse(fields[11]) + long.Parse(fields[12]);
+			}
+			catch (Exception)
+			{
+				return 0;
+			}
+		}
+
+		/// <summary>The thread of that name that has used the most CPU time (the system has threads of its own with the same names).</summary>
+		internal static int FindThread(string name)
+		{
+			int best = 0;
+			long bestCpu = -1;
+			try
+			{
+				foreach (string dir in Directory.GetDirectories("/proc/self/task"))
+				{
+					string comm = File.ReadAllText(dir + "/comm").Trim();
+					if (comm != name)
+					{
+						continue;
+					}
+					int tid = int.Parse(Path.GetFileName(dir));
+					long cpu = ThreadCpu(tid, out _);
+					if (cpu > bestCpu)
+					{
+						bestCpu = cpu;
+						best = tid;
+					}
+				}
+			}
+			catch (Exception)
+			{
+			}
+			return best;
+		}
+
+		private static void ReadCommands()
+		{
+			try
+			{
+				string file = Path.Combine(AppContext.BaseDirectory, "perfcmd.txt");
+				if (!File.Exists(file))
+				{
+					return;
+				}
+				DateTime written = File.GetLastWriteTimeUtc(file);
+				if (written == commandsRead)
+				{
+					return;
+				}
+				commandsRead = written;
+				foreach (string raw in File.ReadAllLines(file))
+				{
+					string line = raw.Trim();
+					if (line.Length == 0 || line[0] == '#')
+					{
+						continue;
+					}
+					string[] parts = line.Split(new[] { '=' }, 2);
+					if (parts[0] == "reload" && loadName != null)
+					{
+						// The scene from its start again: at triple speed a game day passes in three minutes, and a colony asleep is not the colony at work.
+						Console.WriteLine("[mobile] perf: loading the saved game " + loadName + " again");
+						GameDataSaveLoader.LoadGame(loadName);
+					}
+					else if (parts[0] == "speed" && parts.Length == 2)
+					{
+						speed = int.Parse(parts[1]);
+						if (Current.ProgramState == ProgramState.Playing)
+						{
+							Find.TickManager.CurTimeSpeed = (TimeSpeed)speed;
+						}
+					}
+					else
+					{
+						Sched.Set(parts[0].Trim(), parts.Length == 2 ? parts[1].Trim() : "1");
+					}
+				}
+				Console.WriteLine("[mobile] perf: commands read: " + Sched.Describe());
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] perf: commands not read: " + e.Message);
+			}
+		}
+	}
+}

@@ -21,6 +21,7 @@ namespace PortMobile
 	{
 		private static string[] filters = new string[0];
 		private static int each = 1;
+		private static string saveAs;
 
 		public static void Start(Harmony harmony)
 		{
@@ -39,7 +40,12 @@ namespace PortMobile
 					{
 						continue;
 					}
-					if (int.TryParse(line, out int n))
+					if (line.StartsWith("save ", StringComparison.OrdinalIgnoreCase))
+					{
+						// "save NAME": the game with the pawns in it is saved under this name (a scene for mobile/Perf.cs to load).
+						saveAs = line.Substring(5).Trim();
+					}
+					else if (int.TryParse(line, out int n))
 					{
 						each = Math.Max(1, Math.Min(20, n));
 					}
@@ -166,6 +172,18 @@ namespace PortMobile
 				}
 			}
 			Console.WriteLine("[mobile] spawn test: " + made + " pawns placed, " + failed + " failed");
+			if (!string.IsNullOrEmpty(saveAs))
+			{
+				try
+				{
+					GameDataSaveLoader.SaveGame(saveAs);
+					Console.WriteLine("[mobile] spawn test: saved as " + saveAs);
+				}
+				catch (Exception e)
+				{
+					Console.WriteLine("[mobile] spawn test: not saved: " + e);
+				}
+			}
 			try
 			{
 				Find.CameraDriver.SetRootPosAndSize(center.ToVector3Shifted(), 16f);

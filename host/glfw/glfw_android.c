@@ -674,6 +674,61 @@ API int glfwAndroidRestart(void)
     return call_activity("restartGame", 1);
 }
 
+// ---- Android's performance hints and frame rate (for mobile/Sched.cs) ----
+// A hint session tells the system which threads make a frame, how long a frame may take and how long it took, for the
+// frequency governor to act on. The functions are in libandroid.so from Android 13; found at run time.
+static void* g_hintSession;
+static int (*g_hintReport)(void*, int64_t);
+static int (*g_hintUpdateTarget)(void*, int64_t);
+static void (*g_hintClose)(void*);
+
+// Opens (target > 0) or closes (target <= 0) a session for the two threads. Returns 1 when a session is open.
+API int glfwAndroidPerfHint(int mainTid, int renderTid, int64_t targetNanos)
+{
+    if (g_hintSession)
+    {
+        if (targetNanos > 0 && g_hintUpdateTarget) { g_hintUpdateTarget(g_hintSession, targetNanos); return 1; }
+        if (g_hintClose) g_hintClose(g_hintSession);
+        g_hintSession = NULL;
+        LOGI("glfw: performance hint session closed");
+    }
+    if (targetNanos <= 0) return 0;
+    void* lib = dlopen("libandroid.so", RTLD_NOW);
+    void* (*getManager)(void) = lib ? (void* (*)(void))dlsym(lib, "APerformanceHint_getManager") : NULL;
+    void* (*createSession)(void*, const int32_t*, size_t, int64_t) = lib ? (void* (*)(void*, const int32_t*, size_t, int64_t))dlsym(lib, "APerformanceHint_createSession") : NULL;
+    g_hintReport = lib ? (int (*)(void*, int64_t))dlsym(lib, "APerformanceHint_reportActualWorkDuration") : NULL;
+    g_hintUpdateTarget = lib ? (int (*)(void*, int64_t))dlsym(lib, "APerformanceHint_updateTargetWorkDuration") : NULL;
+    g_hintClose = lib ? (void (*)(void*))dlsym(lib, "APerformanceHint_closeSession") : NULL;
+    void* manager = getManager ? getManager() : NULL;
+    if (!manager || !createSession || !g_hintReport)
+    {
+        LOGI("glfw: no performance hint manager on this system");
+        return 0;
+    }
+    int32_t tids[2] = { mainTid, renderTid };
+    g_hintSession = createSession(manager, tids, renderTid > 0 ? 2 : 1, targetNanos);
+    LOGI("glfw: performance hint session for threads %d and %d, target %lld ns: %s", mainTid, renderTid, (long long)targetNanos, g_hintSession ? "open" : "refused");
+    return g_hintSession != NULL;
+}
+
+API void glfwAndroidPerfReport(int64_t actualNanos)
+{
+    if (g_hintSession && g_hintReport && actualNanos > 0) g_hintReport(g_hintSession, actualNanos);
+}
+
+// The frame rate the game means to draw at, told to the compositor (ANativeWindow_setFrameRate, Android 11): the
+// display may then run at a multiple of it, and the phone's game service hears of it. 0 takes the vote back.
+API int glfwAndroidSetFrameRate(float framesPerSecond)
+{
+    ANativeWindow* window = g_window;
+    void* lib = dlopen("libandroid.so", RTLD_NOW);
+    int32_t (*setFrameRate)(ANativeWindow*, float, int8_t) = lib ? (int32_t (*)(ANativeWindow*, float, int8_t))dlsym(lib, "ANativeWindow_setFrameRate") : NULL;
+    if (!window || !setFrameRate) return 0;
+    int32_t r = setFrameRate(window, framesPerSecond, 0);
+    LOGI("glfw: frame rate %.0f told to the compositor: %d", framesPerSecond, (int)r);
+    return r == 0;
+}
+
 // ---- text from the soft keyboard (TextInputView, JNI) ----
 JNIEXPORT void JNICALL Java_com_local_waylith_port_TextInputView_nativeCommit(JNIEnv* env, jclass cls, jstring text)
 {

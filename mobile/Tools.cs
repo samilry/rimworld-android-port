@@ -43,6 +43,11 @@ namespace PortMobile
 			return values.TryGetValue(key, out string v) ? v != "0" && !v.Equals("false", StringComparison.OrdinalIgnoreCase) : fallback;
 		}
 
+		public static int Get(string key, int fallback)
+		{
+			return values.TryGetValue(key, out string v) && int.TryParse(v, out int n) ? n : fallback;
+		}
+
 		/// <summary>Buildings and drags are placed by a confirm button rather than by the finger lifting.</summary>
 		public static readonly bool PlaceConfirm = Get("placeConfirm", true);
 	}

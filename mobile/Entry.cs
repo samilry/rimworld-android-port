@@ -23,6 +23,8 @@ namespace PortMobile
 			BundleDiag.Start();
 			HarmonyDiag.Start();
 			SpawnDiag.Start(harmony);
+			Sched.Start(harmony);
+			Perf.Start(harmony);
 		}
 
 		public static void AfterUIRootOnGUI()

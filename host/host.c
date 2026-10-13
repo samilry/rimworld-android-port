@@ -274,6 +274,31 @@ static void* run_runtime(void* arg)
         }
     }
 
+    // The collector's youngest generation. The runtime sizes its smallest budget by the processor's largest cache,
+    // which it does not find on this kind of phone: it falls back to 256 KiB, and a game that allocates 20 MB a
+    // second is then stopped for a collection 80 times a second (a tenth of the time, measured with 57 colonists at
+    // triple speed; a PC's 16 MB cache gives it a 12 MB budget). 32 MiB here: about one collection a second in that
+    // scene, 10 ms each; 16 MiB and 64 MiB measured the same frame rate, 256 MiB stops for 35 ms at a time.
+    // Only the environment can set it. <game>/runtime.env
+    // ("NAME=value" per line) comes after this and may say otherwise, or set anything else the runtime reads there.
+    setenv("DOTNET_GCgen0size", "0x2000000", 1);
+    {
+        const char* lines[32];
+        static char storage[4096];
+        char path[1100];
+        snprintf(path, sizeof path, "%s/runtime.env", game);
+        int n = read_args(path, lines, 32, storage, sizeof storage);
+        for (int i = 0; i < n; i++)
+        {
+            char* eq = strchr((char*)lines[i], '=');
+            if (!eq || lines[i][0] == '#') continue;
+            *eq = 0;
+            if (eq[1]) setenv(lines[i], eq + 1, 1);
+            else unsetenv(lines[i]);
+            LOGI("environment: %s=%s", lines[i], eq + 1);
+        }
+    }
+
     static char tpa[1 << 20];
     tpa[0] = 0;
     int count = 0;
