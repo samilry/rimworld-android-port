@@ -412,6 +412,44 @@ internal static class Patch
 						Count(missing, "type " + type.FullName + " [" + (type.Scope == null ? "?" : type.Scope.Name) + "]");
 					}
 				}
+				// Overrides that override nothing any more: a virtual method that reuses a slot (no newslot) and finds no
+				// method of its signature in the base types, though one of its name is there (the game changed the
+				// signature; the game calls its own method and the mod's never runs).
+				foreach (TypeDefinition type in module.GetTypes())
+				{
+					foreach (MethodDefinition method in type.Methods)
+					{
+						if (!method.IsVirtual || method.IsNewSlot || method.IsStatic || type.BaseType == null)
+						{
+							continue;
+						}
+						bool matched = false, unknown = false;
+						string sameName = null;
+						TypeDefinition baseType = null;
+						try { baseType = type.BaseType.Resolve(); } catch { }
+						if (baseType == null) unknown = true;
+						for (TypeDefinition t = baseType; t != null && !matched; )
+						{
+							foreach (MethodDefinition candidate in t.Methods)
+							{
+								if (!candidate.IsVirtual || candidate.Name != method.Name) continue;
+								bool same = candidate.Parameters.Count == method.Parameters.Count && candidate.ReturnType.FullName == method.ReturnType.FullName;
+								for (int i = 0; same && i < method.Parameters.Count; i++) same = candidate.Parameters[i].ParameterType.FullName == method.Parameters[i].ParameterType.FullName;
+								if (same) { matched = true; break; }
+								if (!candidate.HasGenericParameters && !t.HasGenericParameters && t.FullName != "System.Object") sameName = candidate.FullName;
+							}
+							if (matched || t.BaseType == null) break;
+							TypeDefinition next = null;
+							try { next = t.BaseType.Resolve(); } catch { }
+							if (next == null) { unknown = true; break; }
+							t = next;
+						}
+						if (!matched && !unknown && sameName != null)
+						{
+							Count(missing, "override of nothing: " + method.FullName + "   (the base has " + sameName + ")");
+						}
+					}
+				}
 				foreach (MemberReference member in module.GetMemberReferences())
 				{
 					if (member.DeclaringType is ArrayType)

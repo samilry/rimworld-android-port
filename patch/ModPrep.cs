@@ -62,6 +62,8 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 ///     runtime's CoreLib has no such methods;
 ///   - the same for assemblies embedded as resources (a mod that loads its real code from memory never shows it as a file);
 ///   - attributes whose type does not exist removed (Mono passes over them, this runtime throws from every attribute query);
+///   - calls to a method that the game's current version has only with more optional parameters at the end, or with
+///     another return type that converts implicitly to the old one, adapted the way a recompilation would;
 ///   - Lunar Framework's checksum of the file (name.lfc beside name.dll) recomputed when the file changed.
 /// A stamp file in the mod's folder records that this was done (and with which version of these rules).
 ///
@@ -72,7 +74,7 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 internal static class ModPrep
 {
 	/// <summary>Bumped whenever what is done to an assembly changes; part of the stamp, so prepared mods are done again.</summary>
-	public const int RulesVersion = 6;
+	public const int RulesVersion = 7;
 
 	public const string StampName = ".port17-prepared";
 
@@ -241,7 +243,8 @@ internal static class ModPrep
 			{
 				string relative = Path.GetRelativePath(root, file).Replace('\\', '/');
 				result.Problems.Add(new KeyValuePair<string, string>(relative, e.GetType().Name + ": " + e.Message));
-				log(relative + ": not patched (" + e.GetType().Name + ": " + e.Message + ")");
+				// (PORT17_PREP_TRACE=1: with the stack, for finding out which rule could not cope.)
+				log(relative + ": not patched (" + e.GetType().Name + ": " + e.Message + ")" + (Environment.GetEnvironmentVariable("PORT17_PREP_TRACE") == "1" ? " " + e : ""));
 			}
 		}
 		WriteStamp(root);
@@ -272,6 +275,7 @@ internal static class ModPrep
 			}
 		}
 		edits += DropAttributesOfMissingTypes(module, label, log);
+		edits += AdaptChangedSignatures(module, label, log);
 		return edits + PrepareEmbeddedAssemblies(module, resolver, label, result, log);
 	}
 
@@ -284,6 +288,356 @@ internal static class ModPrep
 	/// attributes are removed. Only where the assembly the attribute should be in is found and has no such type: an
 	/// attribute from an assembly that is not found here (another mod's) stays.
 	/// </summary>
+	/// <summary>
+	/// A mod built for the game's previous version calls methods by their old signature, and the game's developers
+	/// change signatures in ways that cost a mod's author nothing but a recompilation: a new optional parameter at the
+	/// end (DamageInfo's constructor, GenExplosion.DoExplosion, TraverseParms.For and GenClosest.ClosestThingReachable
+	/// all got one or more in 1.7), or another return type that converts implicitly to the old one (Ability.CanCast:
+	/// bool became AcceptanceReport). Unrecompiled, the old call is a MissingMethodException the first time the method
+	/// around it runs. Here the call is rewritten as the compiler would have written it: the new parameters' default
+	/// values are pushed, the new method is called, the result is converted.
+	///
+	/// Only for methods of the game's own assembly, where the method by its old signature is not found and exactly one method of that name fits:
+	/// the old parameters in their order among the new ones, every other new one optional with a default that can be
+	/// loaded, the same return type or one with an op_Implicit to the old. The old parameters are taken to be the
+	/// leading ones when that fits (new parameters are added at the end); otherwise there has to be exactly one way to
+	/// line them up (GenExplosion.DoExplosion got two in the middle: a float? and an int between a GasType? and a
+	/// bool), and the arguments already on the stack are set aside in locals to push the defaults between them. A
+	/// changed parameter type, two ways to line up, a method that is gone: those are left as they are.
+	/// </summary>
+	private static int AdaptChangedSignatures(ModuleDefinition module, string label, Action<string> log)
+	{
+		var verdicts = new Dictionary<string, MethodDefinition>();
+		var lineUps = new Dictionary<string, int[]>();
+		var names = new List<string>();
+		int adapted = 0;
+		foreach (TypeDefinition type in module.GetTypes())
+		{
+			foreach (MethodDefinition method in type.Methods)
+			{
+				if (!method.HasBody)
+				{
+					continue;
+				}
+				Mono.Cecil.Cil.MethodBody body = method.Body;
+				bool widened = false;
+				for (int i = 0; i < body.Instructions.Count; i++)
+				{
+					Instruction instruction = body.Instructions[i];
+					if (instruction.OpCode != OpCodes.Call && instruction.OpCode != OpCodes.Callvirt && instruction.OpCode != OpCodes.Newobj)
+					{
+						continue;
+					}
+					if (!(instruction.Operand is MethodReference called) || called is GenericInstanceMethod || called.HasGenericParameters
+						|| called.DeclaringType == null || called.DeclaringType is GenericInstanceType || called.DeclaringType is ArrayType || called.DeclaringType.Scope == module)
+					{
+						continue;
+					}
+					string key = called.FullName;
+					if (!verdicts.TryGetValue(key, out MethodDefinition replacement))
+					{
+						try
+						{
+							replacement = FindChangedMethod(called, out int[] found);
+							lineUps[key] = found;
+						}
+						catch (Exception)
+						{
+							replacement = null;
+						}
+						verdicts[key] = replacement;
+						if (replacement != null)
+						{
+							names.Add(called.DeclaringType.Name + "." + called.Name + " (" + called.Parameters.Count + " -> " + replacement.Parameters.Count + " parameters" + (replacement.ReturnType.FullName != called.ReturnType.FullName ? ", returns " + replacement.ReturnType.Name : "") + ")");
+						}
+					}
+					if (replacement == null)
+					{
+						continue;
+					}
+					// A prefix (constrained., tail.) belongs to the call it stands before: nothing may come between them.
+					if (replacement.Parameters.Count > called.Parameters.Count && i > 0 && body.Instructions[i - 1].OpCode.OpCodeType == OpCodeType.Prefix)
+					{
+						continue;
+					}
+					if (!widened)
+					{
+						WidenBranches(body);
+						widened = true;
+					}
+					// source[j]: which of the old arguments the new parameter j gets, or -1 for its default. The arguments from
+					// the first default on are taken off the stack into locals (last one first) and pushed again in place.
+					int[] source = lineUps[key];
+					int first = 0;
+					while (first < source.Length && source[first] == first)
+					{
+						first++;
+					}
+					var sequence = new List<Instruction>();
+					var kept = new VariableDefinition[called.Parameters.Count];
+					for (int n = called.Parameters.Count - 1; n >= first; n--)
+					{
+						kept[n] = new VariableDefinition(module.ImportReference(called.Parameters[n].ParameterType));
+						body.Variables.Add(kept[n]);
+						sequence.Add(Instruction.Create(OpCodes.Stloc, kept[n]));
+					}
+					for (int n = first; n < source.Length; n++)
+					{
+						if (source[n] < 0)
+						{
+							PushDefault(module, body, replacement.Parameters[n], sequence);
+						}
+						else
+						{
+							sequence.Add(Instruction.Create(OpCodes.Ldloc, kept[source[n]]));
+						}
+					}
+					sequence.Add(Instruction.Create(instruction.OpCode, module.ImportReference(replacement)));
+					if (instruction.OpCode != OpCodes.Newobj && replacement.ReturnType.FullName != called.ReturnType.FullName)
+					{
+						sequence.Add(Instruction.Create(OpCodes.Call, module.ImportReference(ImplicitConversion(replacement.ReturnType, called.ReturnType))));
+					}
+					// The call's own instruction becomes the first of the sequence, so that jumps to it still arrive before
+					// the pushes.
+					instruction.OpCode = sequence[0].OpCode;
+					instruction.Operand = sequence[0].Operand;
+					for (int n = 1; n < sequence.Count; n++)
+					{
+						body.Instructions.Insert(i + n, sequence[n]);
+					}
+					i += sequence.Count - 1;
+					adapted++;
+				}
+			}
+		}
+		if (adapted > 0)
+		{
+			log(label + ": " + adapted + " call(s) adapted to a signature the game changed: " + string.Join(", ", names.Take(6)) + (names.Count > 6 ? ", ..." : ""));
+		}
+		return adapted;
+	}
+
+	/// <summary>The one method that a call by an old signature can be adapted to, or null (also when the call resolves as it is).</summary>
+	private static MethodDefinition FindChangedMethod(MethodReference called, out int[] lineUp)
+	{
+		lineUp = null;
+		TypeDefinition declaring = called.DeclaringType.Resolve();
+		// The game's own methods only. Another mod's assembly may be found here in the build for another game version
+		// (its 1.5 folder beside its 1.6 one), where a method "missing" means nothing.
+		if (declaring == null || declaring.Module.Assembly.Name.Name != "Assembly-CSharp" || called.Resolve() != null)
+		{
+			return null;
+		}
+		MethodDefinition found = null;
+		for (TypeDefinition type = declaring; type != null; type = type.BaseType?.Resolve())
+		{
+			foreach (MethodDefinition candidate in type.Methods)
+			{
+				if (candidate.Name != called.Name || candidate.HasThis != called.HasThis || candidate.HasGenericParameters || candidate.Parameters.Count < called.Parameters.Count)
+				{
+					continue;
+				}
+				bool sameReturn = candidate.ReturnType.FullName == called.ReturnType.FullName;
+				if (candidate.Parameters.Count == called.Parameters.Count && sameReturn)
+				{
+					continue; // the same signature: the call fails to resolve for some other reason
+				}
+				int[] source = LineUp(called, candidate);
+				if (source == null || (!sameReturn && (candidate.IsConstructor || ImplicitConversion(candidate.ReturnType, called.ReturnType) == null)))
+				{
+					continue;
+				}
+				if (found != null)
+				{
+					lineUp = null;
+					return null; // two that fit: not for this place to choose
+				}
+				found = candidate;
+				lineUp = source;
+			}
+			if (found != null || called.Name == ".ctor")
+			{
+				break;
+			}
+		}
+		return found;
+	}
+
+	/// <summary>
+	/// For each parameter of the new method the old argument it gets (-1: its default), or null when the old parameters
+	/// do not line up with the new ones: as the leading ones if that fits, else in the one way there is.
+	/// </summary>
+	private static int[] LineUp(MethodReference called, MethodDefinition candidate)
+	{
+		int m = called.Parameters.Count, n = candidate.Parameters.Count;
+		var same = new bool[m, n];
+		var optional = new bool[n];
+		for (int j = 0; j < n; j++)
+		{
+			optional[j] = DefaultCanBePushed(candidate.Parameters[j]);
+			for (int i = 0; i < m; i++)
+			{
+				same[i, j] = candidate.Parameters[j].ParameterType.FullName == called.Parameters[i].ParameterType.FullName;
+			}
+		}
+		var source = new int[n];
+		bool leading = true;
+		for (int j = 0; j < n && leading; j++)
+		{
+			leading = j < m ? same[j, j] : optional[j];
+			source[j] = j < m ? j : -1;
+		}
+		if (leading)
+		{
+			return source;
+		}
+		// ways[i, j]: in how many ways the old parameters from i on line up with the new ones from j on (2 stands for "more than one").
+		var ways = new int[m + 1, n + 1];
+		ways[m, n] = 1;
+		for (int j = n - 1; j >= 0; j--)
+		{
+			for (int i = m; i >= 0; i--)
+			{
+				int count = optional[j] ? ways[i, j + 1] : 0;
+				if (i < m && same[i, j])
+				{
+					count += ways[i + 1, j + 1];
+				}
+				ways[i, j] = Math.Min(count, 2);
+			}
+		}
+		if (ways[0, 0] != 1)
+		{
+			return null;
+		}
+		for (int i = 0, j = 0; j < n; j++)
+		{
+			if (i < m && same[i, j] && ways[i + 1, j + 1] == 1)
+			{
+				source[j] = i++;
+			}
+			else
+			{
+				source[j] = -1;
+			}
+		}
+		return source;
+	}
+
+	private static MethodDefinition ImplicitConversion(TypeReference from, TypeReference to)
+	{
+		foreach (TypeReference holder in new[] { from, to })
+		{
+			TypeDefinition type;
+			try { type = holder.Resolve(); }
+			catch (Exception) { type = null; }
+			if (type == null)
+			{
+				continue;
+			}
+			foreach (MethodDefinition method in type.Methods)
+			{
+				if (method.Name == "op_Implicit" && method.IsStatic && method.Parameters.Count == 1 && method.Parameters[0].ParameterType.FullName == from.FullName && method.ReturnType.FullName == to.FullName)
+				{
+					return method;
+				}
+			}
+		}
+		return null;
+	}
+
+	private static bool IsStruct(TypeReference type)
+	{
+		// (Enums are value types too; their defaults come as constants.)
+		return type.IsValueType && !type.IsPrimitive;
+	}
+
+	private static bool DefaultCanBePushed(ParameterDefinition parameter)
+	{
+		TypeReference type = parameter.ParameterType;
+		if (!parameter.IsOptional || type.IsByReference || type.IsPointer || type.IsGenericParameter)
+		{
+			return false;
+		}
+		object constant = parameter.HasConstant ? parameter.Constant : null;
+		if (constant == null)
+		{
+			return true; // null for a reference, default(T) for a value
+		}
+		if (type is GenericInstanceType)
+		{
+			return false; // "int? x = 5": a constant that needs wrapping
+		}
+		return constant is bool || constant is char || constant is sbyte || constant is byte || constant is short || constant is ushort || constant is int || constant is uint
+			|| constant is long || constant is ulong || constant is float || constant is double || constant is string;
+	}
+
+	private static void PushDefault(ModuleDefinition module, Mono.Cecil.Cil.MethodBody body, ParameterDefinition parameter, List<Instruction> into)
+	{
+		TypeReference type = parameter.ParameterType;
+		object constant = parameter.HasConstant ? parameter.Constant : null;
+		if (constant == null)
+		{
+			if (type.IsValueType)
+			{
+				// default(T): through a local of the method.
+				var local = new VariableDefinition(module.ImportReference(type));
+				body.Variables.Add(local);
+				body.InitLocals = true;
+				into.Add(Instruction.Create(OpCodes.Ldloca, local));
+				into.Add(Instruction.Create(OpCodes.Initobj, local.VariableType));
+				into.Add(Instruction.Create(OpCodes.Ldloc, local));
+			}
+			else
+			{
+				into.Add(Instruction.Create(OpCodes.Ldnull));
+			}
+			return;
+		}
+		switch (constant)
+		{
+			case bool b: into.Add(Instruction.Create(OpCodes.Ldc_I4, b ? 1 : 0)); break;
+			case char c: into.Add(Instruction.Create(OpCodes.Ldc_I4, (int)c)); break;
+			case sbyte v: into.Add(Instruction.Create(OpCodes.Ldc_I4, (int)v)); break;
+			case byte v: into.Add(Instruction.Create(OpCodes.Ldc_I4, (int)v)); break;
+			case short v: into.Add(Instruction.Create(OpCodes.Ldc_I4, (int)v)); break;
+			case ushort v: into.Add(Instruction.Create(OpCodes.Ldc_I4, (int)v)); break;
+			case int v: into.Add(Instruction.Create(OpCodes.Ldc_I4, v)); break;
+			case uint v: into.Add(Instruction.Create(OpCodes.Ldc_I4, unchecked((int)v))); break;
+			case long v: into.Add(Instruction.Create(OpCodes.Ldc_I8, v)); break;
+			case ulong v: into.Add(Instruction.Create(OpCodes.Ldc_I8, unchecked((long)v))); break;
+			case float v: into.Add(Instruction.Create(OpCodes.Ldc_R4, v)); break;
+			case double v: into.Add(Instruction.Create(OpCodes.Ldc_R8, v)); break;
+			case string v: into.Add(Instruction.Create(OpCodes.Ldstr, v)); break;
+			default: throw new InvalidOperationException("a default of type " + constant.GetType().Name);
+		}
+	}
+
+	/// <summary>Short jumps reach 127 bytes; a method that gets instructions inserted gets the long forms.</summary>
+	private static void WidenBranches(Mono.Cecil.Cil.MethodBody body)
+	{
+		foreach (Instruction instruction in body.Instructions)
+		{
+			switch (instruction.OpCode.Code)
+			{
+				case Code.Br_S: instruction.OpCode = OpCodes.Br; break;
+				case Code.Brfalse_S: instruction.OpCode = OpCodes.Brfalse; break;
+				case Code.Brtrue_S: instruction.OpCode = OpCodes.Brtrue; break;
+				case Code.Beq_S: instruction.OpCode = OpCodes.Beq; break;
+				case Code.Bge_S: instruction.OpCode = OpCodes.Bge; break;
+				case Code.Bgt_S: instruction.OpCode = OpCodes.Bgt; break;
+				case Code.Ble_S: instruction.OpCode = OpCodes.Ble; break;
+				case Code.Blt_S: instruction.OpCode = OpCodes.Blt; break;
+				case Code.Bne_Un_S: instruction.OpCode = OpCodes.Bne_Un; break;
+				case Code.Bge_Un_S: instruction.OpCode = OpCodes.Bge_Un; break;
+				case Code.Bgt_Un_S: instruction.OpCode = OpCodes.Bgt_Un; break;
+				case Code.Ble_Un_S: instruction.OpCode = OpCodes.Ble_Un; break;
+				case Code.Blt_Un_S: instruction.OpCode = OpCodes.Blt_Un; break;
+				case Code.Leave_S: instruction.OpCode = OpCodes.Leave; break;
+			}
+		}
+	}
+
 	private static int DropAttributesOfMissingTypes(ModuleDefinition module, string label, Action<string> log)
 	{
 		var missing = new Dictionary<string, bool>();

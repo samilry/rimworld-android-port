@@ -315,6 +315,51 @@ namespace PortMobile
 			return best;
 		}
 
+		/// <summary>
+		/// "raid=NAME:POINTS" in perfcmd.txt: an enemy raid on the current map by the first hostile faction whose def name
+		/// or label contains NAME ("any": whichever the game picks), for seeing the mods' weapons and fighters at work.
+		/// </summary>
+		private static void Raid(string what)
+		{
+			try
+			{
+				string[] parts = what.Split(':');
+				float points = parts.Length > 1 ? float.Parse(parts[1], CultureInfo.InvariantCulture) : 2000f;
+				Map map = Find.CurrentMap;
+				Faction faction = null;
+				if (parts[0] != "any")
+				{
+					foreach (Faction candidate in Find.FactionManager.AllFactions)
+					{
+						if (candidate.def.defName.IndexOf(parts[0], StringComparison.OrdinalIgnoreCase) >= 0 || (candidate.Name ?? "").IndexOf(parts[0], StringComparison.OrdinalIgnoreCase) >= 0)
+						{
+							faction = candidate;
+							break;
+						}
+					}
+					if (faction == null)
+					{
+						Console.WriteLine("[mobile] perf: no faction like '" + parts[0] + "'; the factions: " + string.Join(", ", System.Linq.Enumerable.Select(Find.FactionManager.AllFactions, f => f.def.defName)));
+						return;
+					}
+					if (!faction.HostileTo(Faction.OfPlayer))
+					{
+						faction.SetRelationDirect(Faction.OfPlayer, FactionRelationKind.Hostile, false);
+					}
+				}
+				IncidentParms parms = StorytellerUtility.DefaultParmsNow(IncidentCategoryDefOf.ThreatBig, map);
+				parms.points = points;
+				parms.faction = faction;
+				parms.forced = true;
+				bool done = IncidentDefOf.RaidEnemy.Worker.TryExecute(parms);
+				Console.WriteLine("[mobile] perf: raid of " + points + " points by " + (parms.faction?.def.defName ?? "?") + ": " + (done ? "started, " + map.mapPawns.AllPawnsSpawnedCount + " pawns on the map now" : "refused"));
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] perf: raid failed: " + e);
+			}
+		}
+
 		private static void ReadCommands()
 		{
 			try
@@ -343,6 +388,18 @@ namespace PortMobile
 						// The scene from its start again: at triple speed a game day passes in three minutes, and a colony asleep is not the colony at work.
 						Console.WriteLine("[mobile] perf: loading the saved game " + loadName + " again");
 						GameDataSaveLoader.LoadGame(loadName);
+					}
+					else if (parts[0] == "camera" && parts.Length == 2 && Current.ProgramState == ProgramState.Playing && Find.CurrentMap != null)
+					{
+						// "camera=SIZE" or "camera=SIZE:X:Z": the zoom, at the middle of the map or at a cell.
+						string[] at = parts[1].Split(':');
+						Map map = Find.CurrentMap;
+						Vector3 where = at.Length >= 3 ? new IntVec3(int.Parse(at[1]), 0, int.Parse(at[2])).ToVector3Shifted() : map.Center.ToVector3Shifted();
+						Find.CameraDriver.SetRootPosAndSize(where, float.Parse(at[0], CultureInfo.InvariantCulture));
+					}
+					else if (parts[0] == "raid" && parts.Length == 2)
+					{
+						Raid(parts[1].Trim());
 					}
 					else if (parts[0] == "speed" && parts.Length == 2)
 					{
