@@ -15,9 +15,25 @@ using Mono.Cecil.Cil;
 /// <summary>Reads resolved assemblies into memory, so that the files can be rewritten while others still refer to them.</summary>
 internal sealed class InMemoryResolver : DefaultAssemblyResolver
 {
+	// Names that failed once fail at once afterwards: the base class probes every search directory again for each of the
+	// thousands of references into an assembly that is not there (--check over all mods took over an hour without this).
+	private readonly HashSet<string> failed = new HashSet<string>();
+
 	public override AssemblyDefinition Resolve(AssemblyNameReference name)
 	{
-		return Resolve(name, new ReaderParameters { AssemblyResolver = this, ReadingMode = ReadingMode.Deferred, InMemory = true });
+		if (failed.Contains(name.FullName))
+		{
+			throw new AssemblyResolutionException(name);
+		}
+		try
+		{
+			return Resolve(name, new ReaderParameters { AssemblyResolver = this, ReadingMode = ReadingMode.Deferred, InMemory = true });
+		}
+		catch (AssemblyResolutionException)
+		{
+			failed.Add(name.FullName);
+			throw;
+		}
 	}
 }
 
@@ -93,6 +109,15 @@ internal static class Patch
 		if (args[0] == "--mods")
 		{
 			return PatchModAssemblies(args[1]);
+		}
+		if (args[0] == "--mods-version")
+		{
+			Console.WriteLine(ModsPatchVersion);
+			return 0;
+		}
+		if (args[0] == "--check")
+		{
+			return CheckReferences(args[1]);
 		}
 		string folder = args[0];
 		var resolver = new InMemoryResolver();
@@ -280,7 +305,9 @@ internal static class Patch
 	///     against "publicized" game assemblies and touch private members straight from IL, which Mono let pass and
 	///     this runtime checks;
 	///   - static fields that are no longer initonly: the game fills DefOf fields by reflection, which this runtime
-	///     refuses for a readonly field once the type is initialized (it aborts the whole DefOf binding).
+	///     refuses for a readonly field once the type is initialized (it aborts the whole DefOf binding);
+	///   - calls to Mono's Array.UnsafeLoad<T>/UnsafeStore<T> (Fishery, Adaptive Storage) turned into ldelem/stelem: this
+	///     runtime's CoreLib has no such methods.
 	/// </summary>
 	private static int PatchModAssemblies(string root)
 	{
@@ -325,6 +352,13 @@ internal static class Patch
 								edits++;
 							}
 						}
+						foreach (MethodDefinition method in type.Methods)
+						{
+							if (method.HasBody)
+							{
+								edits += ReplaceMonoArrayHelpers(method.Body);
+							}
+						}
 					}
 					if (edits > 0)
 					{
@@ -345,6 +379,85 @@ internal static class Patch
 		return 0;
 	}
 
+	/// <summary>
+	/// Lists the types and members that the assemblies below a folder reference but that neither the staged game folder,
+	/// the runtime pack nor the other assemblies there define: Mono-only APIs (Array.UnsafeLoad), members gone from the
+	/// game's current version, libraries a mod forgot to ship. usage: --check <root>  (e.g. build/modstage)
+	/// </summary>
+	private static int CheckReferences(string root)
+	{
+		var resolver = new InMemoryResolver();
+		foreach (string dir in new[] { "build/game", "dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0" })
+		{
+			if (Directory.Exists(dir))
+			{
+				resolver.AddSearchDirectory(dir);
+			}
+		}
+		string[] files = Directory.EnumerateFiles(root, "*.dll", SearchOption.AllDirectories).OrderBy(f => f).ToArray();
+		foreach (string dir in files.Select(Path.GetDirectoryName).Distinct())
+		{
+			resolver.AddSearchDirectory(dir);
+		}
+		var reader = new ReaderParameters { ReadingMode = ReadingMode.Immediate, InMemory = true, AssemblyResolver = resolver };
+		int problems = 0, seen = 0;
+		foreach (string file in files)
+		{
+			AssemblyDefinition assembly;
+			try { assembly = AssemblyDefinition.ReadAssembly(file, reader); }
+			catch { continue; }
+			seen++;
+			var missing = new SortedDictionary<string, int>(StringComparer.Ordinal);
+			using (assembly)
+			{
+				ModuleDefinition module = assembly.MainModule;
+				foreach (TypeReference type in module.GetTypeReferences())
+				{
+					if (!Resolves(() => type.Resolve()))
+					{
+						Count(missing, "type " + type.FullName + " [" + type.Scope.Name + "]");
+					}
+				}
+				foreach (MemberReference member in module.GetMemberReferences())
+				{
+					if (member.DeclaringType == null || !Resolves(() => member.DeclaringType.Resolve()))
+					{
+						continue; // reported as a type
+					}
+					bool found = member is MethodReference method ? Resolves(() => method.Resolve()) : !(member is FieldReference field) || Resolves(() => field.Resolve());
+					if (!found)
+					{
+						Count(missing, member.FullName);
+					}
+				}
+			}
+			if (missing.Count == 0)
+			{
+				continue;
+			}
+			Console.WriteLine(Path.GetRelativePath(root, file) + ":");
+			foreach (KeyValuePair<string, int> pair in missing)
+			{
+				Console.WriteLine("  " + pair.Value + "x " + pair.Key);
+				problems++;
+			}
+		}
+		Console.WriteLine(problems + " unresolved references in " + seen + " assemblies");
+		return 0;
+	}
+
+	private static bool Resolves(Func<object> resolve)
+	{
+		try { return resolve() != null; }
+		catch { return false; }
+	}
+
+	private static void Count(SortedDictionary<string, int> counts, string key)
+	{
+		counts.TryGetValue(key, out int n);
+		counts[key] = n + 1;
+	}
+
 	private static bool FixMachineType(string file)
 	{
 		byte[] bytes = File.ReadAllBytes(file);
@@ -356,6 +469,40 @@ internal static class Patch
 		bytes[pe + 5] = 0xaa;
 		File.WriteAllBytes(file, bytes);
 		return true;
+	}
+
+	// Bumped whenever what --mods does to an assembly changes: host/mods-set.js keeps it in the stamp of every staged mod and
+	// re-stages them when it differs (--mods-version prints it).
+	private const int ModsPatchVersion = 3;
+
+	/// <summary>
+	/// Mono's CoreLib has internal T Array.UnsafeLoad<T>(T[], int) and void Array.UnsafeStore<T>(T[], int, T), which some
+	/// performance-minded mods call straight from IL; the stack layout is that of ldelem/stelem, so the calls become those.
+	/// </summary>
+	private static int ReplaceMonoArrayHelpers(MethodBody body)
+	{
+		int replaced = 0;
+		foreach (Instruction i in body.Instructions)
+		{
+			if (i.OpCode != OpCodes.Call || !(i.Operand is GenericInstanceMethod call) || call.DeclaringType.FullName != "System.Array" || call.GenericArguments.Count != 1)
+			{
+				continue;
+			}
+			TypeReference element = call.GenericArguments[0];
+			if (call.Name == "UnsafeLoad" && call.Parameters.Count == 2)
+			{
+				i.OpCode = OpCodes.Ldelem_Any;
+				i.Operand = element;
+				replaced++;
+			}
+			else if (call.Name == "UnsafeStore" && call.Parameters.Count == 3)
+			{
+				i.OpCode = OpCodes.Stelem_Any;
+				i.Operand = element;
+				replaced++;
+			}
+		}
+		return replaced;
 	}
 
 	private static readonly string[] GameAssemblies = { "Assembly-CSharp", "UnityStubs", "Waylith", "Waylith.UnityCompat", "RimWorld", "0Harmony" };

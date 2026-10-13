@@ -19,9 +19,9 @@ const MODS = `${FILES}/game/Mods`;
 const CONFIG = `${FILES}/home/unity3d/Ludeon Studios/RimWorld by Ludeon Studios/Config`;
 const VERSION = '1.7.4976 rev1043';
 const STAGE = 'build/modstage';
-// Mods with assemblies are staged again when the patcher changed (its build time is part of their stamp).
+// Mods with assemblies are staged again when what the patcher does to them changed (its --mods-version is part of their stamp).
 const PATCHER = 'build/patch/patch.dll';
-const patcherStamp = ':patch' + Math.round(fs.statSync(PATCHER).mtimeMs);
+const patcherStamp = ':patch' + execFileSync('dotnet', [PATCHER, '--mods-version'], { encoding: 'utf8' }).trim();
 const adb = (...args) => execFileSync(ADB, args, { encoding: 'utf8', maxBuffer: 64 << 20 });
 
 function walk(dir, visit) {
