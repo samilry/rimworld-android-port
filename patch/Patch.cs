@@ -15,19 +15,27 @@ using Mono.Cecil.Cil;
 /// <summary>Reads resolved assemblies into memory, so that the files can be rewritten while others still refer to them.</summary>
 internal sealed class InMemoryResolver : DefaultAssemblyResolver
 {
-	// Names that failed once fail at once afterwards: the base class probes every search directory again for each of the
-	// thousands of references into an assembly that is not there (--check over all mods took over an hour without this).
+	// The base class caches only in the overload this one replaces, so both outcomes are remembered here: without that, every
+	// reference re-read the assembly from disk (5 ms each; a small mod took 10 s to check) and every reference into an
+	// assembly that is not there probed all the search directories again.
+	private readonly Dictionary<string, AssemblyDefinition> resolved = new Dictionary<string, AssemblyDefinition>();
 	private readonly HashSet<string> failed = new HashSet<string>();
 
 	public override AssemblyDefinition Resolve(AssemblyNameReference name)
 	{
+		if (resolved.TryGetValue(name.FullName, out AssemblyDefinition assembly))
+		{
+			return assembly;
+		}
 		if (failed.Contains(name.FullName))
 		{
 			throw new AssemblyResolutionException(name);
 		}
 		try
 		{
-			return Resolve(name, new ReaderParameters { AssemblyResolver = this, ReadingMode = ReadingMode.Deferred, InMemory = true });
+			assembly = Resolve(name, new ReaderParameters { AssemblyResolver = this, ReadingMode = ReadingMode.Deferred, InMemory = true });
+			resolved[name.FullName] = assembly;
+			return assembly;
 		}
 		catch (AssemblyResolutionException)
 		{
