@@ -19,6 +19,8 @@ namespace PortMobile
 			Console.WriteLine("[mobile] patched UIRoot.UIRootOnGUI");
 			Touch.Start();
 			ModImport.Start(harmony);
+			ModSort.Start(harmony);
+			BundleDiag.Start();
 		}
 
 		public static void AfterUIRootOnGUI()

@@ -5,7 +5,8 @@
 #   libgli.so            the gli C API (native/gli, gli + glm)
 #   libimgui.so          Dear ImGui 1.92.2 docking + the generated flat C API (native/imgui)
 #   libimgui_freetype.so ImGui's FreeType loader with FreeType 2.13.3 inside (native/imgui_freetype)
-#   libslang.so          stand-in for the Slang compiler (native/slang)
+#   libslang.so          the part of the Slang compiler's API the engine uses, on glslang 11.2 from the NDK's
+#                        sources (native/slang): compiles the GLSL shaders mods bring as source
 #   libmonomodc.so       MonoMod's glibc P/Invokes for bionic (native/monomodc), used by the patched 0Harmony.dll
 #   libwaylithaudio.so   the engine's audio library on miniaudio 0.11.22 + stb_vorbis (native/waylithaudio)
 #   libmm_exhelper.so    MonoMod's native exception helper rebuilt with a static libunwind (native/exhelper)
@@ -62,8 +63,28 @@ if want waylithaudio; then
 fi
 
 if want slang; then
-  echo "== slang stub"
-  "$CC" $TARGET -O2 -fPIC -shared -o "$LIB/libslang.so" native/slang/slang_stub.c
+  echo "== slang (the engine's shader compiler API on the NDK's glslang)"
+  GLSLANG="$NDK/sources/third_party/shaderc/third_party/glslang"
+  SHADERC_UTIL="$NDK/sources/third_party/shaderc/libshaderc_util"
+  GOBJ="$OBJ/glslang"
+  mkdir -p "$GOBJ/include/glslang"
+  # glslang/build_info.h is generated from a template by a Python script in the NDK's build; it is four numbers.
+  sed -e 's/@major@/11/' -e 's/@minor@/2/' -e 's/@patch@/0/' -e 's/@flavor@//' "$GLSLANG/build_info.h.tmpl" > "$GOBJ/include/glslang/build_info.h"
+  GFLAGS="-std=c++11 -O2 -fPIC -fno-exceptions -fno-rtti -fvisibility=hidden -w -DAMD_EXTENSIONS -DNV_EXTENSIONS -DENABLE_HLSL -DGLSLANG_OSINCLUDE_UNIX"
+  # The source lists of the NDK's Android.mk for glslang (OSDependent, OGLCompiler, glslang with HLSL, SPIRV).
+  for dir in glslang/GenericCodeGen glslang/HLSL glslang/MachineIndependent glslang/MachineIndependent/preprocessor glslang/OSDependent/Unix OGLCompilersDLL SPIRV; do
+    for f in "$GLSLANG/$dir"/*.cpp; do
+      o="$GOBJ/$(echo "$dir" | tr '/' '_')_$(basename "$f" .cpp).o"
+      # Compiled once: the sources are the NDK's and do not change.
+      [ -f "$o" ] || "$CXX" $TARGET $GFLAGS -I "$GLSLANG" -I "$GLSLANG/glslang/MachineIndependent" -I "$GOBJ/include" -c "$f" -o "$o"
+    done
+  done
+  # The limits glslang wants to be told (shaderc's defaults).
+  [ -f "$GOBJ/shaderc_resources.o" ] || "$CXX" $TARGET $GFLAGS -I "$GLSLANG" -I "$SHADERC_UTIL/include" -c "$SHADERC_UTIL/src/resources.cc" -o "$GOBJ/shaderc_resources.o"
+  rm -f "$OBJ/libglslang.a"
+  "$AR" rcs "$OBJ/libglslang.a" "$GOBJ"/*.o
+  "$CXX" $TARGET -std=c++17 -O2 -fPIC -shared -s -fvisibility=hidden -fno-exceptions -fno-rtti -static-libstdc++ -Wl,--exclude-libs,ALL -Wall -Wno-unused-parameter \
+    -I "$GLSLANG" -I "$SHADERC_UTIL/include" -I "$GOBJ/include" -o "$LIB/libslang.so" native/slang/slang_glslang.cpp "$OBJ/libglslang.a" -llog
 fi
 
 if want imgui; then

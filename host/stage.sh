@@ -34,6 +34,8 @@ if [ "$what" = game ] || [ "$what" = all ]; then
   cp -r "$GAME/Data" "$GAME/Rendering" build/game/
   node host/fix-arch.js build/game --prune-native
   [ -f build/PortHooks.dll ] && cp build/PortHooks.dll build/game/
+  # RimSort's community load-order rules for the mod page's auto-sort (mobile/ModSort.cs; node host/modrules/build.js refreshes the file).
+  cp host/modrules/ModRules.txt build/game/
   # Mono.Cecil: the hook prepares mod assemblies on the phone with it (hooks/ModPrepHost.cs).
   cp /d/Harness/rimworld/tools/patcher/cecilpkg/lib/netstandard2.0/Mono.Cecil.dll build/game/
   # Harmony's 1.7 build of 0Harmony.dll lives in the game folder (the loader hook skips the mods' own copies); patch.dll
