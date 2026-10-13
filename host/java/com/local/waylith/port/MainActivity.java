@@ -501,6 +501,23 @@ public final class MainActivity extends NativeActivity
         });
     }
 
+    /**
+     * The game quits; called from the native side (the GLFW shim's glfwAndroidPrepareExit) just before the process ends
+     * by itself. The task goes with the activity, so that the game does not stay in the list of recent apps as a dead
+     * entry.
+     */
+    public void finishGame(final boolean unused)
+    {
+        runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                finishAndRemoveTask();
+            }
+        });
+    }
+
     /** Shows or hides the soft keyboard; called from the native side (the GLFW shim) when a text field takes or loses the focus. */
     public void showKeyboard(final boolean show)
     {

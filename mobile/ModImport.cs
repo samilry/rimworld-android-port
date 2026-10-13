@@ -38,6 +38,7 @@ namespace PortMobile
 	{
 		[DllImport("glfw")] private static extern int glfwAndroidPickFiles(int folder);
 		[DllImport("glfw")] private static extern int glfwAndroidRestart();
+		[DllImport("glfw")] private static extern void glfwAndroidPrepareExit();
 
 		private static string Say(string chinese, string english)
 		{
@@ -58,6 +59,7 @@ namespace PortMobile
 				harmony.Patch(AccessTools.Method(typeof(ModsConfig), nameof(ModsConfig.Save)), prefix: new HarmonyMethod(typeof(ModImport), nameof(KeepPreviousModList)));
 				harmony.Patch(AccessTools.Method(typeof(ModsConfig), "SaveFromList"), prefix: new HarmonyMethod(typeof(ModImport), nameof(KeepPreviousModListFrom)));
 				harmony.Patch(AccessTools.Method(typeof(GenCommandLine), nameof(GenCommandLine.Restart)), prefix: new HarmonyMethod(typeof(ModImport), nameof(BeforeRestart)));
+				harmony.Patch(AccessTools.Method(typeof(Application), nameof(Application.Quit), Type.EmptyTypes), prefix: new HarmonyMethod(typeof(ModImport), nameof(BeforeQuit)));
 				Console.WriteLine("[mobile] mod import: the mod page's buttons are \"Import mods...\" and \"Delete mods...\"");
 			}
 			catch (Exception e)
@@ -87,6 +89,23 @@ namespace PortMobile
 				Console.WriteLine("[mobile] restart through the activity failed: " + e.Message);
 			}
 			return true;
+		}
+
+		/// <summary>
+		/// Prefix of Application.Quit ("quit to desktop"): the activity leaves the screen and the process is made to end
+		/// without the C library's exit handlers (the shim's glfwAndroidPrepareExit says why). The engine's own quit goes on.
+		/// </summary>
+		internal static void BeforeQuit()
+		{
+			try
+			{
+				Console.WriteLine("[mobile] quit: the activity finishes, the process ends when the runtime has shut down");
+				glfwAndroidPrepareExit();
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] quit: not prepared: " + e.Message);
+			}
 		}
 
 		/// <summary>Stands in for "GetMods".Translate() (see BottomButtons).</summary>

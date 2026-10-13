@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #include <jni.h>
 #define VK_USE_PLATFORM_ANDROID_KHR
 #define VK_NO_PROTOTYPES
@@ -768,6 +769,26 @@ API float glfwAndroidDisplayRate(void)
     (*env)->DeleteLocalRef(env, cls);
     if (attached) (*vm)->DetachCurrentThread(vm);
     return rate;
+}
+
+// The game is about to quit ("quit to desktop": Application.Quit, then the runtime's own exit). Left to itself the
+// process ends in exit(), whose handlers and destructors pull things from under the threads Android's own interface
+// code still runs: one of them aborts (SIGABRT in hwuiTask1) and the phone books a crash for an ordinary quit. So the
+// activity is asked to leave the screen, and a handler registered now, which exit() therefore runs first, ends the
+// process at once. What the runtime does on its way out (flushing its files) has happened by then.
+static void exit_now(void)
+{
+    _exit(0);
+}
+
+API void glfwAndroidPrepareExit(void)
+{
+    static int prepared;
+    if (prepared) return;
+    prepared = 1;
+    int asked = call_activity("finishGame", 1);
+    atexit(exit_now);
+    LOGI("glfw: the game is quitting (activity %s)", asked ? "asked to finish" : "could not be asked");
 }
 
 // ---- text from the soft keyboard (TextInputView, JNI) ----
