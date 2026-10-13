@@ -8,7 +8,7 @@ export MSYS_NO_PATHCONV=1
 PKG=com.local.waylith.port
 "$ADB" push build/port17.apk /data/local/tmp/port17.apk | tail -1 | cut -c1-80
 "$ADB" shell "su -c 'pm install -r /data/local/tmp/port17.apk'" | tail -1
-"$ADB" shell am start -n $PKG/android.app.NativeActivity | tail -1
+"$ADB" shell am start -n $PKG/com.local.waylith.port.MainActivity | tail -1
 sleep 3
 "$ADB" shell am force-stop $PKG
 UID_=$("$ADB" shell "dumpsys package $PKG | grep -m1 -o 'appId=[0-9]*' | cut -d= -f2" | tr -d '\r')

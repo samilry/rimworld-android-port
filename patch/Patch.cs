@@ -39,6 +39,10 @@ internal static class Patch
 		{
 			["Waylith.Utils.ResourceFiles/DirectoryListing Waylith.Utils.ResourceFiles::GetListing(System.String)"] = "GetListingForResolve",
 		},
+		["System.Void Verse.UIRoot_Entry::Init()"] = new Dictionary<string, string>
+		{
+			["System.Boolean Verse.Steam.SteamManager::get_Initialized()"] = "SteamInitializedForMenu",
+		},
 	};
 
 	// String literals to replace wherever they appear (ldstr): the launcher looks for fallback fonts (CJK, symbols) at
@@ -56,6 +60,10 @@ internal static class Patch
 
 	private static int Main(string[] args)
 	{
+		if (args[0] == "--members")
+		{
+			return ListMembers(args[1], args[2]);
+		}
 		string folder = args[0];
 		var resolver = new InMemoryResolver();
 		foreach (string dir in args)
@@ -120,6 +128,15 @@ internal static class Patch
 						}
 					}
 				}
+				// The runtime fork's own types (WaylithClr.*, referenced as living in System.Runtime) come from PortHooks instead.
+				foreach (TypeReference t in module.GetTypeReferences())
+				{
+					if (t.FullName.StartsWith("WaylithClr.", StringComparison.Ordinal) && t.Scope is AssemblyNameReference scope && scope.Name == "System.Runtime")
+					{
+						t.Scope = Import(module, resolver, "IsLinux").DeclaringType.Scope;
+						changes++;
+					}
+				}
 				if (changes > 0)
 				{
 					assembly.Write(file);
@@ -129,6 +146,30 @@ internal static class Patch
 			}
 		}
 		Console.WriteLine($"{filesChanged} assemblies changed");
+		return 0;
+	}
+
+	/// <summary>Lists every type and member reference into the given namespace (e.g. WaylithClr, the runtime fork's own types) across the assemblies in the folder.</summary>
+	private static int ListMembers(string ns, string folder)
+	{
+		var reader = new ReaderParameters { ReadingMode = ReadingMode.Deferred, InMemory = true };
+		foreach (string file in Directory.GetFiles(folder, "*.dll").OrderBy(f => f))
+		{
+			AssemblyDefinition assembly;
+			try { assembly = AssemblyDefinition.ReadAssembly(file, reader); } catch { continue; }
+			using (assembly)
+			{
+				ModuleDefinition module = assembly.MainModule;
+				foreach (TypeReference t in module.GetTypeReferences().Where(t => t.FullName.StartsWith(ns + ".")))
+				{
+					Console.WriteLine($"{Path.GetFileName(file)}: type {t.FullName} in {t.Scope}");
+				}
+				foreach (MemberReference m in module.GetMemberReferences().Where(m => m.DeclaringType != null && m.DeclaringType.FullName.StartsWith(ns + ".")))
+				{
+					Console.WriteLine($"{Path.GetFileName(file)}: member {m.FullName}");
+				}
+			}
+		}
 		return 0;
 	}
 

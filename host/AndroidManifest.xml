@@ -13,7 +13,7 @@
         android:allowBackup="false"
         android:largeHeap="true">
         <activity
-            android:name="android.app.NativeActivity"
+            android:name="com.local.waylith.port.MainActivity"
             android:label="Port17"
             android:exported="true"
             android:launchMode="singleTask"

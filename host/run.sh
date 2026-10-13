@@ -31,7 +31,7 @@ while [ -f "logs/phone-run-$N.log" ] || [ -f "logs/phone-run-$N.clean.log" ]; do
 OUT="logs/phone-run-$N.log"
 "$ADB" shell am force-stop $PKG
 "$ADB" logcat -c
-"$ADB" shell am start -n $PKG/android.app.NativeActivity > /dev/null
+"$ADB" shell am start -n $PKG/com.local.waylith.port.MainActivity > /dev/null
 START=$(date +%s)
 PID=""
 while :; do
@@ -41,7 +41,7 @@ while :; do
   if [ -z "$PID" ] && [ $((NOW - START)) -gt 6 ]; then echo "process ended after $((NOW - START)) s"; break; fi
   if [ $((NOW - START)) -ge "$SECONDS_LIMIT" ]; then echo "still running after $SECONDS_LIMIT s (pid $PID)"; break; fi
 done
-"$ADB" logcat -d -v time 2>/dev/null | grep -E "port17|DEBUG|AndroidRuntime|libc |dotnet|vulkan|Adreno|Vulkan" | sed -E 's/(sk-|key=|Bearer )[A-Za-z0-9_-]+/\1***/g' > "$OUT"
+"$ADB" logcat -d -v time 2>/dev/null | grep -E "port17|DOTNET|DEBUG|AndroidRuntime|libc |dotnet|vulkan|Adreno|Vulkan" | sed -E 's/(sk-|key=|Bearer )[A-Za-z0-9_-]+/\1***/g' > "$OUT"
 "$ADB" pull /data/media/0/Android/data/$PKG/files/logs/stderr.txt "logs/phone-run-$N.stderr.txt" > /dev/null 2>&1 || true
 echo "log: $OUT ($(wc -l < "$OUT") lines); stderr: $(wc -c < "logs/phone-run-$N.stderr.txt" 2>/dev/null || echo 0) bytes"
 grep -E "Exception|error|Error|FATAL|Fatal|SIGSEGV|SIGABRT|signal [0-9]|Unhandled|glfw|GLFW|Vulkan|surface|Surface|swapchain|Window|render thread|Render thread|Bootstrap|exit code" "$OUT" | grep -v "^$" | head -60
