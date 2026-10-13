@@ -24,6 +24,12 @@ import java.io.OutputStream;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -79,8 +85,8 @@ public final class MainActivity extends NativeActivity
 
     /** Where a pick stands (the constants above), how much has been copied, and what went wrong or was left out. */
     private volatile int pickState = IDLE;
-    private volatile int pickCount;
-    private volatile long pickBytes;
+    private final AtomicInteger pickCount = new AtomicInteger();
+    private final AtomicLong pickBytes = new AtomicLong();
     private volatile String pickMessage = "";
     private volatile long pickStateWritten;
 
@@ -103,7 +109,7 @@ public final class MainActivity extends NativeActivity
             OutputStream out = new FileOutputStream(temp);
             try
             {
-                out.write((pickState + " " + pickCount + " " + pickBytes + "\n" + pickMessage).getBytes("UTF-8"));
+                out.write((pickState + " " + pickCount.get() + " " + pickBytes.get() + "\n" + pickMessage).getBytes("UTF-8"));
             }
             finally
             {
@@ -131,8 +137,8 @@ public final class MainActivity extends NativeActivity
      */
     public void pickFiles(final boolean folder)
     {
-        pickCount = 0;
-        pickBytes = 0;
+        pickCount.set(0);
+        pickBytes.set(0);
         setPickState(CHOOSING, "");
         runOnUiThread(new Runnable()
         {
@@ -214,7 +220,7 @@ public final class MainActivity extends NativeActivity
                             Uri root = DocumentsContract.buildDocumentUriUsingTree(uri, id);
                             File into = new File(target, safeName(nameOf(root, "folder")));
                             into.mkdirs();
-                            copyTree(uri, id, into);
+                            copyTreeInParallel(uri, id, into);
                         }
                         else
                         {
@@ -269,7 +275,48 @@ public final class MainActivity extends NativeActivity
         return cleaned.isEmpty() || cleaned.equals(".") || cleaned.equals("..") ? "item" : cleaned;
     }
 
-    private void copyTree(Uri tree, String documentId, File into) throws IOException
+    /**
+     * The system's file provider takes its time over every single file (about 23 a second on the test phone, whatever
+     * their size), and a mod is thousands of small textures: the folders are walked here, the files copied by a few
+     * threads at once. The first failure stops the rest and is reported.
+     */
+    private void copyTreeInParallel(Uri tree, String documentId, File into) throws IOException
+    {
+        ExecutorService pool = Executors.newFixedThreadPool(COPY_THREADS);
+        AtomicReference<Throwable> failure = new AtomicReference<Throwable>();
+        try
+        {
+            copyTree(tree, documentId, into, pool, failure);
+        }
+        finally
+        {
+            pool.shutdown();
+        }
+        try
+        {
+            while (!pool.awaitTermination(1, TimeUnit.SECONDS))
+            {
+                if (failure.get() != null)
+                {
+                    pool.shutdownNow();
+                }
+            }
+        }
+        catch (InterruptedException interrupted)
+        {
+            pool.shutdownNow();
+            throw new IOException("interrupted");
+        }
+        Throwable problem = failure.get();
+        if (problem != null)
+        {
+            throw problem instanceof IOException ? (IOException)problem : new IOException(String.valueOf(problem));
+        }
+    }
+
+    private static final int COPY_THREADS = 8;
+
+    private void copyTree(final Uri tree, String documentId, File into, ExecutorService pool, final AtomicReference<Throwable> failure) throws IOException
     {
         ContentResolver resolver = getContentResolver();
         Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, documentId);
@@ -285,26 +332,50 @@ public final class MainActivity extends NativeActivity
             {
                 String id = cursor.getString(0);
                 File out = new File(into, safeName(cursor.getString(1)));
+                if (failure.get() != null)
+                {
+                    return;
+                }
                 if (DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(2)))
                 {
                     out.mkdirs();
-                    copyTree(tree, id, out);
+                    copyTree(tree, id, out, pool, failure);
                 }
                 else
                 {
-                    InputStream in = resolver.openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, id));
-                    if (in == null)
+                    final String fileId = id;
+                    final File target = out;
+                    pool.execute(new Runnable()
                     {
-                        throw new IOException("cannot open " + id);
-                    }
-                    try
-                    {
-                        write(in, out);
-                    }
-                    finally
-                    {
-                        in.close();
-                    }
+                        @Override
+                        public void run()
+                        {
+                            if (failure.get() != null)
+                            {
+                                return;
+                            }
+                            try
+                            {
+                                InputStream in = getContentResolver().openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, fileId));
+                                if (in == null)
+                                {
+                                    throw new IOException("cannot open " + fileId);
+                                }
+                                try
+                                {
+                                    write(in, target);
+                                }
+                                finally
+                                {
+                                    in.close();
+                                }
+                            }
+                            catch (Throwable problem)
+                            {
+                                failure.compareAndSet(null, problem);
+                            }
+                        }
+                    });
                 }
             }
         }
@@ -381,14 +452,14 @@ public final class MainActivity extends NativeActivity
             while ((n = in.read(buffer)) > 0)
             {
                 stream.write(buffer, 0, n);
-                pickBytes += n;
+                pickBytes.addAndGet(n);
             }
         }
         finally
         {
             stream.close();
         }
-        pickCount++;
+        pickCount.incrementAndGet();
         if (System.currentTimeMillis() - pickStateWritten > 250)
         {
             writePickState();

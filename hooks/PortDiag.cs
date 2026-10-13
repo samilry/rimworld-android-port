@@ -13,8 +13,67 @@ using System.Threading.Tasks;
 /// </summary>
 internal static class PortDiag
 {
+	/// <summary>
+	/// With memwatch.txt next to the game (a number of seconds, 5 when empty): every so often one line with the managed
+	/// heap (size, committed, large objects, collections so far), what the kernel says of the process (resident, swapped)
+	/// and the engine's own summary of graphics memory. For finding out what grows while mods load.
+	/// </summary>
+	private static void StartMemoryWatch()
+	{
+		string path = Path.Combine(AppContext.BaseDirectory, "memwatch.txt");
+		if (!File.Exists(path))
+		{
+			return;
+		}
+		int seconds;
+		if (!int.TryParse(File.ReadAllText(path).Trim(), out seconds) || seconds <= 0)
+		{
+			seconds = 5;
+		}
+		new Thread(() =>
+		{
+			MethodInfo summary = null;
+			while (true)
+			{
+				Thread.Sleep(seconds * 1000);
+				try
+				{
+					GCMemoryInfo info = GC.GetGCMemoryInfo();
+					long large = 0, pinned = 0, gen2 = 0;
+					ReadOnlySpan<GCGenerationInfo> generations = info.GenerationInfo;
+					if (generations.Length > 2) gen2 = generations[2].SizeAfterBytes;
+					if (generations.Length > 3) large = generations[3].SizeAfterBytes;
+					if (generations.Length > 4) pinned = generations[4].SizeAfterBytes;
+					string resident = "?", swapped = "?";
+					foreach (string line in File.ReadLines("/proc/self/status"))
+					{
+						if (line.StartsWith("VmRSS:")) resident = line.Substring(6).Trim();
+						else if (line.StartsWith("VmSwap:")) swapped = line.Substring(7).Trim();
+					}
+					Console.WriteLine("[memwatch] managed " + (GC.GetTotalMemory(false) >> 20) + " MiB (heap " + (info.HeapSizeBytes >> 20) + ", committed " + (info.TotalCommittedBytes >> 20)
+						+ ", gen2 " + (gen2 >> 20) + ", large " + (large >> 20) + ", pinned " + (pinned >> 20) + "; collections " + GC.CollectionCount(0) + "/" + GC.CollectionCount(1) + "/" + GC.CollectionCount(2)
+						+ "; load " + (info.MemoryLoadBytes >> 20) + " of " + (info.TotalAvailableMemoryBytes >> 20) + ", high at " + (info.HighMemoryLoadThresholdBytes >> 20) + ") resident " + resident + " swapped " + swapped);
+					if (summary == null)
+					{
+						Assembly waylith = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().Name == "Waylith");
+						summary = waylith?.GetType("Waylith.Graphics.GpuMemoryReport")?.GetMethod("BuildCompactSummary", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+					}
+					if (summary != null)
+					{
+						Console.WriteLine("[memwatch] " + ((string)summary.Invoke(null, null) ?? "").Trim().Replace("\n", "\n[memwatch] "));
+					}
+				}
+				catch (Exception e)
+				{
+					Console.WriteLine("[memwatch] " + e.GetType().Name + ": " + (e.InnerException ?? e).Message);
+				}
+			}
+		}) { IsBackground = true, Name = "PortMemWatch" }.Start();
+	}
+
 	public static void StartIfRequested()
 	{
+		StartMemoryWatch();
 		string path = Path.Combine(AppContext.BaseDirectory, "diag.txt");
 		if (!File.Exists(path))
 		{

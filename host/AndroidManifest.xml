@@ -6,7 +6,10 @@
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x403000" android:required="false" />
+    <!-- appCategory/isGame: the system (and the maker's game mode on top of it) schedules and cools a declared game as one. -->
     <application android:allowNativeHeapPointerTagging="false"
+        android:appCategory="game"
+        android:isGame="true"
         android:label="Port17"
         android:hasCode="true"
         android:extractNativeLibs="true"

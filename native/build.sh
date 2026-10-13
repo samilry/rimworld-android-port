@@ -34,7 +34,7 @@ want() { [ "$WHAT" = all ] || [ "$WHAT" = "$1" ]; }
 
 if want vma; then
   echo "== vma"
-  "$CXX" $TARGET $CXXFLAGS -shared -I "$SRC/Vulkan-Headers-1.3.296/include" -I "$SRC/VulkanMemoryAllocator-3.3.0/include" -Wno-nullability-completeness -o "$LIB/libvma.so" native/vma/vma.cpp -ldl
+  "$CXX" $TARGET $CXXFLAGS -shared -I "$SRC/Vulkan-Headers-1.3.296/include" -I "$SRC/VulkanMemoryAllocator-3.3.0/include" -Wno-nullability-completeness -o "$LIB/libvma.so" native/vma/vma.cpp -ldl -llog
 fi
 
 if want stb; then

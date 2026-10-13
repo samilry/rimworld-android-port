@@ -371,8 +371,63 @@ internal static class StartupHook
 	{
 		AssemblyLoadContext.Default.Resolving += Resolve;
 		PretendProcessPath();
+		LimitGraphicsMemory();
 		Console.WriteLine("[port17] startup hook installed (Unity assembly names resolve to UnityStubs)");
 		PortDiag.StartIfRequested();
+	}
+
+	/// <summary>
+	/// The engine sizes its texture budget by the Vulkan memory heap, which on a phone is most of the RAM (11 GiB on
+	/// a 12 GB phone): its watermark for putting unused textures back to the disk cache, about 7 GiB there, is never
+	/// reached, because the phone's own watchdog kills an app whose graphics memory passes 6 GiB ("process memory is
+	/// leaking"; seen while loading 106 mods, 14 of them race mods with 12 000 textures). WAYLITH_VRAM_BUDGET_MB is the
+	/// engine's own switch for a smaller heap: past its watermark the textures nothing has drawn stay in the disk
+	/// cache until they are first used. It is set here from the phone's RAM (three eighths, 4 GiB at most) unless it
+	/// is set already; game/vram.txt holds another number of MB for it (0: no limit).
+	/// </summary>
+	private static void LimitGraphicsMemory()
+	{
+		const string name = "WAYLITH_VRAM_BUDGET_MB";
+		try
+		{
+			if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name)))
+			{
+				return;
+			}
+			long megabytes = 0;
+			string file = Path.Combine(AppContext.BaseDirectory, "vram.txt");
+			if (File.Exists(file))
+			{
+				if (!long.TryParse(File.ReadAllText(file).Trim(), out megabytes) || megabytes <= 0)
+				{
+					Console.WriteLine("[port17] graphics memory: no limit (vram.txt)");
+					return;
+				}
+			}
+			else
+			{
+				foreach (string line in File.ReadLines("/proc/meminfo"))
+				{
+					if (line.StartsWith("MemTotal:", StringComparison.Ordinal))
+					{
+						string[] parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+						megabytes = long.Parse(parts[1]) / 1024 * 3 / 8;
+						break;
+					}
+				}
+				if (megabytes <= 0)
+				{
+					return;
+				}
+				megabytes = Math.Max(1536, Math.Min(4096, megabytes));
+			}
+			Environment.SetEnvironmentVariable(name, megabytes.ToString());
+			Console.WriteLine("[port17] graphics memory: the engine's heap is limited to " + megabytes + " MB (" + name + ")");
+		}
+		catch (Exception e)
+		{
+			Console.WriteLine("[port17] graphics memory: no limit set: " + e.Message);
+		}
 	}
 
 	/// <summary>

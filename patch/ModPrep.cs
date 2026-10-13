@@ -61,6 +61,7 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 ///   - calls to Mono's Array.UnsafeLoad<T>/UnsafeStore<T> (Fishery, Adaptive Storage) turned into ldelem/stelem: this
 ///     runtime's CoreLib has no such methods;
 ///   - the same for assemblies embedded as resources (a mod that loads its real code from memory never shows it as a file);
+///   - attributes whose type does not exist removed (Mono passes over them, this runtime throws from every attribute query);
 ///   - Lunar Framework's checksum of the file (name.lfc beside name.dll) recomputed when the file changed.
 /// A stamp file in the mod's folder records that this was done (and with which version of these rules).
 ///
@@ -71,7 +72,7 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 internal static class ModPrep
 {
 	/// <summary>Bumped whenever what is done to an assembly changes; part of the stamp, so prepared mods are done again.</summary>
-	public const int RulesVersion = 5;
+	public const int RulesVersion = 6;
 
 	public const string StampName = ".port17-prepared";
 
@@ -270,7 +271,87 @@ internal static class ModPrep
 				}
 			}
 		}
+		edits += DropAttributesOfMissingTypes(module, label, log);
 		return edits + PrepareEmbeddedAssemblies(module, resolver, label, result, log);
+	}
+
+	/// <summary>
+	/// A mod built against the real Unity may carry attributes the engine's stand-in for Unity does not have (Ariandel
+	/// Library's LumiParticle: [UnityEngine.ImageEffectAllowedInSceneView]). Mono passes over an attribute whose type it
+	/// cannot find; this runtime throws TypeLoadException from every GetCustomAttributes and IsDefined on the member that
+	/// carries it, whatever attribute was asked for: Harmony's PatchAll failed in the mod, and the game's own search for
+	/// [DefOf] types (GenTypes.AllTypesWithAttribute) failed for everybody, which ended the loading of all mods. Such
+	/// attributes are removed. Only where the assembly the attribute should be in is found and has no such type: an
+	/// attribute from an assembly that is not found here (another mod's) stays.
+	/// </summary>
+	private static int DropAttributesOfMissingTypes(ModuleDefinition module, string label, Action<string> log)
+	{
+		var missing = new Dictionary<string, bool>();
+		var names = new List<string>();
+		int dropped = 0;
+		Action<ICustomAttributeProvider> clean = delegate(ICustomAttributeProvider provider)
+		{
+			if (provider == null || !provider.HasCustomAttributes)
+			{
+				return;
+			}
+			for (int i = provider.CustomAttributes.Count - 1; i >= 0; i--)
+			{
+				TypeReference type = provider.CustomAttributes[i].AttributeType;
+				if (type == null || !(type.Scope is AssemblyNameReference scope))
+				{
+					continue;
+				}
+				string key = scope.Name + "/" + type.FullName;
+				if (!missing.TryGetValue(key, out bool gone))
+				{
+					gone = false;
+					try
+					{
+						// The assembly first: when that is not found, nothing is known about the type.
+						if (module.AssemblyResolver.Resolve(scope) != null)
+						{
+							gone = type.Resolve() == null;
+						}
+					}
+					catch (Exception)
+					{
+					}
+					missing[key] = gone;
+					if (gone)
+					{
+						names.Add(type.FullName);
+					}
+				}
+				if (gone)
+				{
+					provider.CustomAttributes.RemoveAt(i);
+					dropped++;
+				}
+			}
+		};
+		clean(module.Assembly);
+		clean(module);
+		foreach (TypeDefinition type in module.GetTypes())
+		{
+			clean(type);
+			foreach (GenericParameter parameter in type.GenericParameters) clean(parameter);
+			foreach (FieldDefinition field in type.Fields) clean(field);
+			foreach (PropertyDefinition property in type.Properties) clean(property);
+			foreach (EventDefinition evt in type.Events) clean(evt);
+			foreach (MethodDefinition method in type.Methods)
+			{
+				clean(method);
+				clean(method.MethodReturnType);
+				foreach (ParameterDefinition parameter in method.Parameters) clean(parameter);
+				foreach (GenericParameter parameter in method.GenericParameters) clean(parameter);
+			}
+		}
+		if (dropped > 0)
+		{
+			log(label + ": " + dropped + " attribute(s) of types that do not exist removed (" + string.Join(", ", names.Take(4)) + (names.Count > 4 ? ", ..." : "") + ")");
+		}
+		return dropped;
 	}
 
 	/// <summary>

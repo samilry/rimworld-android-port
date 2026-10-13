@@ -10,6 +10,15 @@
 //   - memory: host-visible memory that is not host-coherent needs explicit flushes, which the engine (written for
 //     desktop GPUs, whose host-visible memory is coherent) never does. Two remedies, chosen by options: "coherent"
 //     hides such memory types; "flush" keeps them and flushes every mapping of them before each queue submission.
+//   - descriptor pools ("pools", on unless pools=0): the engine sizes its pools for a desktop driver, where a pool is
+//     bookkeeping in ordinary memory: a pool of 262 144 textures for every mesh renderer, pools of 2 048 sets for
+//     every frame in flight. Adreno's driver backs a pool with graphics memory when it is created, about 23 KiB a
+//     set: 360 MiB for each of the five material pools, 2.3 GiB in all with 106 mods in a map, none of it in the
+//     engine's own accounts, all of it counted by the phone's watchdog, which kills an app at 6 GiB. A large pool is
+//     created here as a sixteenth of what was asked for and grows by further sixteenths when an allocation finds
+//     it full; the engine keeps the handle of the first part and never sees the others.
+//   - with "memlog", every allocation of device memory of 32 MiB and more is logged with the total the engine holds,
+//     to compare with what the kernel counts for the process (/sys/class/kgsl/kgsl/proc/<pid>/gpumem_mapped);
 //   - swapchain creation, image acquisition and presentation are logged (the first few and every failure), and
 //     the command-buffer work of a frame (render passes, draws, dispatches, viewports) is counted and logged for the
 //     first "frames" frames and every 600th, so that the log tells what the renderer is doing.
@@ -94,6 +103,338 @@ static int g_memoryCount;
 static pthread_mutex_t g_memoryLock = PTHREAD_MUTEX_INITIALIZER;
 static long g_flushes, g_flushedRanges;
 
+// Descriptor pools built in parts (see the head of the file). A pool the engine created large is a chain of real
+// pools, known to the engine by the handle of the first.
+static int opt_pools = 1;
+#define POOL_PARTS 16            // a part is this fraction of what the engine asked for
+#define POOL_LARGE 16384         // pools of fewer descriptors are left as they are
+#define POOL_MAX_SIZES 16
+typedef struct PoolChain
+{
+    VkDescriptorPool key;        // the first real pool: the engine's handle
+    VkDescriptorPoolCreateFlags flags;
+    uint32_t maxSets, sizeCount;
+    VkDescriptorPoolSize sizes[POOL_MAX_SIZES]; // as the engine asked
+    VkDescriptorPool* parts;     // parts[0] == key
+    int partCount, partCap, current;
+    int hasFullPart;             // a part of the full size was added for a set no sixteenth can hold
+    struct PoolChain* next;
+} PoolChain;
+#define POOL_BUCKETS 64
+static PoolChain* g_poolChains[POOL_BUCKETS];
+// For chains whose sets are freed one by one (FREE_DESCRIPTOR_SET): the part every set came from.
+typedef struct SetHome { VkDescriptorSet set; VkDescriptorPool part; PoolChain* chain; struct SetHome* next; } SetHome;
+#define SET_BUCKETS 16384
+static SetHome* g_setHomes[SET_BUCKETS];
+static pthread_mutex_t g_poolLock = PTHREAD_MUTEX_INITIALIZER;
+static long g_poolChainsMade, g_poolPartsAdded;
+static PFN_vkCreateDescriptorPool real_CreateDescriptorPool;
+static PFN_vkDestroyDescriptorPool real_DestroyDescriptorPool;
+static PFN_vkResetDescriptorPool real_ResetDescriptorPool;
+static PFN_vkAllocateDescriptorSets real_AllocateDescriptorSets;
+static PFN_vkFreeDescriptorSets real_FreeDescriptorSets;
+
+static uint32_t handle_hash(uint64_t handle) { return (uint32_t)((handle >> 4) * 2654435761u); }
+
+static PoolChain* find_chain(VkDescriptorPool pool)
+{
+    pthread_mutex_lock(&g_poolLock);
+    PoolChain* chain = g_poolChains[handle_hash((uint64_t)pool) % POOL_BUCKETS];
+    while (chain && chain->key != pool) chain = chain->next;
+    pthread_mutex_unlock(&g_poolLock);
+    return chain;
+}
+
+static VkResult create_part(VkDevice device, PoolChain* chain, int full, const VkAllocationCallbacks* alloc, VkDescriptorPool* out)
+{
+    VkDescriptorPoolSize sizes[POOL_MAX_SIZES];
+    for (uint32_t i = 0; i < chain->sizeCount; i++)
+    {
+        sizes[i] = chain->sizes[i];
+        if (!full) sizes[i].descriptorCount = (sizes[i].descriptorCount + POOL_PARTS - 1) / POOL_PARTS;
+        if (sizes[i].descriptorCount == 0) sizes[i].descriptorCount = 1;
+    }
+    VkDescriptorPoolCreateInfo info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    info.flags = chain->flags;
+    info.maxSets = full ? chain->maxSets : (chain->maxSets + POOL_PARTS - 1) / POOL_PARTS;
+    if (info.maxSets == 0) info.maxSets = 1;
+    info.poolSizeCount = chain->sizeCount;
+    info.pPoolSizes = sizes;
+    return real_CreateDescriptorPool(device, &info, alloc, out);
+}
+
+static int add_part(VkDevice device, PoolChain* chain, int full)
+{
+    if (chain->partCount == chain->partCap)
+    {
+        int cap = chain->partCap ? chain->partCap * 2 : 8;
+        VkDescriptorPool* grown = (VkDescriptorPool*)realloc(chain->parts, cap * sizeof *grown);
+        if (!grown) return 0;
+        chain->parts = grown;
+        chain->partCap = cap;
+    }
+    VkDescriptorPool part;
+    if (create_part(device, chain, full, NULL, &part) != VK_SUCCESS) return 0;
+    chain->parts[chain->partCount++] = part;
+    if (full) chain->hasFullPart = 1;
+    long added = __sync_add_and_fetch(&g_poolPartsAdded, 1);
+    if (added <= 20 || added % 100 == 0)
+    {
+        LOGI("vulkan: a descriptor pool of %u sets grows to %d parts%s (%ld parts added so far)", chain->maxSets, chain->partCount, full ? ", this one of the full size" : "", added);
+    }
+    return 1;
+}
+
+static void forget_sets_of(PoolChain* chain)
+{
+    pthread_mutex_lock(&g_poolLock);
+    for (int b = 0; b < SET_BUCKETS; b++)
+    {
+        SetHome** link = &g_setHomes[b];
+        while (*link)
+        {
+            SetHome* home = *link;
+            if (home->chain == chain) { *link = home->next; free(home); }
+            else link = &home->next;
+        }
+    }
+    pthread_mutex_unlock(&g_poolLock);
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDescriptorPool(VkDevice device, const VkDescriptorPoolCreateInfo* info, const VkAllocationCallbacks* alloc, VkDescriptorPool* out)
+{
+    uint64_t descriptors = 0;
+    for (uint32_t i = 0; i < info->poolSizeCount; i++) descriptors += info->pPoolSizes[i].descriptorCount;
+    // Pools with anything unusual about them (extension structures, more kinds than fit) stay as they are.
+    if (!opt_pools || descriptors < POOL_LARGE || info->pNext || info->poolSizeCount == 0 || info->poolSizeCount > POOL_MAX_SIZES || info->maxSets < POOL_PARTS)
+    {
+        return real_CreateDescriptorPool(device, info, alloc, out);
+    }
+    PoolChain* chain = (PoolChain*)calloc(1, sizeof *chain);
+    if (!chain) return real_CreateDescriptorPool(device, info, alloc, out);
+    chain->flags = info->flags;
+    chain->maxSets = info->maxSets;
+    chain->sizeCount = info->poolSizeCount;
+    memcpy(chain->sizes, info->pPoolSizes, info->poolSizeCount * sizeof(VkDescriptorPoolSize));
+    chain->parts = (VkDescriptorPool*)malloc(8 * sizeof(VkDescriptorPool));
+    chain->partCap = chain->parts ? 8 : 0;
+    VkResult r = chain->parts ? create_part(device, chain, 0, alloc, out) : VK_ERROR_OUT_OF_HOST_MEMORY;
+    if (r != VK_SUCCESS)
+    {
+        free(chain->parts);
+        free(chain);
+        return real_CreateDescriptorPool(device, info, alloc, out);
+    }
+    chain->key = *out;
+    chain->parts[0] = *out;
+    chain->partCount = 1;
+    pthread_mutex_lock(&g_poolLock);
+    uint32_t bucket = handle_hash((uint64_t)chain->key) % POOL_BUCKETS;
+    chain->next = g_poolChains[bucket];
+    g_poolChains[bucket] = chain;
+    pthread_mutex_unlock(&g_poolLock);
+    long made = __sync_add_and_fetch(&g_poolChainsMade, 1);
+    if (made <= 12 || made % 50 == 0)
+    {
+        LOGI("vulkan: descriptor pool of %u sets and %llu descriptors is built in parts of a sixteenth (%ld such pools so far)", info->maxSets, (unsigned long long)descriptors, made);
+    }
+    return VK_SUCCESS;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL hook_AllocateDescriptorSets(VkDevice device, const VkDescriptorSetAllocateInfo* info, VkDescriptorSet* sets)
+{
+    PoolChain* chain = opt_pools ? find_chain(info->descriptorPool) : NULL;
+    if (!chain) return real_AllocateDescriptorSets(device, info, sets);
+    VkDescriptorSetAllocateInfo mine = *info;
+    VkResult r = VK_ERROR_OUT_OF_POOL_MEMORY;
+    // The current part first, then the others (sets freed since, or a reset of the pool, leave room in earlier ones).
+    for (int tried = 0; tried < chain->partCount; tried++)
+    {
+        int index = (chain->current + tried) % chain->partCount;
+        mine.descriptorPool = chain->parts[index];
+        r = real_AllocateDescriptorSets(device, &mine, sets);
+        if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL)
+        {
+            if (r == VK_SUCCESS) chain->current = index;
+            goto done;
+        }
+    }
+    // All parts are full. One more, as long as the pool is not yet what the engine asked for: after that the engine
+    // gets the refusal a whole pool would have given (it has its own answer to it).
+    if (chain->partCount < POOL_PARTS + chain->hasFullPart && add_part(device, chain, 0))
+    {
+        chain->current = chain->partCount - 1;
+        mine.descriptorPool = chain->parts[chain->current];
+        r = real_AllocateDescriptorSets(device, &mine, sets);
+        // A part just made that cannot hold the sets: they are larger than a sixteenth of the pool. One part of the
+        // full size settles that.
+        if ((r == VK_ERROR_OUT_OF_POOL_MEMORY || r == VK_ERROR_FRAGMENTED_POOL) && !chain->hasFullPart && add_part(device, chain, 1))
+        {
+            chain->current = chain->partCount - 1;
+            mine.descriptorPool = chain->parts[chain->current];
+            r = real_AllocateDescriptorSets(device, &mine, sets);
+        }
+    }
+done:
+    if (r == VK_SUCCESS && (chain->flags & VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT))
+    {
+        pthread_mutex_lock(&g_poolLock);
+        for (uint32_t i = 0; i < info->descriptorSetCount; i++)
+        {
+            SetHome* home = (SetHome*)malloc(sizeof *home);
+            if (!home) continue;
+            uint32_t bucket = handle_hash((uint64_t)sets[i]) % SET_BUCKETS;
+            home->set = sets[i];
+            home->part = mine.descriptorPool;
+            home->chain = chain;
+            home->next = g_setHomes[bucket];
+            g_setHomes[bucket] = home;
+        }
+        pthread_mutex_unlock(&g_poolLock);
+    }
+    return r;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL hook_FreeDescriptorSets(VkDevice device, VkDescriptorPool pool, uint32_t count, const VkDescriptorSet* sets)
+{
+    PoolChain* chain = opt_pools ? find_chain(pool) : NULL;
+    if (!chain) return real_FreeDescriptorSets(device, pool, count, sets);
+    for (uint32_t i = 0; i < count; i++)
+    {
+        if (!sets[i]) continue;
+        VkDescriptorPool part = chain->key;
+        pthread_mutex_lock(&g_poolLock);
+        SetHome** link = &g_setHomes[handle_hash((uint64_t)sets[i]) % SET_BUCKETS];
+        while (*link && !((*link)->set == sets[i] && (*link)->chain == chain)) link = &(*link)->next;
+        if (*link)
+        {
+            SetHome* home = *link;
+            part = home->part;
+            *link = home->next;
+            free(home);
+        }
+        pthread_mutex_unlock(&g_poolLock);
+        real_FreeDescriptorSets(device, part, 1, &sets[i]);
+    }
+    return VK_SUCCESS;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL hook_ResetDescriptorPool(VkDevice device, VkDescriptorPool pool, VkDescriptorPoolResetFlags flags)
+{
+    PoolChain* chain = opt_pools ? find_chain(pool) : NULL;
+    if (!chain) return real_ResetDescriptorPool(device, pool, flags);
+    VkResult r = VK_SUCCESS;
+    for (int i = 0; i < chain->partCount; i++)
+    {
+        VkResult one = real_ResetDescriptorPool(device, chain->parts[i], flags);
+        if (one != VK_SUCCESS) r = one;
+    }
+    chain->current = 0;
+    if (chain->flags & VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT) forget_sets_of(chain);
+    return r;
+}
+
+static VKAPI_ATTR void VKAPI_CALL hook_DestroyDescriptorPool(VkDevice device, VkDescriptorPool pool, const VkAllocationCallbacks* alloc)
+{
+    PoolChain* chain = (opt_pools && pool) ? find_chain(pool) : NULL;
+    if (!chain)
+    {
+        real_DestroyDescriptorPool(device, pool, alloc);
+        return;
+    }
+    pthread_mutex_lock(&g_poolLock);
+    PoolChain** link = &g_poolChains[handle_hash((uint64_t)chain->key) % POOL_BUCKETS];
+    while (*link && *link != chain) link = &(*link)->next;
+    if (*link) *link = chain->next;
+    pthread_mutex_unlock(&g_poolLock);
+    if (chain->flags & VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT) forget_sets_of(chain);
+    for (int i = 1; i < chain->partCount; i++) real_DestroyDescriptorPool(device, chain->parts[i], NULL);
+    real_DestroyDescriptorPool(device, chain->key, alloc);
+    free(chain->parts);
+    free(chain);
+}
+
+// For "memlog": what the engine has allocated through vkAllocateMemory, by handle (open addressing, never shrinks).
+static int opt_memlog;
+#define MEMLOG_SLOTS 65536
+static struct { VkDeviceMemory memory; VkDeviceSize size; } g_memlog[MEMLOG_SLOTS];
+static VkDeviceSize g_memlogTotal, g_memlogPeak;
+static int g_memlogCount;
+static pthread_mutex_t g_memlogLock = PTHREAD_MUTEX_INITIALIZER;
+
+static void memlog_add(VkDeviceMemory memory, const VkMemoryAllocateInfo* info)
+{
+    const char* what = "";
+    for (const VkBaseInStructure* next = (const VkBaseInStructure*)info->pNext; next; next = next->pNext)
+    {
+        if (next->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO)
+        {
+            const VkMemoryDedicatedAllocateInfo* dedicated = (const VkMemoryDedicatedAllocateInfo*)next;
+            what = dedicated->image ? ", dedicated to an image" : dedicated->buffer ? ", dedicated to a buffer" : "";
+        }
+    }
+    pthread_mutex_lock(&g_memlogLock);
+    uint32_t slot = (uint32_t)(((uintptr_t)memory >> 4) * 2654435761u) % MEMLOG_SLOTS;
+    for (int i = 0; i < MEMLOG_SLOTS && g_memlog[slot].memory; i++) slot = (slot + 1) % MEMLOG_SLOTS;
+    if (!g_memlog[slot].memory)
+    {
+        g_memlog[slot].memory = memory;
+        g_memlog[slot].size = info->allocationSize;
+    }
+    g_memlogTotal += info->allocationSize;
+    g_memlogCount++;
+    int newPeak = g_memlogTotal > g_memlogPeak + (256u << 20);
+    if (g_memlogTotal > g_memlogPeak) { if (newPeak) g_memlogPeak = g_memlogTotal; }
+    VkDeviceSize total = g_memlogTotal;
+    int count = g_memlogCount;
+    pthread_mutex_unlock(&g_memlogLock);
+    if (info->allocationSize >= (32u << 20) || newPeak)
+    {
+        LOGI("vulkan: memory +%.1f MiB (type %u%s); the engine holds %.0f MiB in %d allocations", info->allocationSize / 1048576.0, info->memoryTypeIndex, what, total / 1048576.0, count);
+    }
+}
+
+static void memlog_remove(VkDeviceMemory memory)
+{
+    VkDeviceSize size = 0, total;
+    pthread_mutex_lock(&g_memlogLock);
+    uint32_t slot = (uint32_t)(((uintptr_t)memory >> 4) * 2654435761u) % MEMLOG_SLOTS;
+    for (int i = 0; i < MEMLOG_SLOTS; i++, slot = (slot + 1) % MEMLOG_SLOTS)
+    {
+        if (g_memlog[slot].memory == memory)
+        {
+            size = g_memlog[slot].size;
+            // A tombstone (size 0, handle kept non-null) would do for correctness; handles are reused by the driver, so the slot is cleared and the probe chain after it re-inserted.
+            g_memlog[slot].memory = VK_NULL_HANDLE;
+            g_memlog[slot].size = 0;
+            uint32_t next = (slot + 1) % MEMLOG_SLOTS;
+            while (g_memlog[next].memory)
+            {
+                VkDeviceMemory m = g_memlog[next].memory;
+                VkDeviceSize sz = g_memlog[next].size;
+                g_memlog[next].memory = VK_NULL_HANDLE;
+                g_memlog[next].size = 0;
+                uint32_t to = (uint32_t)(((uintptr_t)m >> 4) * 2654435761u) % MEMLOG_SLOTS;
+                while (g_memlog[to].memory) to = (to + 1) % MEMLOG_SLOTS;
+                g_memlog[to].memory = m;
+                g_memlog[to].size = sz;
+                next = (next + 1) % MEMLOG_SLOTS;
+            }
+            break;
+        }
+        if (!g_memlog[slot].memory) break;
+    }
+    g_memlogTotal -= size;
+    if (size) g_memlogCount--;
+    total = g_memlogTotal;
+    int count = g_memlogCount;
+    pthread_mutex_unlock(&g_memlogLock);
+    if (size >= (32u << 20))
+    {
+        LOGI("vulkan: memory -%.1f MiB; the engine holds %.0f MiB in %d allocations", size / 1048576.0, total / 1048576.0, count);
+    }
+}
+
 static void read_options(void)
 {
     const char* env = getenv("PORT17_VULKAN");
@@ -110,6 +451,8 @@ static void read_options(void)
         else if (strcmp(tok, "coherent") == 0) opt_coherentOnly = v;
         else if (strcmp(tok, "flush") == 0) opt_flush = v;
         else if (strcmp(tok, "frames") == 0) opt_logFrames = v;
+        else if (strcmp(tok, "memlog") == 0) opt_memlog = v;
+        else if (strcmp(tok, "pools") == 0) opt_pools = v;
     }
 }
 
@@ -428,6 +771,11 @@ static Memory* find_memory_locked(VkDeviceMemory memory)
 static VKAPI_ATTR VkResult VKAPI_CALL hook_AllocateMemory(VkDevice device, const VkMemoryAllocateInfo* info, const VkAllocationCallbacks* alloc, VkDeviceMemory* out)
 {
     VkResult r = real_AllocateMemory(device, info, alloc, out);
+    if (opt_memlog)
+    {
+        if (r == VK_SUCCESS) memlog_add(*out, info);
+        else LOGW("vulkan: memory of %.1f MiB (type %u) refused: %d", info->allocationSize / 1048576.0, info->memoryTypeIndex, r);
+    }
     if (r == VK_SUCCESS && opt_flush && (g_nonCoherentTypes & (1u << info->memoryTypeIndex)))
     {
         pthread_mutex_lock(&g_memoryLock);
@@ -457,6 +805,7 @@ static VKAPI_ATTR void VKAPI_CALL hook_FreeMemory(VkDevice device, VkDeviceMemor
         if (m) *m = g_memory[--g_memoryCount];
         pthread_mutex_unlock(&g_memoryLock);
     }
+    if (opt_memlog && memory) memlog_remove(memory);
     real_FreeMemory(device, memory, alloc);
 }
 
@@ -602,6 +951,11 @@ static PFN_vkVoidFunction device_hook(const char* name, PFN_vkVoidFunction real)
     HOOK(CreateGraphicsPipelines)
     HOOK(CreateComputePipelines)
     HOOK(AllocateMemory)
+    HOOK(CreateDescriptorPool)
+    HOOK(DestroyDescriptorPool)
+    HOOK(ResetDescriptorPool)
+    HOOK(AllocateDescriptorSets)
+    HOOK(FreeDescriptorSets)
     HOOK(FreeMemory)
     HOOK(MapMemory)
     HOOK(UnmapMemory)
