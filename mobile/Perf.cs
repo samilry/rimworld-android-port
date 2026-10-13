@@ -360,6 +360,62 @@ namespace PortMobile
 			}
 		}
 
+		/// <summary>
+		/// "abilities=NAME" in perfcmd.txt: for the ability defs whose class name contains NAME, what CanCast says for a
+		/// colonist who does not have the ability (it is made for the question, not given to the pawn). A mod's ability
+		/// class that overrides CanCast by the signature of the game's previous version is only asked when the mod's
+		/// preparation gave it the override by the new one (patch/ModPrep.cs, BridgeChangedOverrides).
+		/// "abilities=NAME:CLASS" asks an ability of the class CLASS (full name) instead of the def's own: for a class
+		/// that no def of the running game uses.
+		/// </summary>
+		private static void Abilities(string what)
+		{
+			try
+			{
+				string name = what.Split(':')[0];
+				Type instead = what.Contains(":") ? AccessTools.TypeByName(what.Substring(what.IndexOf(':') + 1)) : null;
+				if (what.Contains(":") && instead == null)
+				{
+					Console.WriteLine("[mobile] perf: no type " + what.Substring(what.IndexOf(':') + 1));
+					return;
+				}
+				Pawn pawn = System.Linq.Enumerable.FirstOrDefault(Find.CurrentMap.mapPawns.FreeColonistsSpawned);
+				int shown = 0;
+				foreach (AbilityDef def in DefDatabase<AbilityDef>.AllDefs)
+				{
+					if (def.abilityClass == null || def.abilityClass.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) < 0)
+					{
+						continue;
+					}
+					Type type = instead ?? def.abilityClass;
+					Ability ability = instead != null ? (Ability)Activator.CreateInstance(instead, pawn, def) : AbilityUtility.MakeAbility(def, pawn);
+					AcceptanceReport report = ability.CanCast;
+					var getters = new List<string>();
+					foreach (System.Reflection.MethodInfo method in type.GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly))
+					{
+						if (method.Name == "get_CanCast")
+						{
+							getters.Add(method.ReturnType.Name);
+						}
+					}
+					Console.WriteLine("[mobile] perf: ability " + def.defName + " (" + type.FullName + ", level " + def.level + ", heat " + def.EntropyGain.ToString("F1", CultureInfo.InvariantCulture) + ", psyfocus " + def.PsyfocusCost.ToString("F2", CultureInfo.InvariantCulture)
+						+ ") asked for " + pawn.LabelShort + " (psylink " + pawn.GetPsylinkLevel() + "): CanCast " + (report.Accepted ? "yes" : "no") + "; the class declares get_CanCast returning " + (getters.Count == 0 ? "nothing" : string.Join(" and ", getters)));
+					if (++shown >= 6)
+					{
+						break;
+					}
+				}
+				if (shown == 0)
+				{
+					Console.WriteLine("[mobile] perf: no ability class like '" + name + "'");
+				}
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] perf: abilities failed: " + e);
+			}
+		}
+
 		private static void ReadCommands()
 		{
 			try
@@ -400,6 +456,10 @@ namespace PortMobile
 					else if (parts[0] == "raid" && parts.Length == 2)
 					{
 						Raid(parts[1].Trim());
+					}
+					else if (parts[0] == "abilities" && parts.Length == 2 && Current.ProgramState == ProgramState.Playing && Find.CurrentMap != null)
+					{
+						Abilities(parts[1].Trim());
 					}
 					else if (parts[0] == "speed" && parts.Length == 2)
 					{

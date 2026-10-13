@@ -64,6 +64,8 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 ///   - attributes whose type does not exist removed (Mono passes over them, this runtime throws from every attribute query);
 ///   - calls to a method that the game's current version has only with more optional parameters at the end, or with
 ///     another return type that converts implicitly to the old one, adapted the way a recompilation would;
+///   - an override of a game method by its old return type, where the old type converts implicitly to the new one,
+///     joined by the override the game does call, which returns the mod's result;
 ///   - Lunar Framework's checksum of the file (name.lfc beside name.dll) recomputed when the file changed.
 /// A stamp file in the mod's folder records that this was done (and with which version of these rules).
 ///
@@ -74,7 +76,7 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 internal static class ModPrep
 {
 	/// <summary>Bumped whenever what is done to an assembly changes; part of the stamp, so prepared mods are done again.</summary>
-	public const int RulesVersion = 7;
+	public const int RulesVersion = 8;
 
 	public const string StampName = ".port17-prepared";
 
@@ -276,18 +278,10 @@ internal static class ModPrep
 		}
 		edits += DropAttributesOfMissingTypes(module, label, log);
 		edits += AdaptChangedSignatures(module, label, log);
+		edits += BridgeChangedOverrides(module, label, log);
 		return edits + PrepareEmbeddedAssemblies(module, resolver, label, result, log);
 	}
 
-	/// <summary>
-	/// A mod built against the real Unity may carry attributes the engine's stand-in for Unity does not have (Ariandel
-	/// Library's LumiParticle: [UnityEngine.ImageEffectAllowedInSceneView]). Mono passes over an attribute whose type it
-	/// cannot find; this runtime throws TypeLoadException from every GetCustomAttributes and IsDefined on the member that
-	/// carries it, whatever attribute was asked for: Harmony's PatchAll failed in the mod, and the game's own search for
-	/// [DefOf] types (GenTypes.AllTypesWithAttribute) failed for everybody, which ended the loading of all mods. Such
-	/// attributes are removed. Only where the assembly the attribute should be in is found and has no such type: an
-	/// attribute from an assembly that is not found here (another mod's) stays.
-	/// </summary>
 	/// <summary>
 	/// A mod built for the game's previous version calls methods by their old signature, and the game's developers
 	/// change signatures in ways that cost a mod's author nothing but a recompilation: a new optional parameter at the
@@ -638,6 +632,144 @@ internal static class ModPrep
 		}
 	}
 
+	/// <summary>
+	/// The other side of a changed return type: a class of the mod overrides a method of the game by the old signature
+	/// (Miho's MihochanPsycast has "override bool CanCast", and Ability.CanCast returns AcceptanceReport now). The
+	/// runtime finds nothing for it to override and gives it a slot of its own: the game calls its own method and the
+	/// mod's never runs (Miho's psycasts could be cast without psyfocus and past the heat limit). Unlike a call, this
+	/// would not recompile either; but where the old return type converts implicitly to the new one, what the author
+	/// has to write is plain: the override by the new signature, returning what the old one returns. That method is
+	/// added: it calls the mod's method (virtually: a class derived from this one overrides the old signature) and
+	/// converts the result. The mod's method is marked as what it already is in effect, a new virtual method.
+	///
+	/// Only for a virtual method of the game's own assembly, taken from the nearest base type that has a virtual method
+	/// of that name and those parameters, in a class that is not generic and has no method by the new signature. (Two
+	/// methods of one name that differ in the return type only: a lookup by name alone, Type.GetMethod("get_CanCast")
+	/// on the mod's class, finds two now. Nothing among the mods here does that.)
+	/// </summary>
+	private static int BridgeChangedOverrides(ModuleDefinition module, string label, Action<string> log)
+	{
+		var names = new List<string>();
+		foreach (TypeDefinition type in module.GetTypes().ToArray())
+		{
+			if (type.BaseType == null || type.HasGenericParameters || type.BaseType is GenericInstanceType)
+			{
+				continue;
+			}
+			foreach (MethodDefinition method in type.Methods.ToArray())
+			{
+				if (!method.IsVirtual || method.IsNewSlot || method.IsStatic || method.HasGenericParameters || method.HasOverrides || method.ReturnType.MetadataType == MetadataType.Void)
+				{
+					continue;
+				}
+				MethodDefinition changed;
+				try
+				{
+					changed = FindChangedBase(type, method);
+				}
+				catch (Exception)
+				{
+					changed = null;
+				}
+				if (changed == null || changed.IsFinal || changed.ReturnType.MetadataType == MetadataType.Void)
+				{
+					continue;
+				}
+				MethodDefinition conversion = ImplicitConversion(method.ReturnType, changed.ReturnType);
+				if (conversion == null || type.Methods.Any(other => SameNameAndParameters(other, method) && other.ReturnType.FullName == changed.ReturnType.FullName))
+				{
+					continue;
+				}
+				var bridge = new MethodDefinition(method.Name, (method.Attributes & ~(MethodAttributes.NewSlot | MethodAttributes.Abstract)) | MethodAttributes.HideBySig, module.ImportReference(changed.ReturnType));
+				foreach (ParameterDefinition parameter in method.Parameters)
+				{
+					bridge.Parameters.Add(new ParameterDefinition(parameter.Name, parameter.Attributes, parameter.ParameterType));
+				}
+				ILProcessor il = bridge.Body.GetILProcessor();
+				il.Emit(OpCodes.Ldarg_0);
+				foreach (ParameterDefinition parameter in bridge.Parameters)
+				{
+					il.Emit(OpCodes.Ldarg, parameter);
+				}
+				il.Emit(OpCodes.Callvirt, method);
+				il.Emit(OpCodes.Call, module.ImportReference(conversion));
+				il.Emit(OpCodes.Ret);
+				type.Methods.Add(bridge);
+				method.IsNewSlot = true;
+				names.Add(type.Name + "." + method.Name + " (" + method.ReturnType.Name + " -> " + changed.ReturnType.Name + ")");
+			}
+		}
+		if (names.Count > 0)
+		{
+			log(label + ": " + names.Count + " override(s) of a method whose return type the game changed got the override by the new one: " + string.Join(", ", names.Take(6)) + (names.Count > 6 ? ", ..." : ""));
+		}
+		return names.Count;
+	}
+
+	/// <summary>
+	/// The game's method that the mod's override was written for, where it has another return type now; null when the
+	/// override still overrides something, or when that cannot be told (a base type that is not found, or generic).
+	/// </summary>
+	private static MethodDefinition FindChangedBase(TypeDefinition type, MethodDefinition method)
+	{
+		for (TypeReference reference = type.BaseType; reference != null; )
+		{
+			if (reference is GenericInstanceType)
+			{
+				return null;
+			}
+			TypeDefinition t = reference.Resolve();
+			if (t == null || t.HasGenericParameters)
+			{
+				return null;
+			}
+			MethodDefinition changed = null;
+			foreach (MethodDefinition candidate in t.Methods)
+			{
+				if (!candidate.IsVirtual || candidate.HasGenericParameters || !SameNameAndParameters(candidate, method))
+				{
+					continue;
+				}
+				if (candidate.ReturnType.FullName == method.ReturnType.FullName)
+				{
+					return null; // it overrides this one
+				}
+				changed = candidate;
+			}
+			if (changed != null)
+			{
+				return t.Module.Assembly.Name.Name == "Assembly-CSharp" ? changed : null;
+			}
+			reference = t.BaseType;
+		}
+		return null;
+	}
+
+	private static bool SameNameAndParameters(MethodDefinition a, MethodDefinition b)
+	{
+		if (a.Name != b.Name || a.HasThis != b.HasThis || a.Parameters.Count != b.Parameters.Count)
+		{
+			return false;
+		}
+		for (int i = 0; i < a.Parameters.Count; i++)
+		{
+			if (a.Parameters[i].ParameterType.FullName != b.Parameters[i].ParameterType.FullName)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/// <summary>
+	/// A mod built against the real Unity may carry attributes the engine's stand-in for Unity does not have (Ariandel
+	/// Library's LumiParticle: [UnityEngine.ImageEffectAllowedInSceneView]). Mono passes over an attribute whose type it
+	/// cannot find; this runtime throws TypeLoadException from every GetCustomAttributes and IsDefined on the member that
+	/// carries it, whatever attribute was asked for: Harmony's PatchAll failed in the mod, and the game's own search for
+	/// [DefOf] types (GenTypes.AllTypesWithAttribute) failed for everybody, which ended the loading of all mods. Such
+	/// attributes are removed. Only where the assembly the attribute should be in is found and has no such type: an
+	/// attribute from an assembly that is not found here (another mod's) stays.
+	/// </summary>
 	private static int DropAttributesOfMissingTypes(ModuleDefinition module, string label, Action<string> log)
 	{
 		var missing = new Dictionary<string, bool>();
