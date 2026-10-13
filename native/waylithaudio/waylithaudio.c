@@ -6,11 +6,13 @@
 //   voices   one ma_sound each, with optional low-pass, high-pass and echo nodes between it and its group
 //   groups   ma_sound_group; handle 0 is the engine's endpoint
 // Handles are indices with a generation, so that a voice the engine still refers to after its automatic release
-// is harmless. Reverb is accepted and ignored (miniaudio has none built in); the mix matrix too.
+// is harmless. Reverb is a Freeverb node of our own (the engine passes Freeverb-style parameters); the mix matrix
+// is accepted and ignored.
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <pthread.h>
 #include <android/log.h>
 
@@ -90,6 +92,8 @@ typedef struct Voice
     ma_hpf_node hpf;
     ma_delay_node delay;
     TapNode* tap;
+    struct ReverbNode* reverb;
+    int reverbOn;
 } Voice;
 
 typedef struct Group
@@ -373,15 +377,146 @@ static void tap_process(ma_node* node, const float** in, ma_uint32* inFrames, fl
 }
 static ma_node_vtable g_tapVtable = { tap_process, NULL, 1, 1, MA_NODE_FLAG_PASSTHROUGH };
 
+// ---- reverb: a Freeverb (Schroeder) node, per voice ----
+#define RV_COMBS 8
+#define RV_ALLPASSES 4
+static const int rv_combTuning[RV_COMBS] = { 1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617 };
+static const int rv_allpassTuning[RV_ALLPASSES] = { 556, 441, 341, 225 };
+#define RV_STEREO_SPREAD 23
+#define RV_MAX_CHANNELS 2
+
+typedef struct { float* buf; int size, index; float filterStore; } RvComb;
+typedef struct { float* buf; int size, index; } RvAllpass;
+typedef struct ReverbNode
+{
+    ma_node_base base;
+    uint32_t channels;
+    RvComb comb[RV_MAX_CHANNELS][RV_COMBS];
+    RvAllpass allpass[RV_MAX_CHANNELS][RV_ALLPASSES];
+    float feedback, damp, wet1, wet2, dry;
+    float highCutCoef, highCutState[RV_MAX_CHANNELS];
+} ReverbNode;
+
+static void rv_set(ReverbNode* r, float roomsize, float damp, float wet, float dry, float width, float highCutHz)
+{
+    r->feedback = roomsize * 0.28f + 0.7f;
+    r->damp = damp * 0.4f;
+    r->wet1 = wet * 3.0f * (width / 2.0f + 0.5f);
+    r->wet2 = wet * 3.0f * ((1.0f - width) / 2.0f);
+    r->dry = dry;
+    r->highCutCoef = highCutHz > 0.0f && highCutHz < g_rate * 0.49f ? (float)(1.0 - exp(-2.0 * 3.14159265 * highCutHz / g_rate)) : 1.0f;
+}
+
+static void rv_process(ma_node* node, const float** in, ma_uint32* inFrames, float** out, ma_uint32* outFrames)
+{
+    ReverbNode* r = (ReverbNode*)node;
+    ma_uint32 frames = *inFrames < *outFrames ? *inFrames : *outFrames;
+    uint32_t ch = r->channels;
+    for (ma_uint32 f = 0; f < frames; f++)
+    {
+        float input = 0.0f;
+        for (uint32_t c = 0; c < ch; c++) input += in[0][f * ch + c];
+        input *= 0.015f;
+        float outL = 0.0f, outR = 0.0f;
+        for (uint32_t c = 0; c < ch && c < RV_MAX_CHANNELS; c++)
+        {
+            float acc = 0.0f;
+            for (int i = 0; i < RV_COMBS; i++)
+            {
+                RvComb* cb = &r->comb[c][i];
+                float y = cb->buf[cb->index];
+                cb->filterStore = y * (1.0f - r->damp) + cb->filterStore * r->damp;
+                cb->buf[cb->index] = input + cb->filterStore * r->feedback;
+                if (++cb->index >= cb->size) cb->index = 0;
+                acc += y;
+            }
+            for (int i = 0; i < RV_ALLPASSES; i++)
+            {
+                RvAllpass* ap = &r->allpass[c][i];
+                float bufout = ap->buf[ap->index];
+                float y = -acc + bufout;
+                ap->buf[ap->index] = acc + bufout * 0.5f;
+                if (++ap->index >= ap->size) ap->index = 0;
+                acc = y;
+            }
+            if (c == 0) outL = acc; else outR = acc;
+        }
+        if (ch == 1) outR = outL;
+        float wets[2] = { outL * r->wet1 + outR * r->wet2, outR * r->wet1 + outL * r->wet2 };
+        for (uint32_t c = 0; c < ch; c++)
+        {
+            float w = wets[c < 2 ? c : 1];
+            if (r->highCutCoef < 1.0f && c < RV_MAX_CHANNELS)
+            {
+                r->highCutState[c] += r->highCutCoef * (w - r->highCutState[c]);
+                w = r->highCutState[c];
+            }
+            out[0][f * ch + c] = in[0][f * ch + c] * r->dry + w;
+        }
+    }
+    *inFrames = frames;
+    *outFrames = frames;
+}
+static ma_node_vtable g_reverbVtable = { rv_process, NULL, 1, 1, 0 };
+
+static void rv_free_buffers(ReverbNode* r)
+{
+    for (uint32_t c = 0; c < RV_MAX_CHANNELS; c++)
+    {
+        for (int i = 0; i < RV_COMBS; i++) free(r->comb[c][i].buf);
+        for (int i = 0; i < RV_ALLPASSES; i++) free(r->allpass[c][i].buf);
+    }
+}
+
+static ReverbNode* rv_create(void)
+{
+    ReverbNode* r = (ReverbNode*)calloc(1, sizeof(ReverbNode));
+    r->channels = g_channels;
+    float scale = g_rate / 44100.0f;
+    for (uint32_t c = 0; c < RV_MAX_CHANNELS; c++)
+    {
+        for (int i = 0; i < RV_COMBS; i++)
+        {
+            r->comb[c][i].size = (int)((rv_combTuning[i] + c * RV_STEREO_SPREAD) * scale);
+            r->comb[c][i].buf = (float*)calloc(r->comb[c][i].size, sizeof(float));
+        }
+        for (int i = 0; i < RV_ALLPASSES; i++)
+        {
+            r->allpass[c][i].size = (int)((rv_allpassTuning[i] + c * RV_STEREO_SPREAD) * scale);
+            r->allpass[c][i].buf = (float*)calloc(r->allpass[c][i].size, sizeof(float));
+        }
+    }
+    ma_node_config cfg = ma_node_config_init();
+    ma_uint32 channels = g_channels;
+    cfg.vtable = &g_reverbVtable;
+    cfg.pInputChannels = &channels;
+    cfg.pOutputChannels = &channels;
+    if (ma_node_init(ma_engine_get_node_graph(&g_engine), &cfg, &g_allocCallbacks, r) != MA_SUCCESS)
+    {
+        rv_free_buffers(r);
+        free(r);
+        return NULL;
+    }
+    return r;
+}
+
+static void rv_destroy(ReverbNode* r)
+{
+    ma_node_uninit(r, &g_allocCallbacks);
+    rv_free_buffers(r);
+    free(r);
+}
+
 // ---- voices ----
 static void voice_rebuild_chain(Voice* v)
 {
     ma_node* target = v->group ? (ma_node*)v->group : ma_engine_get_endpoint(&g_engine);
-    ma_node* nodes[4];
+    ma_node* nodes[5];
     int n = 0;
     if (v->lpfOn) nodes[n++] = &v->lpf;
     if (v->hpfOn) nodes[n++] = &v->hpf;
     if (v->echoOn) nodes[n++] = &v->delay;
+    if (v->reverbOn && v->reverb) nodes[n++] = v->reverb;
     if (v->tap) nodes[n++] = v->tap;
     ma_node* next = target;
     for (int i = n - 1; i >= 0; i--)
@@ -393,6 +528,7 @@ static void voice_rebuild_chain(Voice* v)
     if (!v->lpfOn && v->lpfInit) ma_node_detach_output_bus(&v->lpf, 0);
     if (!v->hpfOn && v->hpfInit) ma_node_detach_output_bus(&v->hpf, 0);
     if (!v->echoOn && v->delayInit) ma_node_detach_output_bus(&v->delay, 0);
+    if (!v->reverbOn && v->reverb) ma_node_detach_output_bus(v->reverb, 0);
 }
 
 static void voice_release_locked(Voice* v)
@@ -403,6 +539,7 @@ static void voice_release_locked(Voice* v)
     if (v->hpfInit) { ma_hpf_node_uninit(&v->hpf, &g_allocCallbacks); v->hpfInit = 0; }
     if (v->delayInit) { ma_delay_node_uninit(&v->delay, &g_allocCallbacks); v->delayInit = 0; }
     if (v->tap) { ma_node_uninit(v->tap, &g_allocCallbacks); free(v->tap->ring); free(v->tap); v->tap = NULL; }
+    if (v->reverb) { rv_destroy(v->reverb); v->reverb = NULL; }
     if (v->decoderInit) { ma_decoder_uninit(&v->decoder); v->decoderInit = 0; }
     if (v->userInit) { ma_data_source_uninit(&v->userSource); v->userInit = 0; }
     sound_unref(v->sound);
@@ -651,8 +788,22 @@ EXPORT int wa_voice_set_echo(uint64_t voice, int enabled, float delayMs, float f
 
 EXPORT int wa_voice_set_reverb(uint64_t voice, int enabled, float roomsize, float damp, float wet, float dry, float width, float highCutHz)
 {
-    (void)voice; (void)enabled; (void)roomsize; (void)damp; (void)wet; (void)dry; (void)width; (void)highCutHz;
-    return 0; // accepted, not applied: miniaudio has no reverb of its own
+    int result = MA_INVALID_ARGS;
+    WITH_VOICE({
+        result = MA_SUCCESS;
+        if (enabled)
+        {
+            if (!v->reverb) v->reverb = rv_create();
+            if (!v->reverb) result = MA_OUT_OF_MEMORY;
+            else rv_set(v->reverb, roomsize, damp, wet, dry, width, highCutHz);
+        }
+        if (result == MA_SUCCESS && (v->reverbOn != (enabled != 0)))
+        {
+            v->reverbOn = enabled != 0;
+            voice_rebuild_chain(v);
+        }
+    });
+    return result;
 }
 
 EXPORT int wa_voice_tap_enable(uint64_t voice, uint32_t capacityFrames)
