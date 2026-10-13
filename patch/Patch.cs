@@ -402,15 +402,21 @@ internal static class Patch
 				resolver.AddSearchDirectory(dir);
 			}
 		}
-		string[] files = Directory.EnumerateFiles(root, "*.dll", SearchOption.AllDirectories).OrderBy(f => f).ToArray();
-		foreach (string dir in files.Select(Path.GetDirectoryName).Distinct())
+		string[] allFiles = Directory.EnumerateFiles(root, "*.dll", SearchOption.AllDirectories).OrderBy(f => f).ToArray();
+		foreach (string dir in allFiles.Select(Path.GetDirectoryName).Distinct())
 		{
 			resolver.AddSearchDirectory(dir);
 		}
+		string[] files = LoadedVersionOnly(root, allFiles).ToArray();
 		var reader = new ReaderParameters { ReadingMode = ReadingMode.Immediate, InMemory = true, AssemblyResolver = resolver };
 		int problems = 0, seen = 0;
 		foreach (string file in files)
 		{
+			string fileName = Path.GetFileName(file);
+			if (fileName == "0Harmony.dll" || fileName == "1Harmony.dll")
+			{
+				continue; // a mod's bundled Harmony is never loaded: the game folder's serves
+			}
 			AssemblyDefinition assembly;
 			try { assembly = AssemblyDefinition.ReadAssembly(file, reader); }
 			catch { continue; }
@@ -428,6 +434,10 @@ internal static class Patch
 				}
 				foreach (MemberReference member in module.GetMemberReferences())
 				{
+					if (member.DeclaringType is ArrayType)
+					{
+						continue; // Get/Set/.ctor of multi-dimensional arrays have no definition to resolve to
+					}
 					if (member.DeclaringType == null || !Resolves(() => member.DeclaringType.Resolve()))
 					{
 						continue; // reported as a type
@@ -452,6 +462,58 @@ internal static class Patch
 		}
 		Console.WriteLine(problems + " unresolved references in " + seen + " assemblies");
 		return 0;
+	}
+
+	private static readonly Version GameVersion = new Version(1, 7);
+
+	/// <summary>
+	/// Only the assemblies the game would load: of a mod's version folders (1.0 ... 1.7, or v1.6), the highest one not
+	/// above the game's version, plus everything outside version folders except a copy of an assembly that folder has (the
+	/// root folder loads too, but the version folder loads first and a second assembly of the same name is skipped). The
+	/// default rule; LoadFolders.xml is not read.
+	/// </summary>
+	private static IEnumerable<string> LoadedVersionOnly(string root, IEnumerable<string> files)
+	{
+		foreach (IGrouping<string, string> mod in files.GroupBy(f => PathParts(root, f)[0]))
+		{
+			Version best = null;
+			foreach (string file in mod)
+			{
+				Version v = VersionFolderOf(root, file);
+				if (v != null && v <= GameVersion && (best == null || v > best))
+				{
+					best = v;
+				}
+			}
+			var inVersionFolder = new HashSet<string>(mod.Where(f => VersionFolderOf(root, f) == best).Select(f => Path.GetFileName(f).ToLowerInvariant()));
+			foreach (string file in mod)
+			{
+				Version v = VersionFolderOf(root, file);
+				if (v == best || (v == null && !inVersionFolder.Contains(Path.GetFileName(file).ToLowerInvariant())))
+				{
+					yield return file;
+				}
+			}
+		}
+	}
+
+	private static string[] PathParts(string root, string file)
+	{
+		return Path.GetRelativePath(root, file).Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+	}
+
+	private static Version VersionFolderOf(string root, string file)
+	{
+		string[] parts = PathParts(root, file);
+		for (int i = 1; i < parts.Length - 1; i++)
+		{
+			string name = parts[i].StartsWith("v", StringComparison.OrdinalIgnoreCase) ? parts[i].Substring(1) : parts[i];
+			if (name.Length <= 5 && name.Contains('.') && Version.TryParse(name, out Version v))
+			{
+				return v;
+			}
+		}
+		return null;
 	}
 
 	private static bool Resolves(Func<object> resolve)
