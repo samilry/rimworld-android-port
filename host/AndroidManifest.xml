@@ -6,7 +6,7 @@
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x403000" android:required="false" />
-    <application
+    <application android:allowNativeHeapPointerTagging="false"
         android:label="Port17"
         android:hasCode="true"
         android:extractNativeLibs="true"

@@ -41,6 +41,19 @@ internal static class Patch
 		},
 	};
 
+	// String literals to replace wherever they appear (ldstr): the launcher looks for fallback fonts (CJK, symbols) at
+	// Linux paths; these are the phone's.
+	private static readonly Dictionary<string, string> StringRewrites = new Dictionary<string, string>
+	{
+		["/usr/share/fonts/TTF/DejaVuSans.ttf"] = "/system/fonts/DroidSans.ttf",
+		["/usr/share/fonts/noto/NotoSansSymbols-Regular.ttf"] = "/system/fonts/NotoSansSymbols-Regular-Subsetted.ttf",
+		["/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf"] = "/system/fonts/NotoSansSymbols-Regular-Subsetted2.ttf",
+		["/usr/share/fonts/liberation/LiberationSans-Regular.ttf"] = "/system/fonts/Roboto-Regular.ttf",
+		["/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"] = "/system/fonts/NotoSansCJK-Regular.ttc",
+		["/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"] = "/system/fonts/DroidSansFallback.ttf",
+		["/usr/share/fonts/noto/NotoSansThai-Regular.ttf"] = "/system/fonts/NotoSansThai-Regular.ttf",
+	};
+
 	private static int Main(string[] args)
 	{
 		string folder = args[0];
@@ -83,6 +96,12 @@ internal static class Patch
 						}
 						foreach (Instruction i in method.Body.Instructions)
 						{
+							if (i.OpCode == OpCodes.Ldstr && i.Operand is string literal && StringRewrites.TryGetValue(literal, out string replacementLiteral))
+							{
+								i.Operand = replacementLiteral;
+								changes++;
+								continue;
+							}
 							if ((i.OpCode != OpCodes.Call && i.OpCode != OpCodes.Callvirt) || !(i.Operand is MethodReference target))
 							{
 								continue;
@@ -105,7 +124,7 @@ internal static class Patch
 				{
 					assembly.Write(file);
 					filesChanged++;
-					Console.WriteLine($"{name}: {changes} platform checks rewritten");
+					Console.WriteLine($"{name}: {changes} call sites or literals rewritten");
 				}
 			}
 		}

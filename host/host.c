@@ -31,6 +31,44 @@ typedef int (*coreclr_execute_assembly_fn)(void* hostHandle, unsigned int domain
 typedef int (*coreclr_shutdown_fn)(void* hostHandle, unsigned int domainId);
 
 static struct android_app* g_app;
+static char g_libdir[1024];
+
+// The directory the APK's native libraries were extracted to (where this library lives).
+static const char* lib_dir(void)
+{
+    if (g_libdir[0] == 0)
+    {
+        Dl_info info;
+        if (dladdr((void*)lib_dir, &info) && info.dli_fname)
+        {
+            strncpy(g_libdir, info.dli_fname, sizeof g_libdir - 1);
+            char* slash = strrchr(g_libdir, '/');
+            if (slash) *slash = 0;
+        }
+    }
+    return g_libdir;
+}
+
+// Loads the Android GLFW shim (host/glfw, libglfw.so) and hands it the activity, so that it sees the window and
+// the input before the engine asks for them. The runtime later loads the same file by name and gets this handle.
+static void attach_glfw(struct android_app* app)
+{
+    char path[1100];
+    snprintf(path, sizeof path, "%s/libglfw.so", lib_dir());
+    void* lib = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+    if (!lib)
+    {
+        LOGE("dlopen %s failed: %s", path, dlerror());
+        return;
+    }
+    void (*attach)(struct android_app*) = (void (*)(struct android_app*))dlsym(lib, "glfwAndroidAttach");
+    if (!attach)
+    {
+        LOGE("glfwAndroidAttach missing in %s", path);
+        return;
+    }
+    attach(app);
+}
 
 // stdout and stderr of the whole process are read by a thread and written to logcat line by line.
 static void* stdio_pump(void* arg)
@@ -198,14 +236,7 @@ static void* run_runtime(void* arg)
     const char* ext = app->activity->externalDataPath;
     const char* internal = app->activity->internalDataPath;
 
-    Dl_info info;
-    char libdir[1024] = "";
-    if (dladdr((void*)run_runtime, &info) && info.dli_fname)
-    {
-        strncpy(libdir, info.dli_fname, sizeof libdir - 1);
-        char* slash = strrchr(libdir, '/');
-        if (slash) *slash = 0;
-    }
+    const char* libdir = lib_dir();
     char runtime[1024], game[1024], gameSlash[1024], home[1024], tmp[1024];
     snprintf(runtime, sizeof runtime, "%s/runtime", ext);
     snprintf(game, sizeof game, "%s/game", ext);
@@ -222,6 +253,26 @@ static void* run_runtime(void* arg)
     setenv("XDG_CONFIG_HOME", home, 1);
     setenv("XDG_DATA_HOME", home, 1);
     chdir(game);
+
+    // Options for the Vulkan interposer (host/vulkan), from <game>/vulkan.txt: "key=value" per line.
+    {
+        const char* lines[32];
+        static char storage[2048];
+        char path[1100];
+        snprintf(path, sizeof path, "%s/vulkan.txt", game);
+        int n = read_args(path, lines, 32, storage, sizeof storage);
+        if (n > 0)
+        {
+            char joined[2048] = "";
+            for (int i = 0; i < n; i++)
+            {
+                size_t len = strlen(joined);
+                snprintf(joined + len, sizeof joined - len, "%s%s", len ? " " : "", lines[i]);
+            }
+            setenv("PORT17_VULKAN", joined, 1);
+            LOGI("vulkan options: %s", joined);
+        }
+    }
 
     static char tpa[1 << 20];
     tpa[0] = 0;
@@ -365,6 +416,7 @@ void android_main(struct android_app* app)
     g_app = app;
     redirect_stdio(app->activity->externalDataPath);
     LOGI("port17 host starting (internal %s, external %s)", app->activity->internalDataPath, app->activity->externalDataPath);
+    attach_glfw(app);
     pthread_t t;
     pthread_create(&t, NULL, run_runtime, app);
     pthread_detach(t);
