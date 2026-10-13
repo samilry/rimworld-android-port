@@ -423,7 +423,7 @@ internal static class Patch
 				{
 					if (!Resolves(() => type.Resolve()))
 					{
-						Count(missing, "type " + type.FullName + " [" + type.Scope.Name + "]");
+						Count(missing, "type " + type.FullName + " [" + (type.Scope == null ? "?" : type.Scope.Name) + "]");
 					}
 				}
 				foreach (MemberReference member in module.GetMemberReferences())
