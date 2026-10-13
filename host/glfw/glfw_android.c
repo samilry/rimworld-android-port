@@ -127,6 +127,28 @@ static int g_qhead, g_qtail;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cond = PTHREAD_COND_INITIALIZER;
 
+// ---- raw finger events for the managed touch layer (PortMobile) ----
+// Every finger event is recorded here as well. With the managed mode on, this file no longer turns fingers into
+// mouse events: the managed side reads them (glfwAndroidPollTouches) and injects what the engine should see.
+typedef struct TouchEvent { int type; int id; float x, y; double time; } TouchEvent; // type: 1 down, 2 move, 3 up, 4 cancel
+#define TOUCH_CAP 2048
+static TouchEvent g_touches[TOUCH_CAP];
+static int g_thead, g_ttail;
+static int g_touchManaged;
+
+static void record_touch(int type, int id, float x, float y)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    TouchEvent e = { type, id, x, y, ts.tv_sec + ts.tv_nsec / 1e9 };
+    pthread_mutex_lock(&g_lock);
+    int next = (g_ttail + 1) % TOUCH_CAP;
+    if (next == g_thead) g_thead = (g_thead + 1) % TOUCH_CAP;
+    g_touches[g_ttail] = e;
+    g_ttail = next;
+    pthread_mutex_unlock(&g_lock);
+}
+
 // Shared state (under g_lock): what the activity currently has.
 static struct android_app* g_app;
 static ANativeWindow* g_window;      // the activity's current window, NULL between TERM and INIT
@@ -479,6 +501,19 @@ static int32_t on_input_event(struct android_app* app, AInputEvent* event)
         return 1;
     }
 
+    // Raw finger events for the managed touch layer (every pointer of the event).
+    switch (masked)
+    {
+    case AMOTION_EVENT_ACTION_DOWN: record_touch(1, AMotionEvent_getPointerId(event, 0), AMotionEvent_getX(event, 0), AMotionEvent_getY(event, 0)); break;
+    case AMOTION_EVENT_ACTION_POINTER_DOWN: if (index < count) record_touch(1, AMotionEvent_getPointerId(event, index), AMotionEvent_getX(event, index), AMotionEvent_getY(event, index)); break;
+    case AMOTION_EVENT_ACTION_MOVE: for (size_t i = 0; i < count; i++) record_touch(2, AMotionEvent_getPointerId(event, i), AMotionEvent_getX(event, i), AMotionEvent_getY(event, i)); break;
+    case AMOTION_EVENT_ACTION_POINTER_UP: if (index < count) record_touch(3, AMotionEvent_getPointerId(event, index), AMotionEvent_getX(event, index), AMotionEvent_getY(event, index)); break;
+    case AMOTION_EVENT_ACTION_UP: record_touch(3, AMotionEvent_getPointerId(event, 0), AMotionEvent_getX(event, 0), AMotionEvent_getY(event, 0)); break;
+    case AMOTION_EVENT_ACTION_CANCEL: for (size_t i = 0; i < count; i++) record_touch(4, AMotionEvent_getPointerId(event, i), AMotionEvent_getX(event, i), AMotionEvent_getY(event, i)); break;
+    default: break;
+    }
+    if (g_touchManaged) return 1;
+
     // Touch (and stylus): first finger = cursor + left button, second finger = right button.
     switch (masked)
     {
@@ -548,6 +583,45 @@ static int32_t on_input_event(struct android_app* app, AInputEvent* event)
         break;
     }
     return 1;
+}
+
+// ---- the managed touch layer's API (PortMobile, P/Invoke "glfw") ----
+API void glfwAndroidSetTouchMode(int managed)
+{
+    pthread_mutex_lock(&g_lock);
+    g_touchManaged = managed;
+    g_primaryPointerId = g_secondaryPointerId = -1;
+    pthread_mutex_unlock(&g_lock);
+    LOGI("glfw: touch mode %s", managed ? "managed" : "mouse");
+}
+
+API int glfwAndroidPollTouches(TouchEvent* out, int max)
+{
+    int n = 0;
+    pthread_mutex_lock(&g_lock);
+    while (n < max && g_thead != g_ttail)
+    {
+        out[n++] = g_touches[g_thead];
+        g_thead = (g_thead + 1) % TOUCH_CAP;
+    }
+    pthread_mutex_unlock(&g_lock);
+    return n;
+}
+
+// Injected events join the queue like the activity's own and reach the engine at its next poll.
+API void glfwAndroidInjectCursor(double x, double y) { push(EV_CURSOR, 0, 0, 0, 0, x, y); }
+API void glfwAndroidInjectButton(int button, int action, int mods) { push(EV_BUTTON, button, action, mods, 0, 0, 0); }
+API void glfwAndroidInjectScroll(double dx, double dy) { push(EV_SCROLL, 0, 0, 0, 0, dx, dy); }
+API void glfwAndroidInjectKey(int key, int action, int mods) { push(EV_KEY, key, 0, action, mods, 0, 0); }
+API void glfwAndroidInjectChar(unsigned int codepoint, int mods) { push(EV_CHAR, (int)codepoint, mods, 0, 0, 0, 0); }
+API float glfwAndroidGetDensity(void) { return g_density; }
+
+// The system's soft keyboard (the activity's own, which only delivers key events: fine for Latin text).
+API void glfwAndroidShowKeyboard(int show)
+{
+    if (!g_app || !g_app->activity) return;
+    if (show) ANativeActivity_showSoftInput(g_app->activity, ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED);
+    else ANativeActivity_hideSoftInput(g_app->activity, 0);
 }
 
 API void glfwAndroidAttach(struct android_app* app)
