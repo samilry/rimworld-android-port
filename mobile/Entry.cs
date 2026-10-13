@@ -21,6 +21,7 @@ namespace PortMobile
 			ModImport.Start(harmony);
 			ModSort.Start(harmony);
 			BundleDiag.Start();
+			HarmonyDiag.Start();
 		}
 
 		public static void AfterUIRootOnGUI()

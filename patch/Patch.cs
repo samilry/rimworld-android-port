@@ -23,6 +23,14 @@ internal static class Patch
 		["System.Void System.Console::remove_CancelKeyPress(System.ConsoleCancelEventHandler)"] = "RemoveCancelKeyPress",
 	};
 
+	// Rewrites that apply inside 0Harmony.dll's own HarmonyLib types (not MonoMod's, which probe the runtime's internals by
+	// exact name to tell runtimes apart): Harmony's field lookups by name tolerate Mono's private field names
+	// (PortPlatform.GetFieldLax, the stand-in for the runtime fork's WaylithClr.LaxPrivateFieldNames).
+	private static readonly Dictionary<string, string> HarmonyRewrites = new Dictionary<string, string>
+	{
+		["System.Reflection.FieldInfo System.Type::GetField(System.String,System.Reflection.BindingFlags)"] = "GetFieldLax",
+	};
+
 	// Rewrites that apply inside one method only: method full name -> (callee full name -> replacement in PortPlatform).
 	private static readonly Dictionary<string, Dictionary<string, string>> ScopedRewrites = new Dictionary<string, Dictionary<string, string>>
 	{
@@ -45,6 +53,21 @@ internal static class Patch
 	// exhelper_linux_arm64.so dropped under /tmp: there is no /tmp here, and that copy wants _Unwind_* from glibc's libgcc_s.
 	private const string CreateNativeExceptionHelper = "MonoMod.Core.Platforms.Systems.PosixExceptionHelper MonoMod.Core.Platforms.Systems.LinuxSystem::CreateNativeExceptionHelper()";
 	private const string ExceptionHelperLibrary = "libmm_exhelper.so";
+
+	// Methods of 0Harmony.dll with the arguments (OpCode opcode, MethodInfo method) whose opcode first passes through
+	// PortPlatform.LaxCallOpcode: Harmony's emitter for the instructions of a patched method (the stand-in for the runtime
+	// fork's WaylithClr.LaxCallvirt).
+	// (DynEmit takes the operand as an object: it is what emits the instructions a transpiler hands back.)
+	private static readonly Dictionary<string, string> CallOpcodeFilters = new Dictionary<string, string>
+	{
+		["System.Void HarmonyLib.Emitter::Emit(System.Reflection.Emit.OpCode,System.Reflection.MethodInfo)"] = "LaxCallOpcode",
+		["System.Void HarmonyLib.Emitter::EmitCall(System.Reflection.Emit.OpCode,System.Reflection.MethodInfo)"] = "LaxCallOpcode",
+		["System.Void HarmonyLib.Emitter::DynEmit(System.Reflection.Emit.OpCode,System.Object)"] = "LaxCallOpcodeForOperand",
+	};
+
+	// Harmony's emission of a replacement method's instruction list: the list first passes through
+	// PortPlatform.NormalizeHarmonyStack (hooks/HarmonyCompat.cs: values a transpiler left on the stack at a jump).
+	private const string EmitCodes = "System.Void HarmonyLib.MethodCreatorTools::EmitCodes(HarmonyLib.MethodCreator,HarmonyLib.Emitter,System.Collections.Generic.List`1<HarmonyLib.CodeInstruction>)";
 
 	// Calls inserted at the start of a method: method full name -> PortPlatform method (static, no arguments, void).
 	private static readonly Dictionary<string, string> EntryCalls = new Dictionary<string, string>
@@ -161,6 +184,43 @@ internal static class Patch
 							il.Emit(OpCodes.Ret);
 							changes++;
 						}
+						if (CallOpcodeFilters.TryGetValue(method.FullName, out string filterName))
+						{
+							if (!imported.TryGetValue(filterName, out MethodReference filter))
+							{
+								imported[filterName] = filter = Import(module, resolver, filterName);
+							}
+							Instruction first = method.Body.Instructions[0];
+							bool done = method.Body.Instructions.Count > 2 && method.Body.Instructions[2].Operand is MethodReference there && there.FullName == filter.FullName;
+							if (!done)
+							{
+								// opcode = PortPlatform.LaxCallOpcode(opcode, method);   (an instance method: this, opcode, method)
+								ILProcessor il = method.Body.GetILProcessor();
+								il.InsertBefore(first, Instruction.Create(OpCodes.Ldarg_1));
+								il.InsertBefore(first, Instruction.Create(OpCodes.Ldarg_2));
+								il.InsertBefore(first, Instruction.Create(OpCodes.Call, filter));
+								il.InsertBefore(first, Instruction.Create(OpCodes.Starg_S, method.Parameters[0]));
+								changes++;
+							}
+						}
+						if (method.FullName == EmitCodes)
+						{
+							if (!imported.TryGetValue("NormalizeHarmonyStack", out MethodReference normalize))
+							{
+								imported["NormalizeHarmonyStack"] = normalize = Import(module, resolver, "NormalizeHarmonyStack");
+							}
+							Instruction first = method.Body.Instructions[0];
+							bool done = method.Body.Instructions.Count > 2 && method.Body.Instructions[2].Operand is MethodReference there && there.FullName == normalize.FullName;
+							if (!done)
+							{
+								// PortPlatform.NormalizeHarmonyStack(creator, codes);   (static: creator, emitter, codes)
+								ILProcessor il = method.Body.GetILProcessor();
+								il.InsertBefore(first, Instruction.Create(OpCodes.Ldarg_0));
+								il.InsertBefore(first, Instruction.Create(OpCodes.Ldarg_2));
+								il.InsertBefore(first, Instruction.Create(OpCodes.Call, normalize));
+								changes++;
+							}
+						}
 						if (EntryCalls.TryGetValue(method.FullName, out string entryCall))
 						{
 							if (!imported.TryGetValue(entryCall, out MethodReference entry))
@@ -187,7 +247,8 @@ internal static class Patch
 								continue;
 							}
 							if (!Rewrites.TryGetValue(target.FullName, out string replacement)
-								&& !(ScopedRewrites.TryGetValue(method.FullName, out Dictionary<string, string> scoped) && scoped.TryGetValue(target.FullName, out replacement)))
+								&& !(ScopedRewrites.TryGetValue(method.FullName, out Dictionary<string, string> scoped) && scoped.TryGetValue(target.FullName, out replacement))
+								&& !(name == "0Harmony.dll" && type.FullName.StartsWith("HarmonyLib.", StringComparison.Ordinal) && HarmonyRewrites.TryGetValue(target.FullName, out replacement)))
 							{
 								continue;
 							}
@@ -195,8 +256,29 @@ internal static class Patch
 							{
 								imported[replacement] = reference = Import(module, resolver, replacement);
 							}
+							// The stand-ins are static methods: an instance method's "this" becomes the first argument, and a
+							// callvirt has to become a call (this runtime refuses callvirt to a static method).
+							i.OpCode = OpCodes.Call;
 							i.Operand = reference;
 							changes++;
+						}
+					}
+				}
+				// Mods set read-only static fields of the game by reflection ([NL] Custom Portraits writes ColonistBar.BaseSize
+				// on every frame): Mono lets that pass, Ludeon's runtime fork too (WaylithClr.AllowInitOnlyStaticWrites), the
+				// stock runtime throws "Cannot set initonly static field ... after type ... is initialized". The game
+				// assembly's static fields are no longer initonly (the same that is done to the mods' own, for DefOf).
+				if (name == "Assembly-CSharp.dll")
+				{
+					foreach (TypeDefinition type in module.GetTypes())
+					{
+						foreach (FieldDefinition field in type.Fields)
+						{
+							if (field.IsStatic && field.IsInitOnly && !field.HasConstant)
+							{
+								field.IsInitOnly = false;
+								changes++;
+							}
 						}
 					}
 				}

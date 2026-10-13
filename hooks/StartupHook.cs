@@ -233,6 +233,118 @@ namespace PortHooks
 			}
 		}
 
+		/// <summary>
+		/// Stands in for Type.GetField(name, flags) inside Harmony (patch/Patch.cs rewrites the calls in 0Harmony.dll's
+		/// HarmonyLib types). Mods written for Mono reach into the framework's private fields by Mono's names; this
+		/// runtime's framework names many of them differently (Mono's XmlElement.name is _name here, m_value is _value,
+		/// and so on). Ludeon's runtime fork tolerates that (WaylithClr.LaxPrivateFieldNames in the game's
+		/// runtimeconfig); the stock runtime finds nothing, and Humanoid Alien Races for one fails to initialize.
+		/// When the exact name is not there and the type is one of the framework's, a non-public field whose name is the
+		/// same apart from a leading "_" or "m_" is taken, if there is exactly one.
+		/// </summary>
+		public static FieldInfo GetFieldLax(Type type, string name, BindingFlags flags)
+		{
+			FieldInfo field = type.GetField(name, flags);
+			if (field != null || string.IsNullOrEmpty(name) || (flags & BindingFlags.NonPublic) == 0 || !IsFrameworkType(type))
+			{
+				return field;
+			}
+			string wanted = WithoutFieldPrefix(name);
+			FieldInfo found = null;
+			foreach (FieldInfo candidate in type.GetFields(flags))
+			{
+				if (!candidate.IsPublic && string.Equals(WithoutFieldPrefix(candidate.Name), wanted, StringComparison.Ordinal))
+				{
+					if (found != null)
+					{
+						return null; // two fields answer to the name: not guessed
+					}
+					found = candidate;
+				}
+			}
+			if (found != null)
+			{
+				lock (laxFieldsReported)
+				{
+					if (laxFieldsReported.Add(type.FullName + "." + name))
+					{
+						Console.WriteLine("[port17] " + type.FullName + " has no field '" + name + "'; '" + found.Name + "' serves (private field names differ between Mono's framework and this one)");
+					}
+				}
+			}
+			return found;
+		}
+
+		private static readonly System.Collections.Generic.HashSet<string> laxFieldsReported = new System.Collections.Generic.HashSet<string>();
+
+		private static bool IsFrameworkType(Type type)
+		{
+			string assembly = type.Assembly.GetName().Name ?? "";
+			return assembly == "mscorlib" || assembly == "netstandard" || assembly.StartsWith("System", StringComparison.Ordinal);
+		}
+
+		private static string WithoutFieldPrefix(string name)
+		{
+			if (name.StartsWith("m_", StringComparison.Ordinal))
+			{
+				return name.Substring(2);
+			}
+			return name.StartsWith("_", StringComparison.Ordinal) ? name.Substring(1) : name;
+		}
+
+		/// <summary>
+		/// The opcode Harmony emits for a call instruction of a patched method (patch/Patch.cs passes the arguments of
+		/// HarmonyLib.Emitter.Emit(OpCode, MethodInfo) and EmitCall through here). Transpilers written for Mono use
+		/// callvirt for static methods here and there (Toddlers' call of its static settings getter): Mono runs that,
+		/// Ludeon's runtime fork too (WaylithClr.LaxCallvirt), the stock runtime throws "Method not found: '?'" or
+		/// "invalid program" when it compiles the patched method. A callvirt to a static method becomes a call.
+		/// </summary>
+		public static System.Reflection.Emit.OpCode LaxCallOpcode(System.Reflection.Emit.OpCode opcode, MethodInfo method)
+		{
+			if (method != null && method.IsStatic && opcode == System.Reflection.Emit.OpCodes.Callvirt)
+			{
+				lock (laxFieldsReported)
+				{
+					if (laxFieldsReported.Add("callvirt " + method.DeclaringType?.FullName + "." + method.Name))
+					{
+						Console.WriteLine("[port17] a patch calls the static method " + method.DeclaringType?.FullName + "." + method.Name + " with callvirt; emitted as call");
+					}
+				}
+				return System.Reflection.Emit.OpCodes.Call;
+			}
+			return opcode;
+		}
+
+		/// <summary>LaxCallOpcode for Harmony's Emitter.DynEmit(OpCode, object), which emits the instructions transpilers hand back: the operand is a method only for some.</summary>
+		public static System.Reflection.Emit.OpCode LaxCallOpcodeForOperand(System.Reflection.Emit.OpCode opcode, object operand)
+		{
+			return operand is MethodInfo method ? LaxCallOpcode(opcode, method) : opcode;
+		}
+
+		/// <summary>
+		/// Called at the start of HarmonyLib.MethodCreatorTools.EmitCodes (patch/Patch.cs adds the call) with Harmony's
+		/// instruction list for a replacement method: values a transpiler left on the stack at a jump are popped, as
+		/// Mono in effect does (hooks/HarmonyCompat.cs). Never lets anything escape into Harmony.
+		/// </summary>
+		public static void NormalizeHarmonyStack(object creator, object codes)
+		{
+			try
+			{
+				NormalizeStack(creator, codes);
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[port17] the stack check of a patched method failed (the method is emitted as it is): " + e.GetType().Name + ": " + e.Message);
+			}
+		}
+
+		// Apart, and not inlined: HarmonyCompat names Harmony's types, which are only there once Harmony is loaded.
+		[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+		private static void NormalizeStack(object creator, object codes)
+		{
+			HarmonyCompat.Normalize(creator, codes as System.Collections.Generic.List<HarmonyLib.CodeInstruction>);
+		}
+
 		public static bool SteamInitializedForMenu()
 		{
 			return true;
