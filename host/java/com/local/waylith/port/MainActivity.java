@@ -385,29 +385,16 @@ public final class MainActivity extends NativeActivity
         }
     }
 
-    // Archives made on a Chinese Windows often carry file names in GBK without saying so; read as UTF-8 such a
-    // name is rejected, and the archive is read again from the start as GBK.
+    // Archives made on a Chinese Windows often carry file names in GBK without saying so, others UTF-8 without saying
+    // so: the names are read undecoded and worked out one by one (ZipNames).
     private void unpack(Uri uri, File into) throws IOException
-    {
-        try
-        {
-            unpack(uri, into, Charset.forName("UTF-8"));
-        }
-        catch (IllegalArgumentException malformedName)
-        {
-            delete(into);
-            unpack(uri, into, Charset.forName("GBK"));
-        }
-    }
-
-    private void unpack(Uri uri, File into, Charset names) throws IOException
     {
         InputStream raw = getContentResolver().openInputStream(uri);
         if (raw == null)
         {
             throw new IOException("cannot open " + uri);
         }
-        ZipInputStream zip = new ZipInputStream(raw, names);
+        ZipInputStream zip = new ZipInputStream(raw, ZipNames.RAW);
         try
         {
             into.mkdirs();
@@ -415,13 +402,14 @@ public final class MainActivity extends NativeActivity
             ZipEntry entry;
             while ((entry = zip.getNextEntry()) != null)
             {
-                File out = new File(into, entry.getName().replace('\\', '/'));
+                String name = ZipNames.decode(entry.getName());
+                File out = new File(into, name.replace('\\', '/'));
                 // An entry must not climb out of the folder it is unpacked into.
                 if (!out.getCanonicalPath().startsWith(base))
                 {
                     continue;
                 }
-                if (entry.isDirectory() || entry.getName().endsWith("/") || entry.getName().endsWith("\\"))
+                if (entry.isDirectory() || name.endsWith("/") || name.endsWith("\\"))
                 {
                     out.mkdirs();
                 }
