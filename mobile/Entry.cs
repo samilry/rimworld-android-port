@@ -26,6 +26,7 @@ namespace PortMobile
 			Sched.Start(harmony);
 			FrameRate.Start(harmony);
 			Perf.Start(harmony);
+			WorldLabels.Start(harmony);
 		}
 
 		private static bool menuTimed;
