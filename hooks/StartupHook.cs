@@ -103,6 +103,34 @@ namespace PortHooks
 			}
 		}
 
+		/// <summary>
+		/// Stands in for Assembly.LoadFrom inside ModAssemblyHandler.ReloadAll. A mod's own copy of 0Harmony.dll (the Harmony
+		/// mod ships one, others bundle it) is not loaded: the copy in the game folder, patched for this runtime (MonoMod's
+		/// Android and glibc assumptions, see patch/Patch.cs), is the one every mod gets. Loading a second copy of the same
+		/// assembly name into the default context would fail anyway.
+		/// </summary>
+		public static Assembly LoadModAssembly(string path)
+		{
+			string name = Path.GetFileNameWithoutExtension(path);
+			if (name.Equals("0Harmony", StringComparison.OrdinalIgnoreCase))
+			{
+				foreach (Assembly loaded in AppDomain.CurrentDomain.GetAssemblies())
+				{
+					if (loaded.GetName().Name == "0Harmony")
+					{
+						return loaded;
+					}
+				}
+				string ours = Path.Combine(AppContext.BaseDirectory, "0Harmony.dll");
+				if (File.Exists(ours))
+				{
+					Console.WriteLine("[port17] mod asked for " + path + "; loading the game folder's 0Harmony.dll instead");
+					return Assembly.LoadFrom(ours);
+				}
+			}
+			return Assembly.LoadFrom(path);
+		}
+
 		public static bool SteamInitializedForMenu()
 		{
 			return true;

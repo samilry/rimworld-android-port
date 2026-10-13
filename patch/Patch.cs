@@ -43,6 +43,10 @@ internal static class Patch
 		{
 			["System.Boolean Verse.Steam.SteamManager::get_Initialized()"] = "SteamInitializedForMenu",
 		},
+		["System.Void Verse.ModAssemblyHandler::ReloadAll()"] = new Dictionary<string, string>
+		{
+			["System.Reflection.Assembly System.Reflection.Assembly::LoadFrom(System.String)"] = "LoadModAssembly",
+		},
 	};
 
 	// Methods whose body becomes "return null": MonoMod's native exception helper (a trampoline library it drops under /tmp,
