@@ -1,0 +1,706 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Text.Json;
+using System.Threading;
+using RimWorld;
+using RimWorld.Planet;
+using UnityEngine;
+using Verse;
+
+namespace PortMobile
+{
+	/// <summary>
+	/// A way for a program on the PC (host/mcp/rimworld-mcp.js, through adb's port forwarding) to ask the game what it
+	/// shows and to move it along: the texts, controls and windows on the screen and where they are, the state of the
+	/// game, things on the map; jumping the camera, selecting, the time speed, closing a window. Touches are not made
+	/// here: the PC sends real ones (adb), so that the touch layer is what gets tested.
+	///
+	/// Off unless game/agent.txt exists ("port token"); it is looked for about once a second, and the agent stops when
+	/// the file goes. It listens on the phone's loopback address only, and every request must carry the token (other
+	/// apps on the phone cannot read the game's folder). One request per line, JSON: {"token":..,"cmd":..,"args":{..}};
+	/// one answer per line: {"ok":true,...} or {"ok":false,"error":..}. The commands run on the game's main thread,
+	/// between frames.
+	/// </summary>
+	internal static class Agent
+	{
+		private sealed class Request
+		{
+			public string Cmd;
+			public JsonElement Args;
+			public string Answer;
+			public readonly ManualResetEventSlim Done = new ManualResetEventSlim(false);
+		}
+
+		private static readonly ConcurrentQueue<Request> queue = new ConcurrentQueue<Request>();
+		private static TcpListener listener;
+		private static Thread thread;
+		private static volatile string token;
+		private static int port;
+		private static int checkCountdown;
+		private static volatile bool stopping;
+
+		public static bool Active => listener != null;
+
+		private static string SwitchFile => Path.Combine(AppContext.BaseDirectory, "agent.txt");
+
+		/// <summary>Every frame, on the main thread (from Touch.Update): the switch file now and then, and the waiting requests.</summary>
+		public static void Update()
+		{
+			if (--checkCountdown <= 0)
+			{
+				checkCountdown = 60;
+				CheckSwitch();
+			}
+			while (queue.TryDequeue(out Request request))
+			{
+				try
+				{
+					request.Answer = Run(request.Cmd, request.Args);
+				}
+				catch (Exception e)
+				{
+					request.Answer = Failure(e.GetType().Name + ": " + e.Message);
+				}
+				request.Done.Set();
+			}
+		}
+
+		private static void CheckSwitch()
+		{
+			try
+			{
+				string file = SwitchFile;
+				if (!File.Exists(file))
+				{
+					if (listener != null)
+					{
+						Stop("the switch file is gone");
+					}
+					return;
+				}
+				string[] parts = File.ReadAllText(file).Split(new[] { ' ', '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+				if (parts.Length < 2 || !int.TryParse(parts[0], out int wantedPort) || parts[1].Length < 16)
+				{
+					return;
+				}
+				if (listener != null && wantedPort == port && parts[1] == token)
+				{
+					return;
+				}
+				if (listener != null)
+				{
+					Stop("new settings");
+				}
+				token = parts[1];
+				port = wantedPort;
+				stopping = false;
+				listener = new TcpListener(IPAddress.Loopback, port);
+				listener.Start();
+				thread = new Thread(Serve) { IsBackground = true, Name = "port17 agent" };
+				thread.Start();
+				TapAssist.RecordForAgent = true;
+				Console.WriteLine("[mobile] agent listening on 127.0.0.1:" + port);
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] agent not started: " + e.Message);
+				listener = null;
+			}
+		}
+
+		private static void Stop(string why)
+		{
+			stopping = true;
+			TapAssist.RecordForAgent = false;
+			try
+			{
+				listener?.Stop();
+			}
+			catch (Exception)
+			{
+			}
+			listener = null;
+			Console.WriteLine("[mobile] agent stopped (" + why + ")");
+		}
+
+		// ---- the connection (its own thread) ----
+
+		private static void Serve()
+		{
+			TcpListener own = listener;
+			while (!stopping && own != null)
+			{
+				TcpClient client;
+				try
+				{
+					client = own.AcceptTcpClient();
+				}
+				catch (Exception)
+				{
+					return;
+				}
+				try
+				{
+					using (client)
+					using (NetworkStream stream = client.GetStream())
+					using (var reader = new StreamReader(stream, new UTF8Encoding(false)))
+					using (var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\n" })
+					{
+						string line;
+						while (!stopping && (line = reader.ReadLine()) != null)
+						{
+							writer.WriteLine(Handle(line));
+						}
+					}
+				}
+				catch (Exception e)
+				{
+					if (!stopping)
+					{
+						Console.WriteLine("[mobile] agent connection ended: " + e.Message);
+					}
+				}
+			}
+		}
+
+		private static string Handle(string line)
+		{
+			JsonDocument document;
+			try
+			{
+				document = JsonDocument.Parse(line);
+			}
+			catch (Exception)
+			{
+				return Failure("not JSON");
+			}
+			using (document)
+			{
+				JsonElement root = document.RootElement;
+				if (!root.TryGetProperty("token", out JsonElement given) || given.GetString() != token)
+				{
+					return Failure("wrong token");
+				}
+				string cmd = root.TryGetProperty("cmd", out JsonElement c) ? c.GetString() : "";
+				if (cmd == "ping")
+				{
+					// Answered here: the main thread may be busy (loading).
+					return Answer(w =>
+					{
+						w.WriteString("program", Current.ProgramState.ToString());
+						w.WriteBoolean("loading", LongEventHandler.AnyEventNowOrWaiting);
+						w.WriteNumber("frame", Time.frameCount);
+					});
+				}
+				var request = new Request { Cmd = cmd, Args = root.TryGetProperty("args", out JsonElement a) ? a.Clone() : default };
+				queue.Enqueue(request);
+				int wait = cmd == "screen" ? 3000 : 8000;
+				if (!request.Done.Wait(wait))
+				{
+					return Failure("the game did not get to it within " + wait / 1000 + " s (loading, or a long frame)");
+				}
+				return request.Answer;
+			}
+		}
+
+		// ---- answers ----
+
+		private static string Answer(Action<Utf8JsonWriter> body)
+		{
+			using (var buffer = new MemoryStream())
+			{
+				using (var w = new Utf8JsonWriter(buffer, new JsonWriterOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }))
+				{
+					w.WriteStartObject();
+					w.WriteBoolean("ok", true);
+					body(w);
+					w.WriteEndObject();
+				}
+				return Encoding.UTF8.GetString(buffer.ToArray());
+			}
+		}
+
+		private static string Failure(string error)
+		{
+			return Answer(w =>
+			{
+				w.WriteBoolean("ok", false);
+				w.WriteString("error", error);
+			}).Replace("\"ok\":true,", "");
+		}
+
+		private static string Str(JsonElement args, string name, string fallback = null)
+		{
+			return args.ValueKind == JsonValueKind.Object && args.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.String ? v.GetString() : fallback;
+		}
+
+		private static int Int(JsonElement args, string name, int fallback)
+		{
+			return args.ValueKind == JsonValueKind.Object && args.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out int n) ? n : fallback;
+		}
+
+		private static float Float(JsonElement args, string name, float fallback)
+		{
+			return args.ValueKind == JsonValueKind.Object && args.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.Number ? (float)v.GetDouble() : fallback;
+		}
+
+		private static bool Has(JsonElement args, string name)
+		{
+			return args.ValueKind == JsonValueKind.Object && args.TryGetProperty(name, out JsonElement v) && v.ValueKind != JsonValueKind.Null;
+		}
+
+		private static bool Playing => Current.ProgramState == ProgramState.Playing && Find.CurrentMap != null;
+
+		private static string Run(string cmd, JsonElement args)
+		{
+			switch (cmd)
+			{
+				case "state": return State();
+				case "screen": return ScreenContents(args);
+				case "find": return FindThings(args);
+				case "camera": return Camera(args);
+				case "select": return SelectThing(args);
+				case "speed": return Speed(args);
+				case "close": return CloseWindow(args);
+				case "messages": return RecentMessages(args);
+				case "cell": return CellOnScreen(args);
+				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, ping)");
+			}
+		}
+
+		private static void Rect(Utf8JsonWriter w, string name, float x0, float y0, float x1, float y1)
+		{
+			w.WriteStartArray(name);
+			w.WriteNumberValue(Mathf.Round(x0));
+			w.WriteNumberValue(Mathf.Round(y0));
+			w.WriteNumberValue(Mathf.Round(x1 - x0));
+			w.WriteNumberValue(Mathf.Round(y1 - y0));
+			w.WriteEndArray();
+		}
+
+		private static string State()
+		{
+			return Answer(w =>
+			{
+				w.WriteString("program", Current.ProgramState.ToString());
+				w.WriteBoolean("loading", LongEventHandler.AnyEventNowOrWaiting);
+				w.WriteNumber("screenWidth", Screen.width);
+				w.WriteNumber("screenHeight", Screen.height);
+				w.WriteNumber("uiScale", Prefs.UIScale);
+				w.WriteNumber("fps", Mathf.Round(1f / Mathf.Max(0.001f, Time.smoothDeltaTime)));
+				w.WriteStartArray("windows");
+				foreach (Window window in Find.WindowStack.Windows)
+				{
+					w.WriteStartObject();
+					w.WriteString("type", window.GetType().FullName);
+					if (!window.optionalTitle.NullOrEmpty())
+					{
+						w.WriteString("title", window.optionalTitle);
+					}
+					w.WriteNumber("id", window.ID);
+					float s = Prefs.UIScale;
+					Rect(w, "approxRect", window.windowRect.x * s, window.windowRect.y * s, window.windowRect.xMax * s, window.windowRect.yMax * s);
+					w.WriteEndObject();
+				}
+				w.WriteEndArray();
+				if (Current.ProgramState != ProgramState.Playing || Current.Game == null)
+				{
+					return;
+				}
+				TickManager ticks = Find.TickManager;
+				w.WriteBoolean("paused", ticks.Paused);
+				w.WriteString("speed", ticks.CurTimeSpeed.ToString());
+				w.WriteNumber("ticks", ticks.TicksGame);
+				w.WriteBoolean("worldView", !WorldRendererUtility.DrawingMap);
+				Map map = Find.CurrentMap;
+				if (map != null)
+				{
+					w.WriteStartObject("map");
+					w.WriteNumber("index", map.Index);
+					w.WriteString("label", map.Parent?.LabelCap ?? "");
+					w.WriteNumber("sizeX", map.Size.x);
+					w.WriteNumber("sizeZ", map.Size.z);
+					Vector2 longLat = Find.WorldGrid.LongLatOf(map.Tile);
+					w.WriteString("date", GenDate.DateFullStringWithHourAt(Find.TickManager.TicksAbs, longLat));
+					IntVec3 center = Find.CameraDriver.MapPosition;
+					w.WriteStartArray("cameraCell");
+					w.WriteNumberValue(center.x);
+					w.WriteNumberValue(center.z);
+					w.WriteEndArray();
+					w.WriteNumber("cameraZoom", Find.CameraDriver.RootSize);
+					w.WriteEndObject();
+				}
+				w.WriteString("openTab", Find.MainTabsRoot.OpenTab?.defName);
+				w.WriteString("designator", Find.DesignatorManager.SelectedDesignator?.LabelCap.ToString());
+				w.WriteStartArray("selected");
+				foreach (object o in Find.Selector.SelectedObjectsListForReading)
+				{
+					w.WriteStartObject();
+					if (o is Thing thing)
+					{
+						w.WriteString("id", thing.ThingID);
+						w.WriteString("label", thing.LabelCap.ToString());
+						w.WriteString("def", thing.def.defName);
+						if (thing.Spawned)
+						{
+							w.WriteStartArray("cell");
+							w.WriteNumberValue(thing.Position.x);
+							w.WriteNumberValue(thing.Position.z);
+							w.WriteEndArray();
+						}
+					}
+					else
+					{
+						w.WriteString("label", (o as ISelectable)?.ToString() ?? o.ToString());
+						w.WriteString("type", o.GetType().Name);
+					}
+					w.WriteEndObject();
+				}
+				w.WriteEndArray();
+				if (Find.Selector.SingleSelectedThing is Thing single)
+				{
+					string inspect = "";
+					try
+					{
+						inspect = single.GetInspectString();
+					}
+					catch (Exception e)
+					{
+						inspect = "(inspect string failed: " + e.GetType().Name + ")";
+					}
+					w.WriteString("inspect", inspect.Length > 800 ? inspect.Substring(0, 800) + "..." : inspect);
+				}
+				w.WriteStartArray("letters");
+				List<Letter> letters = Find.LetterStack.LettersListForReading;
+				for (int i = Math.Max(0, letters.Count - 6); i < letters.Count; i++)
+				{
+					w.WriteStringValue(letters[i].Label.ToString());
+				}
+				w.WriteEndArray();
+			});
+		}
+
+		/// <summary>
+		/// What the last drawn frame showed: the windows (drawing order, later ones on top), the controls with the text
+		/// that lies on them, and the other texts. args: contains (only texts with this, any case), window (an index, or
+		/// "top" for the topmost window only, "map" for what is drawn outside windows), max (texts, default 250).
+		/// </summary>
+		private static string ScreenContents(JsonElement args)
+		{
+			var controls = new List<(string kind, float x0, float y0, float x1, float y1, int window)>();
+			var texts = new List<(string text, float x0, float y0, float x1, float y1, int window)>();
+			var windows = new List<(float x0, float y0, float x1, float y1)>();
+			TapAssist.Snapshot(controls, texts, windows);
+			string contains = Str(args, "contains");
+			string which = Str(args, "window");
+			int onlyWindow = which == "top" ? windows.Count - 1 : which == "map" ? -1 : int.TryParse(which, out int n) ? n : int.MinValue;
+			int max = Int(args, "max", 250);
+			bool Wanted(int window) => onlyWindow == int.MinValue || window == onlyWindow;
+			return Answer(w =>
+			{
+				w.WriteStartArray("windows");
+				for (int i = 0; i < windows.Count; i++)
+				{
+					w.WriteStartArray();
+					w.WriteNumberValue(Mathf.Round(windows[i].x0));
+					w.WriteNumberValue(Mathf.Round(windows[i].y0));
+					w.WriteNumberValue(Mathf.Round(windows[i].x1 - windows[i].x0));
+					w.WriteNumberValue(Mathf.Round(windows[i].y1 - windows[i].y0));
+					w.WriteEndArray();
+				}
+				w.WriteEndArray();
+				// A control's label: the texts whose middle lies on it.
+				var usedTexts = new HashSet<int>();
+				w.WriteStartArray("controls");
+				int written = 0;
+				foreach (var c in controls)
+				{
+					if (!Wanted(c.window))
+					{
+						continue;
+					}
+					var label = new StringBuilder();
+					for (int i = 0; i < texts.Count; i++)
+					{
+						var t = texts[i];
+						float mx = (t.x0 + t.x1) / 2f, my = (t.y0 + t.y1) / 2f;
+						if (t.window == c.window && mx >= c.x0 && mx <= c.x1 && my >= c.y0 && my <= c.y1)
+						{
+							if (label.Length > 0) label.Append(" | ");
+							label.Append(t.text.Length > 60 ? t.text.Substring(0, 60) : t.text);
+							usedTexts.Add(i);
+						}
+					}
+					string text = label.ToString();
+					if (contains != null && text.IndexOf(contains, StringComparison.OrdinalIgnoreCase) < 0)
+					{
+						continue;
+					}
+					if (written++ >= max)
+					{
+						break;
+					}
+					w.WriteStartObject();
+					w.WriteString("k", c.kind);
+					Rect(w, "r", c.x0, c.y0, c.x1, c.y1);
+					w.WriteNumber("w", c.window);
+					if (text.Length > 0)
+					{
+						w.WriteString("t", text);
+					}
+					w.WriteEndObject();
+				}
+				w.WriteEndArray();
+				w.WriteStartArray("texts");
+				written = 0;
+				for (int i = 0; i < texts.Count; i++)
+				{
+					var t = texts[i];
+					if (usedTexts.Contains(i) || !Wanted(t.window) || (contains != null && t.text.IndexOf(contains, StringComparison.OrdinalIgnoreCase) < 0))
+					{
+						continue;
+					}
+					if (written++ >= max)
+					{
+						w.WriteStartObject();
+						w.WriteString("t", "... more texts left out (ask with contains or window)");
+						w.WriteEndObject();
+						break;
+					}
+					w.WriteStartObject();
+					w.WriteString("t", t.text.Length > 200 ? t.text.Substring(0, 200) + "..." : t.text);
+					Rect(w, "r", t.x0, t.y0, t.x1, t.y1);
+					w.WriteNumber("w", t.window);
+					w.WriteEndObject();
+				}
+				w.WriteEndArray();
+			});
+		}
+
+		/// <summary>Where a point of the map is on the screen, in pixels (null when off the screen).</summary>
+		private static bool ScreenPoint(Vector3 world, out float x, out float y)
+		{
+			Vector2 ui = world.MapToUIPosition();
+			x = ui.x * Prefs.UIScale;
+			y = ui.y * Prefs.UIScale;
+			return x >= 0f && y >= 0f && x < Screen.width && y < Screen.height;
+		}
+
+		/// <summary>Things on the current map whose id, def name or label holds the query. args: query, kind (pawn, building, item, plant, any), limit.</summary>
+		private static string FindThings(JsonElement args)
+		{
+			if (!Playing)
+			{
+				return Failure("no map is shown");
+			}
+			string query = Str(args, "query", "");
+			string kind = Str(args, "kind", "any");
+			int limit = Int(args, "limit", 20);
+			Map map = Find.CurrentMap;
+			IntVec3 center = Find.CameraDriver.MapPosition;
+			var found = new List<Thing>();
+			foreach (Thing thing in map.listerThings.AllThings)
+			{
+				bool kindFits = kind == "pawn" ? thing is Pawn : kind == "building" ? thing.def.category == ThingCategory.Building : kind == "item" ? thing.def.category == ThingCategory.Item : kind == "plant" ? thing is Plant : true;
+				if (!kindFits)
+				{
+					continue;
+				}
+				if (query.Length == 0 || thing.ThingID.Equals(query, StringComparison.OrdinalIgnoreCase) || thing.def.defName.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0 || thing.LabelCap.ToString().IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
+				{
+					found.Add(thing);
+				}
+			}
+			int total = found.Count;
+			found.Sort((a, b) => a.Position.DistanceToSquared(center).CompareTo(b.Position.DistanceToSquared(center)));
+			return Answer(w =>
+			{
+				w.WriteNumber("total", total);
+				w.WriteStartArray("things");
+				foreach (Thing thing in found.Take(limit))
+				{
+					w.WriteStartObject();
+					w.WriteString("id", thing.ThingID);
+					w.WriteString("label", thing.LabelCap.ToString());
+					w.WriteString("def", thing.def.defName);
+					w.WriteStartArray("cell");
+					w.WriteNumberValue(thing.Position.x);
+					w.WriteNumberValue(thing.Position.z);
+					w.WriteEndArray();
+					if (thing.Faction != null)
+					{
+						w.WriteString("faction", thing.Faction == Faction.OfPlayer ? "player" : thing.Faction.Name);
+					}
+					if (ScreenPoint(thing.DrawPos, out float x, out float y))
+					{
+						w.WriteStartArray("screen");
+						w.WriteNumberValue(Mathf.Round(x));
+						w.WriteNumberValue(Mathf.Round(y));
+						w.WriteEndArray();
+					}
+					w.WriteEndObject();
+				}
+				w.WriteEndArray();
+			});
+		}
+
+		private static Thing ThingById(string id)
+		{
+			if (string.IsNullOrEmpty(id) || Find.CurrentMap == null)
+			{
+				return null;
+			}
+			foreach (Thing thing in Find.CurrentMap.listerThings.AllThings)
+			{
+				if (thing.ThingID.Equals(id, StringComparison.OrdinalIgnoreCase))
+				{
+					return thing;
+				}
+			}
+			return null;
+		}
+
+		/// <summary>The camera to a thing (args: id) or a cell (args: x, z); args: zoom (the root size, 11 close ... 60 far) optional.</summary>
+		private static string Camera(JsonElement args)
+		{
+			if (!Playing)
+			{
+				return Failure("no map is shown");
+			}
+			IntVec3 cell;
+			if (Has(args, "id"))
+			{
+				Thing thing = ThingById(Str(args, "id"));
+				if (thing == null)
+				{
+					return Failure("no thing with that id on this map");
+				}
+				cell = thing.Position;
+			}
+			else
+			{
+				cell = new IntVec3(Int(args, "x", Find.CameraDriver.MapPosition.x), 0, Int(args, "z", Find.CameraDriver.MapPosition.z));
+			}
+			Find.CameraDriver.JumpToCurrentMapLoc(cell);
+			if (Has(args, "zoom"))
+			{
+				Find.CameraDriver.SetRootSize(Mathf.Clamp(Float(args, "zoom", 24f), 8f, 80f));
+			}
+			return Answer(w => w.WriteString("camera", cell.x + "," + cell.z));
+		}
+
+		/// <summary>Selects a thing (args: id; add: true keeps what is selected); args: jump (true) moves the camera to it.</summary>
+		private static string SelectThing(JsonElement args)
+		{
+			if (!Playing)
+			{
+				return Failure("no map is shown");
+			}
+			Thing thing = ThingById(Str(args, "id"));
+			if (thing == null)
+			{
+				return Failure("no thing with that id on this map");
+			}
+			bool add = args.ValueKind == JsonValueKind.Object && args.TryGetProperty("add", out JsonElement a) && a.ValueKind == JsonValueKind.True;
+			if (!add)
+			{
+				Find.Selector.ClearSelection();
+			}
+			Find.Selector.Select(thing);
+			if (!(args.ValueKind == JsonValueKind.Object && args.TryGetProperty("jump", out JsonElement j) && j.ValueKind == JsonValueKind.False))
+			{
+				Find.CameraDriver.JumpToCurrentMapLoc(thing.Position);
+			}
+			return Answer(w => w.WriteString("selected", thing.LabelCap.ToString()));
+		}
+
+		/// <summary>args: speed = paused, normal, fast, superfast, ultrafast (or 0 ... 4).</summary>
+		private static string Speed(JsonElement args)
+		{
+			if (Current.ProgramState != ProgramState.Playing)
+			{
+				return Failure("not in a game");
+			}
+			string wanted = (Str(args, "speed") ?? Int(args, "speed", 0).ToString()).ToLowerInvariant();
+			TimeSpeed speed;
+			switch (wanted)
+			{
+				case "0": case "paused": case "pause": speed = TimeSpeed.Paused; break;
+				case "1": case "normal": speed = TimeSpeed.Normal; break;
+				case "2": case "fast": speed = TimeSpeed.Fast; break;
+				case "3": case "superfast": speed = TimeSpeed.Superfast; break;
+				case "4": case "ultrafast": speed = TimeSpeed.Ultrafast; break;
+				default: return Failure("speed: paused, normal, fast, superfast or ultrafast");
+			}
+			Find.TickManager.CurTimeSpeed = speed;
+			return Answer(w => w.WriteString("speed", speed.ToString()));
+		}
+
+		/// <summary>Closes the topmost window that can be closed (args: type = part of its type name, to pick another).</summary>
+		private static string CloseWindow(JsonElement args)
+		{
+			string type = Str(args, "type");
+			IList<Window> windows = Find.WindowStack.Windows;
+			for (int i = windows.Count - 1; i >= 0; i--)
+			{
+				Window window = windows[i];
+				if (window is ImmediateWindow || (type != null && window.GetType().FullName.IndexOf(type, StringComparison.OrdinalIgnoreCase) < 0))
+				{
+					continue;
+				}
+				Find.WindowStack.TryRemove(window, doCloseSound: true);
+				return Answer(w => w.WriteString("closed", window.GetType().FullName));
+			}
+			return Failure("no such window");
+		}
+
+		/// <summary>The last letters and messages of the game's archive (args: count, default 10).</summary>
+		private static string RecentMessages(JsonElement args)
+		{
+			if (Current.Game == null)
+			{
+				return Failure("not in a game");
+			}
+			int count = Int(args, "count", 10);
+			List<IArchivable> archived = Find.Archive.ArchivablesListForReading;
+			return Answer(w =>
+			{
+				w.WriteStartArray("messages");
+				for (int i = archived.Count - 1; i >= 0 && i >= archived.Count - count; i--)
+				{
+					IArchivable item = archived[i];
+					w.WriteStartObject();
+					w.WriteString("label", item.ArchivedLabel);
+					w.WriteNumber("tick", item.CreatedTicksGame);
+					string tip = item.ArchivedTooltip ?? "";
+					w.WriteString("text", tip.Length > 300 ? tip.Substring(0, 300) + "..." : tip);
+					w.WriteEndObject();
+				}
+				w.WriteEndArray();
+			});
+		}
+
+		/// <summary>Where a cell of the map (args: x, z) is on the screen, in pixels.</summary>
+		private static string CellOnScreen(JsonElement args)
+		{
+			if (!Playing)
+			{
+				return Failure("no map is shown");
+			}
+			var cell = new IntVec3(Int(args, "x", 0), 0, Int(args, "z", 0));
+			bool on = ScreenPoint(cell.ToVector3Shifted(), out float x, out float y);
+			return Answer(w =>
+			{
+				w.WriteBoolean("onScreen", on);
+				w.WriteNumber("x", Mathf.Round(x));
+				w.WriteNumber("y", Mathf.Round(y));
+			});
+		}
+	}
+}

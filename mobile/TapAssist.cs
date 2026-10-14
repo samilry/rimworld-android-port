@@ -57,6 +57,22 @@ namespace PortMobile
 		private static ListView[] drawingLists = new ListView[64], shownLists = new ListView[64];
 		private static int drawingListCount, shownListCount;
 
+		// The texts of a pass and where they are on the screen: only while the agent (Agent.cs) is on, for whoever drives
+		// the game from the PC ("which button says Confirm").
+		private struct TextMark
+		{
+			public float x0, y0, x1, y1;
+			public int window;
+			public string text;
+		}
+
+		private static TextMark[] drawingTexts = new TextMark[512], shownTexts = new TextMark[512];
+		private static int drawingTextCount, shownTextCount;
+		private const int MaxTexts = 6000;
+
+		/// <summary>Set by the agent: the texts are noted too, and the controls even when tap assist is off.</summary>
+		public static volatile bool RecordForAgent;
+
 		/// <summary>The backend of the engine is as this class expects it: rectangles can be placed on the screen.</summary>
 		public static bool Ready { get; private set; }
 
@@ -87,6 +103,8 @@ namespace PortMobile
 				WindowDepth = AccessTools.FieldRefAccess<object, int>(AccessTools.Field(backend, "windowContentDepth"));
 				// The windows have all been drawn when the engine is through with them: the pass is complete.
 				harmony.Patch(AccessTools.Method(typeof(GUI), nameof(GUI.ProcessPendingWindows)), postfix: new HarmonyMethod(typeof(TapAssist), nameof(AfterWindows)));
+				// Every text of the interface ends here (an interface method: never copied into its callers).
+				harmony.Patch(AccessTools.Method(backend, "DrawText"), prefix: new HarmonyMethod(typeof(TapAssist), nameof(NoteText)));
 				Ready = true;
 			}
 			catch (Exception e)
@@ -215,6 +233,7 @@ namespace PortMobile
 				drawingFrame = frame;
 				drawingCount = 0;
 				drawingListCount = 0;
+				drawingTextCount = 0;
 			}
 		}
 
@@ -301,9 +320,47 @@ namespace PortMobile
 			return false;
 		}
 
+		/// <summary>Prefix of the interface backend's DrawText: while the agent is on, the text and where it is on the screen.</summary>
+		public static void NoteText(Rect rect, string text)
+		{
+			if (!RecordForAgent || string.IsNullOrEmpty(text) || !OnScreen(rect, true, out object backend, out float x0, out float y0, out float x1, out float y1))
+			{
+				return;
+			}
+			NewPassIfNewFrame();
+			Stack<float4> clips = HitClip(backend);
+			if (clips.Count > 0)
+			{
+				float4 clip = clips.Peek();
+				if (x0 < clip.X) x0 = clip.X;
+				if (y0 < clip.Y) y0 = clip.Y;
+				if (x1 > clip.Z) x1 = clip.Z;
+				if (y1 > clip.W) y1 = clip.W;
+			}
+			if (x0 < 0f) x0 = 0f;
+			if (y0 < 0f) y0 = 0f;
+			if (x1 > Screen.width) x1 = Screen.width;
+			if (y1 > Screen.height) y1 = Screen.height;
+			if (x1 - x0 < 1f || y1 - y0 < 1f || drawingTextCount >= MaxTexts)
+			{
+				return;
+			}
+			if (drawingTextCount == drawingTexts.Length)
+			{
+				Array.Resize(ref drawingTexts, drawingTexts.Length * 2);
+			}
+			ref TextMark mark = ref drawingTexts[drawingTextCount++];
+			mark.x0 = x0;
+			mark.y0 = y0;
+			mark.x1 = x1;
+			mark.y1 = y1;
+			mark.window = WindowDepth(backend) > 0 ? WindowRects(backend).Count - 1 : -1;
+			mark.text = text;
+		}
+
 		private static void Note(Rect rect, byte kind)
 		{
-			if ((!on && kind != Field) || !OnScreen(rect, true, out object backend, out float x0, out float y0, out float x1, out float y1))
+			if ((!on && !RecordForAgent && kind != Field) || !OnScreen(rect, true, out object backend, out float x0, out float y0, out float x1, out float y1))
 			{
 				return;
 			}
@@ -356,7 +413,13 @@ namespace PortMobile
 			{
 				drawingCount = 0;
 				drawingListCount = 0;
+				drawingTextCount = 0;
 			}
+			TextMark[] swapTexts = shownTexts;
+			shownTexts = drawingTexts;
+			shownTextCount = drawingTextCount;
+			drawingTexts = swapTexts;
+			drawingTextCount = 0;
 			ListView[] swapLists = shownLists;
 			shownLists = drawingLists;
 			shownListCount = drawingListCount;
@@ -497,6 +560,26 @@ namespace PortMobile
 				Console.WriteLine("[mobile] tap assist: " + x.ToString("F0") + "," + y.ToString("F0") + " -> " + bestX.ToString("F0") + "," + bestY.ToString("F0") + ", a " + KindNames[target.kind] + " of " + (target.x1 - target.x0).ToString("F0") + " x " + (target.y1 - target.y0).ToString("F0") + " px at " + target.x0.ToString("F0") + "," + target.y0.ToString("F0") + (target.window >= 0 ? " in window " + target.window : "") + (inside >= 0 ? ", lying on a larger control" : "") + " (" + adjusted + " of " + asked + " presses adjusted, " + shownCount + " controls, " + shownWindowCount + " windows)");
 			}
 			return new Vector2(bestX, bestY);
+		}
+
+		/// <summary>What the last complete pass showed, for the agent: (kind, rectangle in pixels, window), texts likewise, and the windows in drawing order.</summary>
+		public static void Snapshot(List<(string kind, float x0, float y0, float x1, float y1, int window)> controls, List<(string text, float x0, float y0, float x1, float y1, int window)> texts, List<(float x0, float y0, float x1, float y1)> windows)
+		{
+			for (int i = 0; i < shownCount; i++)
+			{
+				ref Target t = ref shown[i];
+				controls.Add((KindNames[t.kind], t.x0, t.y0, t.x1, t.y1, t.window));
+			}
+			for (int i = 0; i < shownTextCount; i++)
+			{
+				ref TextMark t = ref shownTexts[i];
+				texts.Add((t.text, t.x0, t.y0, t.x1, t.y1, t.window));
+			}
+			for (int i = 0; i < shownWindowCount; i++)
+			{
+				float4 w = shownWindows[i];
+				windows.Add((w.X, w.Y, w.Z, w.W));
+			}
 		}
 
 		/// <summary>For the diagnostics: what was noted in the last pass, one control per line.</summary>

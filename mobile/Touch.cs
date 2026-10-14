@@ -247,6 +247,7 @@ namespace PortMobile
 			{
 				Button(Right, false);
 			}
+			Agent.Update();
 			Replay.Feed();
 			TouchSizes.BeforeInterface();
 			ShiftKey.Update();
