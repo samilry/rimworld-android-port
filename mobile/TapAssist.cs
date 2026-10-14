@@ -43,6 +43,8 @@ namespace PortMobile
 		private static Target[] drawing = new Target[1024], shown = new Target[1024];
 		private static int drawingCount, shownCount, drawingFrame = -1;
 		private static float4[] shownWindows = new float4[32];
+		// Windows that only go along with the pointer (MouseDecorations): never the window a touch is in.
+		private static bool[] shownFollowPointer = new bool[32];
 		private static int shownWindowCount;
 
 		// The lists (scroll views) of a pass that have more in them than they show.
@@ -438,6 +440,11 @@ namespace PortMobile
 			}
 			windows.CopyTo(shownWindows);
 			shownWindowCount = windows.Count;
+			if (shownFollowPointer.Length < shownWindows.Length)
+			{
+				shownFollowPointer = new bool[shownWindows.Length];
+			}
+			MouseDecorations.Mark(shownFollowPointer, shownWindowCount);
 		}
 
 		// ---- when a touch begins ----
@@ -448,7 +455,7 @@ namespace PortMobile
 			for (int i = shownWindowCount - 1; i >= 0; i--)
 			{
 				float4 rect = shownWindows[i];
-				if (x >= rect.X && y >= rect.Y && x <= rect.Z && y <= rect.W)
+				if (!shownFollowPointer[i] && x >= rect.X && y >= rect.Y && x <= rect.Z && y <= rect.W)
 				{
 					return i;
 				}

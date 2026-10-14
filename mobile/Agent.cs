@@ -270,7 +270,8 @@ namespace PortMobile
 				case "close": return CloseWindow(args);
 				case "messages": return RecentMessages(args);
 				case "cell": return CellOnScreen(args);
-				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, ping)");
+				case "zones": return Zones();
+				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, ping)");
 			}
 		}
 
@@ -680,6 +681,34 @@ namespace PortMobile
 					w.WriteNumber("tick", item.CreatedTicksGame);
 					string tip = item.ArchivedTooltip ?? "";
 					w.WriteString("text", tip.Length > 300 ? tip.Substring(0, 300) + "..." : tip);
+					w.WriteEndObject();
+				}
+				w.WriteEndArray();
+			});
+		}
+
+		/// <summary>The zones of the current map: label, kind, cell count, bounds, and what grows or is stored.</summary>
+		private static string Zones()
+		{
+			if (!Playing)
+			{
+				return Failure("no map is shown");
+			}
+			return Answer(w =>
+			{
+				w.WriteStartArray("zones");
+				foreach (Zone zone in Find.CurrentMap.zoneManager.AllZones)
+				{
+					w.WriteStartObject();
+					w.WriteString("label", zone.label);
+					w.WriteString("type", zone.GetType().Name);
+					w.WriteNumber("cells", zone.Cells.Count);
+					CellRect bounds = CellRect.FromCellList(zone.Cells);
+					w.WriteString("bounds", bounds.minX + "," + bounds.minZ + " - " + bounds.maxX + "," + bounds.maxZ);
+					if (zone is Zone_Growing growing)
+					{
+						w.WriteString("plant", growing.GetPlantDefToGrow()?.label);
+					}
 					w.WriteEndObject();
 				}
 				w.WriteEndArray();

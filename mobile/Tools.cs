@@ -389,7 +389,11 @@ namespace PortMobile
 			return new Rect(leftX + (Rotates(selected) ? 200f : 0f), bottomY - 90f, 200f, 90f);
 		}
 
-		/// <summary>Postfix of DesignatorManager.DesignationManagerOnGUI: the tool's controls when the game does not show them (Architect menu closed with the tool still selected).</summary>
+		/// <summary>
+		/// Postfix of DesignatorManager.DesignationManagerOnGUI: the tool's controls when the game does not show them: the
+		/// Architect menu closed with the tool still selected, or open with no category open (the game draws them only
+		/// from the open category; tapping the category again closes it and leaves the tool selected).
+		/// </summary>
 		public static void ControlsOfLastResort()
 		{
 			if (controlsFrame >= Time.frameCount - 2 || Current.ProgramState != ProgramState.Playing || Find.CurrentMap == null || !WorldRendererUtility.DrawingMap)
@@ -397,16 +401,18 @@ namespace PortMobile
 				return;
 			}
 			Designator selected = Find.DesignatorManager.SelectedDesignator;
-			if (selected == null || Find.MainTabsRoot.OpenTab == MainButtonDefOf.Architect)
+			if (selected == null)
 			{
 				return;
 			}
+			bool menuOpen = Find.MainTabsRoot.OpenTab == MainButtonDefOf.Architect;
 			bool dragging = DragConfirm.Tool() == selected;
 			if (!(selected is Designator_Place) && !dragging)
 			{
 				return;
 			}
-			float bottomY = UI.screenHeight - 35 - 10;
+			// With the menu open its categories cover the bottom left: the controls go above them, as the game puts them.
+			float bottomY = menuOpen ? UI.screenHeight - 35 - ((MainTabWindow_Architect)MainButtonDefOf.Architect.TabWindow).WinHeight - 270f : UI.screenHeight - 35 - 10;
 			lastResort = true;
 			drew = false;
 			try

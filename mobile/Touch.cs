@@ -132,6 +132,7 @@ namespace PortMobile
 			TouchSizes.Start(harmony);
 			ShiftKey.Start();
 			BarInset.Start(harmony);
+			MouseDecorations.Start(harmony);
 			DiagFloatMenu.Start(harmony);
 			Log("touch layer on (density " + density.ToString("F2") + ", drag threshold " + DragThreshold.ToString("F0") + " px)");
 		}
@@ -689,6 +690,7 @@ namespace PortMobile
 			private static readonly Queue<(double at, int id, int type, Vector2 pos)> steps = new Queue<(double, int, int, Vector2)>();
 			private static double started;
 			private static int checkCountdown;
+			private static bool verboseBefore;
 
 			public static void Feed()
 			{
@@ -716,6 +718,8 @@ namespace PortMobile
 					}
 					File.Delete(FilePath);
 					started = Now;
+					// Traced while it plays; afterwards as before (the trace of every frame's float menu while a pawn is drafted is a lot).
+					verboseBefore = Verbose;
 					Verbose = true;
 					Log("replaying " + steps.Count + " scripted touch events");
 					return;
@@ -724,6 +728,10 @@ namespace PortMobile
 				{
 					var step = steps.Dequeue();
 					Apply(step.type, 1000 + step.id, step.pos);
+				}
+				if (steps.Count == 0)
+				{
+					Verbose = verboseBefore;
 				}
 			}
 		}

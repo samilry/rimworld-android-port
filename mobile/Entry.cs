@@ -24,6 +24,8 @@ namespace PortMobile
 			started = true;
 			Console.WriteLine("[mobile] starting; Harmony " + typeof(Harmony).Assembly.GetName().Version + ", runtime " + Environment.Version);
 			var harmony = new Harmony("port17.mobile");
+			// Before any of the port's patches: they are watched like every later one (see InlineGuard).
+			InlineGuard.Start(harmony);
 			harmony.Patch(AccessTools.Method(typeof(Verse.UIRoot), "UIRootOnGUI"), postfix: new HarmonyMethod(typeof(Entry), nameof(AfterUIRootOnGUI)));
 			Console.WriteLine("[mobile] patched UIRoot.UIRootOnGUI");
 			Touch.Start();
@@ -41,7 +43,7 @@ namespace PortMobile
 			ColdTextures.Start(harmony);
 			AtlasSeams.Start(harmony);
 			// Last: the mods' replacements that hold their own copy of a method patched above.
-			InlineGuard.Run();
+			InlineGuard.EndOfStart();
 		}
 
 		private static bool menuTimed;

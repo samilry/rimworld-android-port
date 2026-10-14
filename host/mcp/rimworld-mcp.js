@@ -314,6 +314,19 @@ tool('rw_gesture', 'Scripted touches with several fingers (pinch zoom and the li
   { script: str('the lines') }, ['script'],
   async args => { putGameFile('gesture.txt', args.script.trim() + '\n'); return textResult('gesture handed to the game (it looks for it about twice a second)'); });
 
+tool('rw_type', 'Types ASCII text into the focused text field (adb input text; letters, digits and simple punctuation). clear: true first deletes up to 40 characters.',
+  { text: str(''), clear: { type: 'boolean' } }, ['text'],
+  async args => {
+    if (args.clear) shell('input keyevent KEYCODE_MOVE_END && for i in $(seq 1 40); do input keyevent KEYCODE_DEL; done', { timeout: 60000 });
+    if (!/^[ -~]*$/.test(args.text)) return { ...textResult('only ASCII can be typed this way'), isError: true };
+    shell('input text ' + "'" + args.text.replace(/ /g, '%s').replace(/'/g, '') + "'");
+    return textResult('typed');
+  });
+
+tool('rw_key', 'An Android key event by name, e.g. ENTER, DEL, ESCAPE, TAB, MOVE_END (KEYCODE_ is added).',
+  { key: str('') }, ['key'],
+  async args => { shell('input keyevent KEYCODE_' + String(args.key).replace(/^KEYCODE_/, '').replace(/[^A-Z0-9_]/gi, '')); return textResult('key ' + args.key); });
+
 tool('rw_back', 'The Android back key, which the game takes as Escape (closes the top window, deselects).', {}, [],
   async () => { shell('input keyevent 111'); return textResult('escape'); });
 
@@ -338,7 +351,15 @@ tool('rw_click',
     candidates.sort((a, b) => score(a) - score(b) || b.w - a.w);
     const pick = candidates[args.nth || 0];
     if (!pick) return { ...textResult('nothing on the screen says "' + args.text + '"'), isError: true };
-    const [x, y, w, h] = pick.r;
+    let [x, y, w, h] = pick.r;
+    if (pick.from === 'text') {
+      // A gizmo's label hangs below its button: the button is what takes the tap.
+      const cx = x + w / 2;
+      const all = await agent('screen', { window: pick.w === -1 ? 'map' : String(pick.w), max: 2000 });
+      const above = all.controls.filter(c => c.w === pick.w && c.r[0] <= cx && cx <= c.r[0] + c.r[2] && y - (c.r[1] + c.r[3]) >= -h && y - (c.r[1] + c.r[3]) <= 30)
+        .sort((a, b) => (y - (a.r[1] + a.r[3])) - (y - (b.r[1] + b.r[3])))[0];
+      if (above) { [x, y, w, h] = above.r; pick.from = 'button above the text'; }
+    }
     tapAt(x + w / 2, y + h / 2);
     return textResult('tapped ' + pick.from + ' "' + pick.t + '" at ' + Math.round(x + w / 2) + ',' + Math.round(y + h / 2) + ' (window ' + pick.w + ')' + (candidates.length > 1 ? '; ' + (candidates.length - 1) + ' other match(es): ' + candidates.filter(c => c !== pick).slice(0, 5).map(c => '"' + c.t + '"').join(', ') : ''));
   });
@@ -373,6 +394,9 @@ tool('rw_messages', 'The newest letters and messages from the game\'s history.',
 tool('rw_cell', 'Where a map cell is on the screen (phone px).',
   { x: num(''), z: num('') }, ['x', 'z'],
   async args => textResult(await agent('cell', args)));
+
+tool('rw_zones', 'The zones of the current map (growing, stockpile, ...) with their size, bounds and crop.', {}, [],
+  async () => textResult(await agent('zones')));
 
 tool('rw_log', 'The game\'s log since the last call (the first call only sets the starting point): errors with their stacks, counted. all: true also lists warnings and other lines. Secrets (API keys) are masked.',
   { all: { type: 'boolean' }, max_lines: num('other lines shown with all, default 60') }, [],
