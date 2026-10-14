@@ -330,6 +330,7 @@ namespace PortMobile
 			{
 				new FloatMenuOption(Say("从压缩包导入（.zip，可以多选）", "From archives (.zip, several at once)"), delegate { Pick(false); }),
 				new FloatMenuOption(Say("从文件夹导入", "From a folder"), delegate { Pick(true); }),
+				new FloatMenuOption(Say("从 Steam 创意工坊下载", "From the Steam Workshop"), WorkshopLoader.Open),
 				new FloatMenuOption(Say("怎么把mod放到手机上？", "How do mods get onto the phone?"), delegate
 				{
 					Find.WindowStack.Add(new Dialog_MessageBox(Say(
@@ -401,7 +402,7 @@ namespace PortMobile
 		}
 
 		/// <summary>What the worker thread found and did; read by the window once the thread is done.</summary>
-		private sealed class Outcome
+		internal sealed class Outcome
 		{
 			public readonly List<string> Imported = new List<string>();
 			public readonly List<string> Updated = new List<string>();
@@ -612,12 +613,12 @@ namespace PortMobile
 		/// On the worker thread: every mod found in what was copied goes into Mods (replacing the one of the same package
 		/// id) and has its assemblies prepared. Only files are touched here; the game's own lists are the window's business.
 		/// </summary>
-		private static void Install(Outcome outcome, string mods, Version game)
+		internal static void Install(Outcome outcome, string mods, Version game, string staging = null)
 		{
 			try
 			{
 				var found = new List<string>();
-				FindMods(Staging, 0, found);
+				FindMods(staging ?? Staging, 0, found);
 				// The mods that are here already, by package id.
 				var present = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 				foreach (string folder in Directory.GetDirectories(mods))
@@ -711,12 +712,15 @@ namespace PortMobile
 			catch (Exception)
 			{
 			}
-			CleanUp();
+			if (staging == null)
+			{
+				CleanUp();
+			}
 			outcome.Done = true;
 		}
 
 		/// <summary>On the game's thread, once the worker is done: the mod page shows what is there now, and a box says what happened.</summary>
-		private static void Report(Outcome outcome, string leftOut)
+		internal static void Report(Outcome outcome, string leftOut)
 		{
 			List<string> imported = outcome.Imported, updated = outcome.Updated, problems = outcome.Problems;
 			// Asked before the list is rebuilt: a mod that is in use keeps running its old code until the game starts again.
@@ -783,6 +787,50 @@ namespace PortMobile
 			{
 				Console.WriteLine("[mobile] mod import: the mod screen could not be refreshed: " + e);
 			}
+		}
+	}
+
+	/// <summary>
+	/// What the Workshop download (workshop/PortWorkshop.dll, loaded by WorkshopLoader into a load context of its own)
+	/// may use of the phone layer: installing the mods found in a folder exactly as the import does, and the report
+	/// afterwards.
+	/// </summary>
+	public static class ModInstall
+	{
+		public static bool Chinese => Texts.Chinese;
+
+		/// <summary>
+		/// On a worker thread: every mod found in the folder goes into the game's Mods folder (replacing the one with the
+		/// same package id) and has its assemblies prepared. Returns the outcome for Report; a line for the user.
+		/// </summary>
+		public static object Install(string staging, string mods, Version game, out string summary)
+		{
+			var outcome = new ModImport.Outcome();
+			ModImport.Install(outcome, mods, game, staging);
+			summary = string.Join("; ", outcome.Problems.Concat(outcome.PrepProblems));
+			return outcome;
+		}
+
+		/// <summary>The package id of the first mod the outcome put in place, if any.</summary>
+		public static string FirstPackage(object outcome)
+		{
+			return (outcome as ModImport.Outcome)?.FirstPackage;
+		}
+
+		/// <summary>On the game's thread: the mod page shows the new mods, and a box says what happened in all the outcomes.</summary>
+		public static void Report(IEnumerable<object> outcomes)
+		{
+			var all = new ModImport.Outcome();
+			foreach (ModImport.Outcome one in outcomes.OfType<ModImport.Outcome>())
+			{
+				all.Imported.AddRange(one.Imported);
+				all.Updated.AddRange(one.Updated);
+				all.UpdatedIds.AddRange(one.UpdatedIds);
+				all.Problems.AddRange(one.Problems);
+				all.PrepProblems.AddRange(one.PrepProblems);
+				all.FirstPackage = all.FirstPackage ?? one.FirstPackage;
+			}
+			ModImport.Report(all, "");
 		}
 	}
 }
