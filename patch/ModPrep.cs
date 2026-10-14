@@ -66,7 +66,12 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 ///     another return type that converts implicitly to the old one, adapted the way a recompilation would;
 ///   - an override of a game method by its old return type, where the old type converts implicitly to the new one,
 ///     joined by the override the game does call, which returns the mod's result;
-///   - Lunar Framework's checksum of the file (name.lfc beside name.dll) recomputed when the file changed.
+///   - Lunar Framework's checksum of the file (name.lfc beside name.dll) recomputed when the file changed;
+///   - the three things Ludeon's runtime finds for a mod where the stock one does not (its LaxTypeRefResolution,
+///     LaxMemberSignatures and LaxPrivateFieldNames): a framework type referenced in an assembly that does not have
+///     it (Adaptive Storage's Unsafe "in mscorlib") pointed at the one that does; a call of a framework method that
+///     returned nothing on Mono and returns a value here (List<T>.EnsureCapacity) followed by a pop; a framework
+///     field by its Mono name (Label.label) pointed at the field by this runtime's name (m_label).
 /// A stamp file in the mod's folder records that this was done (and with which version of these rules).
 ///
 /// One source for two places: patch.dll on the PC (host/mods-set.js stages a copy of a Workshop mod and runs
@@ -76,7 +81,7 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 internal static class ModPrep
 {
 	/// <summary>Bumped whenever what is done to an assembly changes; part of the stamp, so prepared mods are done again.</summary>
-	public const int RulesVersion = 8;
+	public const int RulesVersion = 9;
 
 	public const string StampName = ".port17-prepared";
 
@@ -350,6 +355,10 @@ internal static class ModPrep
 	{
 		ModuleDefinition module = assembly.MainModule;
 		int edits = AddAccessCheckExemptions(assembly);
+		// First: the rules below look types up, and a type pointed at its assembly resolves for them.
+		edits += RetargetMissingFrameworkTypes(module, resolver, label, log);
+		edits += AdaptFrameworkReturnTypes(module, label, log);
+		edits += MatchFrameworkFieldNames(module, label, log);
 		foreach (TypeDefinition type in module.GetTypes())
 		{
 			foreach (FieldDefinition field in type.Fields)
@@ -697,6 +706,356 @@ internal static class ModPrep
 			case string v: into.Add(Instruction.Create(OpCodes.Ldstr, v)); break;
 			default: throw new InvalidOperationException("a default of type " + constant.GetType().Name);
 		}
+	}
+
+	private static bool IsFrameworkName(string assembly)
+	{
+		return assembly == "mscorlib" || assembly == "netstandard" || assembly.StartsWith("System", StringComparison.Ordinal);
+	}
+
+	private static TypeDefinition TryResolve(TypeReference type)
+	{
+		try
+		{
+			return type.Resolve();
+		}
+		catch (Exception)
+		{
+			return null;
+		}
+	}
+
+	private static AssemblyDefinition TryResolve(IAssemblyResolver resolver, string name)
+	{
+		try
+		{
+			return resolver.Resolve(new AssemblyNameReference(name, new Version(0, 0, 0, 0)));
+		}
+		catch (Exception)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>
+	/// Ludeon's runtime looks a referenced type up by its name when the assembly the reference names does not have it
+	/// (WaylithClr.LaxTypeRefResolution). Mono's mscorlib held types that .NET keeps elsewhere: Adaptive Storage's
+	/// Fishery uses System.Runtime.CompilerServices.Unsafe "from mscorlib", and the stock runtime threw a
+	/// TypeLoadException whenever a storage building took an item (the building broke, and with it the drawing of
+	/// everything after it on the map). A framework type that does not resolve where it is referenced is pointed at
+	/// System.Runtime when that forwards it, else at System.Private.CoreLib when that defines it. A type neither has
+	/// (Mono's JitHelpers) stays as it is: it fails on the PC too.
+	/// </summary>
+	private static int RetargetMissingFrameworkTypes(ModuleDefinition module, IAssemblyResolver resolver, string label, Action<string> log)
+	{
+		var names = new List<string>();
+		AssemblyDefinition runtime = null, coreLib = null;
+		bool looked = false;
+		foreach (TypeReference type in module.GetTypeReferences().ToList())
+		{
+			if (type.DeclaringType != null || !(type.Scope is AssemblyNameReference scope) || !IsFrameworkName(scope.Name) || TryResolve(type) != null)
+			{
+				continue;
+			}
+			if (!looked)
+			{
+				looked = true;
+				runtime = TryResolve(resolver, "System.Runtime");
+				coreLib = TryResolve(resolver, "System.Private.CoreLib");
+			}
+			AssemblyDefinition holder = null;
+			if (runtime != null && (runtime.MainModule.GetType(type.FullName) != null || runtime.MainModule.ExportedTypes.Any(e => e.FullName == type.FullName)))
+			{
+				holder = runtime;
+			}
+			else if (coreLib != null && coreLib.MainModule.GetType(type.FullName) != null)
+			{
+				holder = coreLib;
+			}
+			if (holder == null || holder.Name.Name == scope.Name)
+			{
+				continue;
+			}
+			AssemblyNameReference target = module.AssemblyReferences.FirstOrDefault(r => r.Name == holder.Name.Name);
+			if (target == null)
+			{
+				target = new AssemblyNameReference(holder.Name.Name, holder.Name.Version) { PublicKeyToken = holder.Name.PublicKeyToken };
+				module.AssemblyReferences.Add(target);
+			}
+			type.Scope = target;
+			names.Add(type.FullName + " (" + scope.Name + " -> " + target.Name + ")");
+		}
+		// Nested types go with the type around them.
+		foreach (TypeReference type in module.GetTypeReferences())
+		{
+			TypeReference outer = type;
+			while (outer.DeclaringType != null)
+			{
+				outer = outer.DeclaringType;
+			}
+			if (outer != type && type.Scope != outer.Scope && outer.Scope is AssemblyNameReference)
+			{
+				type.Scope = outer.Scope;
+			}
+		}
+		if (names.Count > 0)
+		{
+			log(label + ": " + names.Count + " framework type(s) found by name elsewhere: " + string.Join(", ", names.Take(4)) + (names.Count > 4 ? ", ..." : ""));
+		}
+		return names.Count;
+	}
+
+	/// <summary>
+	/// A framework method that returned nothing on Mono and returns a value on this runtime, called by its Mono
+	/// signature (List<T>.EnsureCapacity(int): void on Mono, int on .NET; Fishery calls it on every insertion). Ludeon's
+	/// runtime binds such a call (WaylithClr.LaxMemberSignatures); here it calls the method by its signature and drops
+	/// the value. Only when exactly one method of the type has that name and those parameters.
+	/// </summary>
+	private static int AdaptFrameworkReturnTypes(ModuleDefinition module, string label, Action<string> log)
+	{
+		var verdicts = new Dictionary<string, MethodDefinition>();
+		var names = new List<string>();
+		int adapted = 0;
+		foreach (TypeDefinition type in module.GetTypes())
+		{
+			foreach (MethodDefinition method in type.Methods)
+			{
+				if (!method.HasBody)
+				{
+					continue;
+				}
+				Mono.Cecil.Cil.MethodBody body = method.Body;
+				bool widened = false;
+				for (int i = 0; i < body.Instructions.Count; i++)
+				{
+					Instruction instruction = body.Instructions[i];
+					if ((instruction.OpCode != OpCodes.Call && instruction.OpCode != OpCodes.Callvirt) || !(instruction.Operand is MethodReference called)
+						|| called is GenericInstanceMethod || called.HasGenericParameters || called.ReturnType.MetadataType != MetadataType.Void
+						|| called.DeclaringType == null || called.DeclaringType is ArrayType
+						|| !(called.DeclaringType.GetElementType().Scope is AssemblyNameReference scope) || !IsFrameworkName(scope.Name))
+					{
+						continue;
+					}
+					// tail. before the call: a value-returning call cannot be one any more.
+					if (i > 0 && body.Instructions[i - 1].OpCode.OpCodeType == OpCodeType.Prefix)
+					{
+						continue;
+					}
+					string key = called.FullName;
+					if (!verdicts.TryGetValue(key, out MethodDefinition found))
+					{
+						found = FindValueReturningTwin(called);
+						verdicts[key] = found;
+						if (found != null)
+						{
+							names.Add(called.DeclaringType.GetElementType().Name + "." + called.Name + " (now returns " + found.ReturnType.Name + ")");
+						}
+					}
+					TypeReference returned = found == null ? null : PrimitiveOf(module, found.ReturnType);
+					if (returned == null)
+					{
+						continue;
+					}
+					if (!widened)
+					{
+						WidenBranches(body);
+						widened = true;
+					}
+					var replacement = new MethodReference(called.Name, returned, called.DeclaringType)
+					{
+						HasThis = called.HasThis,
+						ExplicitThis = called.ExplicitThis,
+						CallingConvention = called.CallingConvention,
+					};
+					foreach (ParameterDefinition parameter in called.Parameters)
+					{
+						replacement.Parameters.Add(new ParameterDefinition(parameter.ParameterType));
+					}
+					instruction.Operand = replacement;
+					body.GetILProcessor().InsertAfter(instruction, Instruction.Create(OpCodes.Pop));
+					i++;
+					adapted++;
+				}
+			}
+		}
+		if (adapted > 0)
+		{
+			log(label + ": " + adapted + " call(s) of framework methods that return a value now: " + string.Join(", ", names.Take(4)) + (names.Count > 4 ? ", ..." : ""));
+		}
+		return adapted;
+	}
+
+	/// <summary>The one method of the called one's type with its name and parameters that returns a value, when the call itself does not bind.</summary>
+	private static MethodDefinition FindValueReturningTwin(MethodReference called)
+	{
+		try
+		{
+			if (called.Resolve() != null)
+			{
+				return null;
+			}
+		}
+		catch (Exception)
+		{
+		}
+		TypeDefinition type = TryResolve(called.DeclaringType);
+		if (type == null)
+		{
+			return null;
+		}
+		MethodDefinition found = null;
+		foreach (MethodDefinition candidate in type.Methods)
+		{
+			if (candidate.Name != called.Name || candidate.HasThis != called.HasThis || candidate.HasGenericParameters
+				|| candidate.ReturnType.MetadataType == MetadataType.Void || candidate.Parameters.Count != called.Parameters.Count)
+			{
+				continue;
+			}
+			bool same = true;
+			for (int n = 0; same && n < called.Parameters.Count; n++)
+			{
+				same = SameParameterType(candidate.Parameters[n].ParameterType, called.Parameters[n].ParameterType);
+			}
+			if (!same)
+			{
+				continue;
+			}
+			if (found != null)
+			{
+				return null; // two of them: not guessed
+			}
+			found = candidate;
+		}
+		return found;
+	}
+
+	private static bool SameParameterType(TypeReference defined, TypeReference referenced)
+	{
+		if (defined is GenericParameter a && referenced is GenericParameter b)
+		{
+			return a.Position == b.Position && a.Type == b.Type;
+		}
+		return defined.FullName == referenced.FullName;
+	}
+
+	/// <summary>The module's own reference to a primitive type (through its own core library), or null for any other type.</summary>
+	private static TypeReference PrimitiveOf(ModuleDefinition module, TypeReference type)
+	{
+		TypeSystem types = module.TypeSystem;
+		switch (type.MetadataType)
+		{
+			case MetadataType.Boolean: return types.Boolean;
+			case MetadataType.Char: return types.Char;
+			case MetadataType.SByte: return types.SByte;
+			case MetadataType.Byte: return types.Byte;
+			case MetadataType.Int16: return types.Int16;
+			case MetadataType.UInt16: return types.UInt16;
+			case MetadataType.Int32: return types.Int32;
+			case MetadataType.UInt32: return types.UInt32;
+			case MetadataType.Int64: return types.Int64;
+			case MetadataType.UInt64: return types.UInt64;
+			case MetadataType.Single: return types.Single;
+			case MetadataType.Double: return types.Double;
+			case MetadataType.IntPtr: return types.IntPtr;
+			case MetadataType.UIntPtr: return types.UIntPtr;
+			default: return null;
+		}
+	}
+
+	/// <summary>
+	/// A private field of a framework type used straight from IL by its Mono name (Fishery compares Label.label; .NET
+	/// calls it m_label). Ludeon's runtime finds the field by the name without its "m_"/"_" prefix
+	/// (WaylithClr.LaxPrivateFieldNames; hooks/StartupHook.cs does the same for Harmony's lookups by name). Here the
+	/// reference is pointed at that field when exactly one non-public field of the type answers to the name and has
+	/// the referenced field's type.
+	/// </summary>
+	private static int MatchFrameworkFieldNames(ModuleDefinition module, string label, Action<string> log)
+	{
+		var verdicts = new Dictionary<string, FieldDefinition>();
+		var names = new List<string>();
+		int matched = 0;
+		foreach (TypeDefinition type in module.GetTypes())
+		{
+			foreach (MethodDefinition method in type.Methods)
+			{
+				if (!method.HasBody)
+				{
+					continue;
+				}
+				foreach (Instruction instruction in method.Body.Instructions)
+				{
+					if (!(instruction.Operand is FieldReference field) || field is FieldDefinition || field.DeclaringType == null
+						|| !(field.DeclaringType.GetElementType().Scope is AssemblyNameReference scope) || !IsFrameworkName(scope.Name))
+					{
+						continue;
+					}
+					string key = field.FullName;
+					if (!verdicts.TryGetValue(key, out FieldDefinition found))
+					{
+						found = FindFieldByMonoName(field);
+						verdicts[key] = found;
+						if (found != null)
+						{
+							names.Add(field.DeclaringType.GetElementType().Name + "." + field.Name + " -> " + found.Name);
+						}
+					}
+					if (found == null)
+					{
+						continue;
+					}
+					instruction.Operand = new FieldReference(found.Name, field.FieldType, field.DeclaringType);
+					matched++;
+				}
+			}
+		}
+		if (matched > 0)
+		{
+			log(label + ": " + matched + " use(s) of framework fields by their Mono names: " + string.Join(", ", names.Take(4)) + (names.Count > 4 ? ", ..." : ""));
+		}
+		return matched;
+	}
+
+	private static FieldDefinition FindFieldByMonoName(FieldReference field)
+	{
+		try
+		{
+			if (field.Resolve() != null)
+			{
+				return null;
+			}
+		}
+		catch (Exception)
+		{
+		}
+		TypeDefinition type = TryResolve(field.DeclaringType);
+		if (type == null)
+		{
+			return null;
+		}
+		string wanted = WithoutFieldPrefix(field.Name);
+		FieldDefinition found = null;
+		foreach (FieldDefinition candidate in type.Fields)
+		{
+			if (candidate.IsPublic || WithoutFieldPrefix(candidate.Name) != wanted || !SameParameterType(candidate.FieldType, field.FieldType))
+			{
+				continue;
+			}
+			if (found != null)
+			{
+				return null;
+			}
+			found = candidate;
+		}
+		return found;
+	}
+
+	private static string WithoutFieldPrefix(string name)
+	{
+		if (name.StartsWith("m_", StringComparison.Ordinal))
+		{
+			return name.Substring(2);
+		}
+		return name.StartsWith("_", StringComparison.Ordinal) ? name.Substring(1) : name;
 	}
 
 	/// <summary>Short jumps reach 127 bytes; a method that gets instructions inserted gets the long forms.</summary>
