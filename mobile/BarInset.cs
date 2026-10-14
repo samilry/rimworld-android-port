@@ -14,7 +14,8 @@ namespace PortMobile
 	/// screen has round corners: the first and the last button lie under them. Here the bar begins and ends further in,
 	/// by as much as the corner covers a quarter of the bar's height above the bottom edge (so the faces of the outer
 	/// buttons are whole from there up; with this phone's corners of 169 pixels that is 97 pixels, 52 units, a side).
-	/// The buttons share the remaining width as the game shares the whole one; nothing else moves.
+	/// The buttons share the remaining width as the game shares the whole one; nothing else moves. The two ends of
+	/// the bar are filled with the face of the buttons, so that the bar still reaches from side to side.
 	///
 	/// Done inside MainButtonsRoot.DoButtons: the two places where it reads the screen's width get the shorter width,
 	/// and the buttons are drawn in a group that begins at the inset.
@@ -80,6 +81,16 @@ namespace PortMobile
 			__state = inset > 0;
 			if (__state)
 			{
+				if (Event.current.type == EventType.Repaint)
+				{
+					// The two ends get the face of the buttons, reaching a little under the outer buttons so that no edge shows between them.
+					Color colour = GUI.color;
+					GUI.color = Color.white;
+					float top = UI.screenHeight - BarHeight;
+					Widgets.DrawAtlas(new Rect(0f, top, inset + 6f, BarHeight + 1f), Widgets.ButtonSubtleAtlas);
+					Widgets.DrawAtlas(new Rect(UI.screenWidth - inset - 6f, top, inset + 6f, BarHeight + 1f), Widgets.ButtonSubtleAtlas);
+					GUI.color = colour;
+				}
 				GUI.BeginGroup(new Rect(inset, 0f, Width(), UI.screenHeight));
 			}
 		}
