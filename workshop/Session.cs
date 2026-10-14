@@ -227,7 +227,7 @@ namespace PortWorkshop
 				cellId = callback.CellID;
 				State = SessionState.Online;
 				Message = "";
-				Log("signed in as " + Account + " (cell " + cellId + ")");
+				Log("signed in as " + Account + " (account " + client.SteamID.AccountID + ", cell " + cellId + ")");
 				return;
 			}
 			Log("sign-in refused: " + callback.Result + " / " + callback.ExtendedResult);
@@ -548,6 +548,7 @@ namespace PortWorkshop
 					throw new Exception(Texts.Say("读取订阅失败：", "Reading the subscriptions failed: ") + response.Result);
 				}
 				List<PublishedFileDetails> got = response.Body.publishedfiledetails;
+				Log("subscriptions page " + page + ": " + got.Count + " of " + response.Body.total);
 				all.AddRange(got);
 				if (got.Count < 100 || all.Count >= response.Body.total)
 				{
