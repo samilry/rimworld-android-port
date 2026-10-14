@@ -131,6 +131,7 @@ namespace PortMobile
 			TapAssist.Start(harmony, density);
 			TouchSizes.Start(harmony);
 			ShiftKey.Start();
+			BarInset.Start(harmony);
 			DiagFloatMenu.Start(harmony);
 			Log("touch layer on (density " + density.ToString("F2") + ", drag threshold " + DragThreshold.ToString("F0") + " px)");
 		}
