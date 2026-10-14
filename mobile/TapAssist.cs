@@ -303,7 +303,7 @@ namespace PortMobile
 
 		private static void Note(Rect rect, byte kind)
 		{
-			if (!on || !OnScreen(rect, true, out object backend, out float x0, out float y0, out float x1, out float y1))
+			if ((!on && kind != Field) || !OnScreen(rect, true, out object backend, out float x0, out float y0, out float x1, out float y1))
 			{
 				return;
 			}
@@ -391,6 +391,20 @@ namespace PortMobile
 				}
 			}
 			return -1;
+		}
+
+		/// <summary>Whether a text field was drawn at this point of the screen in the last pass.</summary>
+		public static bool FieldAt(Vector2 point)
+		{
+			for (int i = 0; i < shownCount; i++)
+			{
+				ref Target target = ref shown[i];
+				if (target.kind == Field && point.x >= target.x0 && point.x <= target.x1 && point.y >= target.y0 && point.y <= target.y1)
+				{
+					return true;
+				}
+			}
+			return false;
 		}
 
 		/// <summary>Where the press of a finger at this point (window pixels, y down) goes.</summary>

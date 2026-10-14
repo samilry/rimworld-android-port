@@ -16,7 +16,14 @@ namespace PortMobile
 	///   a hold shows the tooltips of what is under the finger at once, keeps them after the finger lifts until
 	///   the next touch, and clicks nothing;
 	///   the tooltips of a tap do not linger (the engine's mouse stays where the last finger was);
-	///   the soft keyboard comes up while a text field has the focus.
+	///   the soft keyboard comes up while a text field has the focus;
+	///   a search box (the game's QuickSearchWidget: the info card's, the load dialog's, a mod's) takes the focus only
+	///   from a finger on it: given the focus by code (as the info card's is when it opens), it is let go at once, so
+	///   that the keyboard does not come up by itself. Other text fields (a name to type) keep such a focus.
+	///   mobile.txt: searchFocusOnTap=0 lets search boxes keep it too;
+	///   a finger that lands anywhere but on a text field takes the focus from the field that has it, and the keyboard
+	///   goes down (the game means to do that for its search boxes, but under this engine the press has already been
+	///   used by the window when the search box looks at it).
 	/// </summary>
 	internal static class Interface
 	{
@@ -31,7 +38,10 @@ namespace PortMobile
 		private static int suppressClickUntilFrame = -1;
 		// What a hold showed stays until the next touch.
 		private static bool keepTips;
-		private static bool keyboardShown;
+		private static bool keyboardShown, askKeyboardAgain;
+		// The text field that took the focus from a press on it, and the focus as last seen.
+		private static int tappedFocus, lastFocus;
+		private static bool searchOnlyFromTap = true;
 
 		// A finger that begins in a list with something to scroll presses nothing until it is known to be a tap (see
 		// Touch): while it scrolls, the list that begins at this point of the screen follows it, and goes on for a
@@ -57,6 +67,8 @@ namespace PortMobile
 			harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.ButtonInvisibleDraggable)), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeDraggableButton)));
 			harmony.Patch(AccessTools.Method(typeof(TooltipHandler), nameof(TooltipHandler.DoTooltipGUI)), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeTooltips)));
 			listTouch = Settings.Get("listTouch", 1) != 0;
+			searchOnlyFromTap = Settings.Get("searchFocusOnTap", 1) != 0;
+			harmony.Patch(AccessTools.Method(typeof(GUI), "TextFieldImpl"), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeTextField)), postfix: new HarmonyMethod(typeof(Interface), nameof(AfterTextField)));
 		}
 
 		// ---- told by Touch ----
@@ -64,8 +76,9 @@ namespace PortMobile
 		/// <summary>A new touch begins: what the last hold showed goes away.</summary>
 		public static void TouchBegan()
 		{
-			// The keyboard may have been dismissed by the system (Back) while the field kept the focus: a touch asks for it again.
-			keyboardShown = false;
+			// The keyboard may have been dismissed by the system (Back) while the field kept the focus: a touch asks for it
+			// again. (Forgetting that it was shown would also keep it up when the touch takes the focus away.)
+			askKeyboardAgain = true;
 			if (keepTips)
 			{
 				keepTips = false;
@@ -157,12 +170,64 @@ namespace PortMobile
 		{
 			// A press that a control in a list used is no longer seen as a press when the list ends: nothing is carried over.
 			open.Clear();
+			LetGoOfGivenSearchFocus();
 			bool wanted = UnityStubs.Internal.TextFocus.CapturesText;
-			if (wanted != keyboardShown)
+			bool again = askKeyboardAgain && wanted;
+			askKeyboardAgain = false;
+			if (wanted != keyboardShown || again)
 			{
 				keyboardShown = wanted;
 				if (Touch.Verbose) Console.WriteLine("[mobile] soft keyboard " + (wanted ? "wanted" : "not wanted") + " (control " + GUIUtility.keyboardControl + ")");
 				glfwAndroidShowKeyboard(wanted ? 1 : 0);
+			}
+		}
+
+		/// <summary>Told by Touch when a finger lands (window pixels, y down).</summary>
+		public static void FingerLanded(Vector2 at)
+		{
+			if (GUIUtility.keyboardControl != 0 && TapAssist.Ready && !TapAssist.FieldAt(at))
+			{
+				if (Touch.Verbose) Console.WriteLine("[mobile] a finger away from the text field: its focus goes (" + GUI.GetNameOfFocusedControl() + ")");
+				GUI.FocusControl(null);
+			}
+		}
+
+		/// <summary>Prefix of the engine's TextFieldImpl: the focus before the field had its turn.</summary>
+		public static void BeforeTextField(out int __state)
+		{
+			__state = GUIUtility.keyboardControl;
+		}
+
+		/// <summary>Postfix of the engine's TextFieldImpl: a field that took the focus while handling a press took it from a finger.</summary>
+		public static void AfterTextField(int __state)
+		{
+			int focus = GUIUtility.keyboardControl;
+			if (focus != __state && focus != 0 && OriginalEventUtility.EventType == EventType.MouseDown)
+			{
+				tappedFocus = focus;
+			}
+		}
+
+		/// <summary>Once a frame, before the keyboard follows the focus: a search box that got the focus some other way than from a finger lets it go.</summary>
+		private static void LetGoOfGivenSearchFocus()
+		{
+			int focus = GUIUtility.keyboardControl;
+			if (focus == lastFocus)
+			{
+				return;
+			}
+			lastFocus = focus;
+			if (Touch.Verbose) Console.WriteLine("[mobile] the keyboard focus is now " + focus + " (" + GUI.GetNameOfFocusedControl() + ", from a finger: " + (focus == tappedFocus) + ")");
+			if (!searchOnlyFromTap || focus == 0 || focus == tappedFocus)
+			{
+				return;
+			}
+			string name = GUI.GetNameOfFocusedControl();
+			if (name != null && name.StartsWith("QuickSearchWidget_", StringComparison.Ordinal))
+			{
+				GUI.FocusControl(null);
+				lastFocus = 0;
+				if (Touch.Verbose) Console.WriteLine("[mobile] the search box " + name + " was given the focus without a finger on it: let go");
 			}
 		}
 

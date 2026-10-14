@@ -290,7 +290,9 @@ namespace PortMobile
 				{
 					// The press now, the release next frame (above), a click for the game.
 					Trace("quick tap at " + quickTap.pos);
-					Cursor(TapAssist.Adjust(quickTap.pos));
+					Vector2 at = TapAssist.Adjust(quickTap.pos);
+					Interface.FingerLanded(at);
+					Cursor(at);
 					Button(Left, true);
 					quickTap = null;
 				}
@@ -324,6 +326,7 @@ namespace PortMobile
 				framesDown = 0;
 				last = first.pos;
 				pressAt = TapAssist.Adjust(first.pos);
+				Interface.FingerLanded(pressAt);
 				cursorOffset = Vector2.zero;
 				dragged = false;
 				Cursor(pressAt);
