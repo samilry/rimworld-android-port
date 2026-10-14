@@ -31,6 +31,7 @@ namespace PortMobile
 
 		private static readonly IDictionary ActiveTips = (IDictionary)AccessTools.Field(typeof(TooltipHandler), "activeTips").GetValue(null);
 		private static readonly FieldInfo TipFrame = AccessTools.Field(typeof(TooltipHandler), "frame");
+		private static readonly FieldInfo DraggingWindow = AccessTools.Field(typeof(GUI), "_draggingWindowId");
 		private static readonly FieldInfo ButtonDown = AccessTools.Field(typeof(GUI), "_buttonDownActive");
 		private static readonly FieldInfo CurrentScrollView = AccessTools.Field(typeof(SteamDeck), "currentScrollView");
 
@@ -179,6 +180,20 @@ namespace PortMobile
 				keyboardShown = wanted;
 				if (Touch.Verbose) Console.WriteLine("[mobile] soft keyboard " + (wanted ? "wanted" : "not wanted") + " (control " + GUIUtility.keyboardControl + ")");
 				glfwAndroidShowKeyboard(wanted ? 1 : 0);
+			}
+		}
+
+		/// <summary>
+		/// A second finger has landed: the window the first one began to drag stays where it is. (The engine moves a
+		/// dragged window with the mouse on every pass until the button is up, and the mouse is about to jump to the
+		/// middle of the two fingers: the window jumped with it.)
+		/// </summary>
+		public static void StopWindowDrag()
+		{
+			if (DraggingWindow != null && (int)DraggingWindow.GetValue(null) != -1)
+			{
+				DraggingWindow.SetValue(null, -1);
+				if (Touch.Verbose) Console.WriteLine("[mobile] a second finger: the window being dragged stays");
 			}
 		}
 

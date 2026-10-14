@@ -567,8 +567,10 @@ namespace PortMobile
 			{
 				Find.DesignatorManager.Dragger.EndDrag();
 			}
-			// Nothing may act on the release of the first finger's press (a button fires on the release).
+			// Nothing may act on the release of the first finger's press (a button fires on the release), and a window it
+			// began to drag does not follow the mouse to the middle of the fingers.
 			GUIUtility.hotControl = 0;
+			Interface.StopWindowDrag();
 			if (leftDown) Button(Left, false);
 		}
 
