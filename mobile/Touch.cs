@@ -130,6 +130,7 @@ namespace PortMobile
 			steady = Settings.Get("tapSteady", 1) != 0;
 			TapAssist.Start(harmony, density);
 			TouchSizes.Start(harmony);
+			ShiftKey.Start();
 			DiagFloatMenu.Start(harmony);
 			Log("touch layer on (density " + density.ToString("F2") + ", drag threshold " + DragThreshold.ToString("F0") + " px)");
 		}
@@ -247,6 +248,7 @@ namespace PortMobile
 			}
 			Replay.Feed();
 			TouchSizes.BeforeInterface();
+			ShiftKey.Update();
 			UiScale.Update();
 			Interface.Update();
 			MapTools.Update();
