@@ -10,9 +10,18 @@ namespace PortMobile
 	public static class Entry
 	{
 		private static int frames;
+		private static bool started;
 
 		public static void Start()
 		{
+			// The hook that calls this sits in UIRoot_Entry.Init, and that runs again every time the game comes back to the main
+			// menu. The patches are put in once: put in again, every one of them would run twice from then on.
+			if (started)
+			{
+				MemTrim.AfterReturnToMenu();
+				return;
+			}
+			started = true;
 			Console.WriteLine("[mobile] starting; Harmony " + typeof(Harmony).Assembly.GetName().Version + ", runtime " + Environment.Version);
 			var harmony = new Harmony("port17.mobile");
 			harmony.Patch(AccessTools.Method(typeof(Verse.UIRoot), "UIRootOnGUI"), postfix: new HarmonyMethod(typeof(Entry), nameof(AfterUIRootOnGUI)));
@@ -27,6 +36,9 @@ namespace PortMobile
 			FrameRate.Start(harmony);
 			Perf.Start(harmony);
 			WorldLabels.Start(harmony);
+			MemTrim.Start(harmony);
+			BakeDepth.Start(harmony);
+			ColdTextures.Start(harmony);
 		}
 
 		private static bool menuTimed;
@@ -72,8 +84,11 @@ namespace PortMobile
 				menuTimed = true;
 				Console.WriteLine("[mobile] main menu " + SecondsSinceProcessStart().ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + " s after the runtime started");
 				Console.WriteLine("[mobile] of that: " + WhereTheStartWent());
+				MemTrim.AtMainMenu();
 			}
 			frames++;
+			MemTrim.OnFrame();
+			ColdTextures.OnFrame();
 			if (frames == 1 || frames == 600)
 			{
 				Console.WriteLine("[mobile] UIRootOnGUI postfix ran (" + frames + ")");

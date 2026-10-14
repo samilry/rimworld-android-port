@@ -43,6 +43,11 @@ namespace PortMobile
 			return values.TryGetValue(key, out string v) ? v != "0" && !v.Equals("false", StringComparison.OrdinalIgnoreCase) : fallback;
 		}
 
+		public static string Get(string key, string fallback)
+		{
+			return values.TryGetValue(key, out string v) ? v : fallback;
+		}
+
 		public static int Get(string key, int fallback)
 		{
 			return values.TryGetValue(key, out string v) && int.TryParse(v, out int n) ? n : fallback;

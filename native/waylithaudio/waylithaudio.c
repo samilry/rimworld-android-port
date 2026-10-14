@@ -1,8 +1,12 @@
 // libwaylithaudio.so: the engine's audio library (Waylith.Audio.MiniAudio.MiniAudioBackend P/Invokes it as
 // "waylithaudio"), rebuilt on miniaudio 0.11.22 for Android (AAudio, OpenSL ES fallback). The API is the engine's
 // (host/stubs/waylithaudio.c lists the signatures, taken from the P/Invoke declarations):
-//   sounds   shared data: decoded PCM (s16, the engine reads and writes it through wa_sound_pcm), a compressed
-//            stream in memory or in a file (decoded per voice), or a user stream (the engine's callbacks)
+//   sounds   shared data: PCM (s16, the engine reads and writes it through wa_sound_pcm), a compressed stream in
+//            memory or in a file (decoded per voice), or a user stream (the engine's callbacks).
+//            A sound the engine loads as PCM from compressed data stays compressed until it is played: the game
+//            loads every sound it has when it starts (six thousand of them, five and a half hours, 1.7 GB as
+//            samples). Played, a short one is decoded whole and kept in a cache of limited size (the least
+//            recently played ones are dropped again); a long one is decoded as it plays, like a stream.
 //   voices   one ma_sound each, with optional low-pass, high-pass and echo nodes between it and its group
 //   groups   ma_sound_group; handle 0 is the engine's endpoint
 // Handles are indices with a generation, so that a voice the engine still refers to after its automatic release
@@ -14,6 +18,8 @@
 #include <string.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdio.h>
+#include <time.h>
 #include <android/log.h>
 
 #define STB_VORBIS_HEADER_ONLY
@@ -52,6 +58,15 @@ typedef struct Sound
     wa_seek_fn seek;
     void* user;
     int refs;                // the handle plus every voice playing it
+    // KIND_PCM loaded from compressed data: data/length hold the stream, pcm is there only while decoded.
+    int lazy;
+    int pinned;              // the engine was given the samples' address: they stay
+    int cached;              // in the cache's list
+    int pcmUsers;            // voices playing from pcm
+    uint64_t pcmFrames;      // frames in pcm (frames is what the engine was told when the sound was loaded)
+    size_t pcmBytes;
+    struct Sound* newer;     // the cache's list, least recently played first
+    struct Sound* older;
 } Sound;
 
 // The engine's stream source as a miniaudio data source (f32 interleaved).
@@ -83,6 +98,7 @@ typedef struct Voice
     int userInit;
     ma_sound snd;
     int sndInit;
+    int usesPcm;             // plays from the sound's samples (they must stay until the voice is released)
     ma_sound_group* group;
     float volume;
     int muted, autoRelease, stopped;
@@ -117,6 +133,8 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static Voice g_voices[MAX_VOICES];
 static Group g_groups[MAX_GROUPS];
 static uint64_t g_voicesCreated, g_updates;
+static int g_lazy = 1, g_checkProbe;
+static uint64_t g_probesChecked;
 static void* (*g_alloc)(size_t);
 static void* (*g_realloc)(void*, size_t);
 static void (*g_free)(void*);
@@ -146,8 +164,62 @@ static Group* group_of(uint64_t handle)
 }
 
 // ---- sounds ----
+// The cache of decoded samples (all of it under g_lock).
+static Sound* g_cacheOldest;
+static Sound* g_cacheNewest;
+static size_t g_cacheBytes, g_cacheBudget = 64u << 20, g_decodeNowBytes = 384u << 10;
+static uint64_t g_decodes, g_decodedBytes, g_decodeMicros, g_dropped, g_streamedLazy, g_lazyLoaded, g_lazyCopied, g_slowestDecodeMicros;
+
+static uint64_t micros(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000u + (uint64_t)t.tv_nsec / 1000u;
+}
+
+static void cache_unlink(Sound* s)
+{
+    if (!s->cached) return;
+    if (s->older) s->older->newer = s->newer; else g_cacheOldest = s->newer;
+    if (s->newer) s->newer->older = s->older; else g_cacheNewest = s->older;
+    s->newer = s->older = NULL;
+    s->cached = 0;
+    g_cacheBytes -= s->pcmBytes;
+}
+
+static void cache_add_newest(Sound* s)
+{
+    s->older = g_cacheNewest;
+    s->newer = NULL;
+    if (g_cacheNewest) g_cacheNewest->newer = s; else g_cacheOldest = s;
+    g_cacheNewest = s;
+    s->cached = 1;
+    g_cacheBytes += s->pcmBytes;
+}
+
+// Drops the least recently played samples no voice is playing until the cache fits its budget.
+static void cache_trim(void)
+{
+    Sound* s = g_cacheOldest;
+    while (s && g_cacheBytes > g_cacheBudget)
+    {
+        Sound* next = s->newer;
+        if (s->pcmUsers == 0 && !s->pinned)
+        {
+            cache_unlink(s);
+            free(s->pcm);
+            s->pcm = NULL;
+            s->pcmFrames = 0;
+            s->pcmBytes = 0;
+            g_dropped++;
+        }
+        s = next;
+    }
+}
+
 static void sound_free(Sound* s)
 {
+    cache_unlink(s);
     if (s->pcm) free(s->pcm);
     if (s->owned) free(s->owned);
     if (s->path) free(s->path);
@@ -158,8 +230,9 @@ static void sound_unref(Sound* s)
     if (s && --s->refs <= 0) sound_free(s);
 }
 
-// Decodes a whole stream (memory or file) to interleaved s16 at its own rate.
-static Sound* decode_whole(const void* data, size_t length, const char* path)
+// Decodes a whole stream (memory or file) to interleaved s16 at its own rate. At least minFrames frames are there
+// (silence after what was decoded): the engine indexes the samples by the length it was told.
+static int16_t* decode_samples(const void* data, size_t length, const char* path, uint64_t minFrames, uint64_t* outFrames, uint32_t* outChannels, uint32_t* outRate)
 {
     ma_decoder_config cfg = ma_decoder_config_init(ma_format_s16, 0, 0);
     ma_decoder dec;
@@ -169,6 +242,7 @@ static Sound* decode_whole(const void* data, size_t length, const char* path)
     ma_decoder_get_length_in_pcm_frames(&dec, &total);
     uint32_t channels = dec.outputChannels, rate = dec.outputSampleRate;
     uint64_t capacity = total ? total : 48000;
+    if (capacity < minFrames) capacity = minFrames;
     int16_t* pcm = (int16_t*)malloc((size_t)(capacity * channels * sizeof(int16_t)));
     uint64_t have = 0;
     while (pcm)
@@ -187,14 +261,166 @@ static Sound* decode_whole(const void* data, size_t length, const char* path)
     }
     ma_decoder_uninit(&dec);
     if (!pcm) { g_lastError = MA_OUT_OF_MEMORY; return NULL; }
+    if (have < minFrames) memset(pcm + have * channels, 0, (size_t)((minFrames - have) * channels * sizeof(int16_t)));
+    *outFrames = have;
+    *outChannels = channels;
+    *outRate = rate;
+    return pcm;
+}
+
+static Sound* decode_whole(const void* data, size_t length, const char* path)
+{
+    uint64_t frames = 0;
+    uint32_t channels = 0, rate = 0;
+    int16_t* pcm = decode_samples(data, length, path, 0, &frames, &channels, &rate);
+    if (!pcm) return NULL;
     Sound* s = (Sound*)calloc(1, sizeof(Sound));
     s->kind = KIND_PCM;
     s->pcm = pcm;
-    s->frames = have;
+    s->frames = s->pcmFrames = frames;
     s->channels = channels;
     s->rate = rate;
     s->refs = 1;
     return s;
+}
+
+// The samples of a sound that was loaded compressed (g_lock held). 0 when they cannot be decoded.
+static int sound_decode_locked(Sound* s)
+{
+    if (s->pcm) return 1;
+    uint64_t started = micros(), frames = 0;
+    uint32_t channels = 0, rate = 0;
+    int16_t* pcm = decode_samples(s->data, s->length, NULL, s->frames, &frames, &channels, &rate);
+    if (!pcm || channels != s->channels) { if (pcm) free(pcm); return 0; }
+    s->pcm = pcm;
+    s->pcmFrames = frames < s->frames ? frames : s->frames;
+    s->pcmBytes = (size_t)((frames > s->frames ? frames : s->frames) * channels * sizeof(int16_t));
+    uint64_t took = micros() - started;
+    g_decodes++;
+    g_decodedBytes += s->pcmBytes;
+    g_decodeMicros += took;
+    if (took > g_slowestDecodeMicros) g_slowestDecodeMicros = took;
+    return 1;
+}
+
+// Whether the bytes lie in a file mapping that stays (one of the game's asset packs, mapped whole for as long as
+// the game runs): then a sound can refer to them instead of keeping a copy. The engine says so itself for streams
+// (wa_sound_load_memory_stream's "copy"), for sounds it loads as PCM it does not.
+typedef struct { uintptr_t start, end; } Range;
+static Range g_packs[64];
+static int g_packCount;
+static uint64_t g_packsReadAt;
+static pthread_mutex_t g_packLock = PTHREAD_MUTEX_INITIALIZER;
+
+static int in_pack_locked(uintptr_t p, size_t length)
+{
+    for (int i = 0; i < g_packCount; i++) if (p >= g_packs[i].start && p + length <= g_packs[i].end) return 1;
+    return 0;
+}
+
+static int in_pack_mapping(const void* data, size_t length)
+{
+    uintptr_t p = (uintptr_t)data;
+    pthread_mutex_lock(&g_packLock);
+    int found = in_pack_locked(p, length);
+    uint64_t now = micros();
+    // The list is read again when an address is not in it, but not more often than every two seconds: sounds that
+    // mods bring as files are never in a pack, and there are thousands of them.
+    if (!found && (g_packsReadAt == 0 || now - g_packsReadAt > 2000000u))
+    {
+        g_packsReadAt = now ? now : 1;
+        g_packCount = 0;
+        FILE* maps = fopen("/proc/self/maps", "r");
+        if (maps)
+        {
+            char line[1024];
+            while (fgets(line, sizeof line, maps) && g_packCount < 64)
+            {
+                unsigned long long a = 0, b = 0;
+                char perms[8] = "";
+                if (sscanf(line, "%llx-%llx %7s", &a, &b, perms) != 3) continue;
+                if (perms[0] != 'r' || perms[1] != '-' || perms[3] != 's' || !strstr(line, "Assets.zip")) continue;
+                g_packs[g_packCount].start = (uintptr_t)a;
+                g_packs[g_packCount].end = (uintptr_t)b;
+                g_packCount++;
+            }
+            fclose(maps);
+        }
+        found = in_pack_locked(p, length);
+    }
+    pthread_mutex_unlock(&g_packLock);
+    return found;
+}
+
+// Length, channels and rate of an Ogg Vorbis stream without setting a decoder up (which builds the stream's code
+// books, a millisecond a time): the identification header in the first page, and the position the last page ends at.
+// 0 when the data is anything else or does not end in a whole page; the decoder is asked then.
+static int ogg_vorbis_probe(const uint8_t* d, size_t n, uint64_t* frames, uint32_t* channels, uint32_t* rate)
+{
+    if (n < 64 || memcmp(d, "OggS", 4) != 0) return 0;
+    const uint8_t* p = d + 27 + d[26];
+    if ((size_t)(p - d) + 30 > n || p[0] != 1 || memcmp(p + 1, "vorbis", 6) != 0) return 0;
+    uint32_t ch = p[11];
+    uint32_t r = (uint32_t)p[12] | (uint32_t)p[13] << 8 | (uint32_t)p[14] << 16 | (uint32_t)p[15] << 24;
+    if (ch == 0 || r == 0) return 0;
+    // The last page: an "OggS" within the largest page size of the end whose page runs exactly to the end.
+    size_t from = n > 65307 + 27 ? n - 65307 - 27 : 0;
+    for (size_t at = n - 27; ; at--)
+    {
+        if (d[at] == 'O' && memcmp(d + at, "OggS", 4) == 0 && at + 27 + d[at + 26] <= n && memcmp(d + at + 14, d + 14, 4) == 0)
+        {
+            size_t body = 0;
+            for (uint32_t i = 0; i < d[at + 26]; i++) body += d[at + 27 + i];
+            if (at + 27 + d[at + 26] + body == n)
+            {
+                uint64_t granule = 0;
+                for (int i = 7; i >= 0; i--) granule = granule << 8 | d[at + 6 + i];
+                // The decoder keeps the low 32 bits (stb_vorbis); larger positions are left to it.
+                if (granule == 0 || (granule >> 32) != 0) return 0;
+                *frames = granule;
+                *channels = ch;
+                *rate = r;
+                return 1;
+            }
+        }
+        if (at <= from) break;
+    }
+    return 0;
+}
+
+// Length, channels and rate of compressed data in memory. 0 when it cannot be decoded.
+static int probe_memory(const void* data, size_t length, uint64_t* frames, uint32_t* channels, uint32_t* rate)
+{
+    if (ogg_vorbis_probe((const uint8_t*)data, length, frames, channels, rate))
+    {
+        if (g_checkProbe)
+        {
+            ma_decoder_config cfg = ma_decoder_config_init(ma_format_s16, 0, 0);
+            ma_decoder dec;
+            if (ma_decoder_init_memory(data, length, &cfg, &dec) == MA_SUCCESS)
+            {
+                ma_uint64 total = 0;
+                ma_decoder_get_length_in_pcm_frames(&dec, &total);
+                if (total != *frames || dec.outputChannels != *channels || dec.outputSampleRate != *rate)
+                    LOGW("audio: probe differs: %llu frames %u ch %u Hz, the decoder says %llu %u %u", (unsigned long long)*frames, *channels, *rate, (unsigned long long)total, dec.outputChannels, dec.outputSampleRate);
+                ma_decoder_uninit(&dec);
+            }
+            else LOGW("audio: probe accepted what the decoder does not open (%zu bytes)", length);
+            __sync_fetch_and_add(&g_probesChecked, 1);
+        }
+        return 1;
+    }
+    ma_decoder_config cfg = ma_decoder_config_init(ma_format_s16, 0, 0);
+    ma_decoder dec;
+    ma_result r = ma_decoder_init_memory(data, length, &cfg, &dec);
+    if (r != MA_SUCCESS) { g_lastError = r; return 0; }
+    ma_uint64 total = 0;
+    ma_decoder_get_length_in_pcm_frames(&dec, &total);
+    *frames = total;
+    *channels = dec.outputChannels;
+    *rate = dec.outputSampleRate;
+    ma_decoder_uninit(&dec);
+    return 1;
 }
 
 EXPORT uint64_t wa_sound_load_pcm(void* data, uint64_t frames, uint32_t channels, uint32_t rate, int format)
@@ -205,7 +431,7 @@ EXPORT uint64_t wa_sound_load_pcm(void* data, uint64_t frames, uint32_t channels
     s->pcm = (int16_t*)malloc(bytes ? bytes : 2);
     memcpy(s->pcm, data, bytes);
     s->kind = KIND_PCM;
-    s->frames = frames;
+    s->frames = s->pcmFrames = frames;
     s->channels = channels;
     s->rate = rate;
     s->refs = 1;
@@ -214,7 +440,34 @@ EXPORT uint64_t wa_sound_load_pcm(void* data, uint64_t frames, uint32_t channels
 
 EXPORT uint64_t wa_sound_load_memory(void* data, size_t length)
 {
-    Sound* s = decode_whole(data, length, NULL);
+    uint64_t frames = 0;
+    uint32_t channels = 0, rate = 0;
+    if (!g_lazy || !probe_memory(data, length, &frames, &channels, &rate) || frames == 0 || channels == 0)
+    {
+        // Not asked for, or the length is not known beforehand: decoded now, as the engine expects.
+        return (uint64_t)(uintptr_t)decode_whole(data, length, NULL);
+    }
+    Sound* s = (Sound*)calloc(1, sizeof(Sound));
+    s->kind = KIND_PCM;
+    s->lazy = 1;
+    s->frames = frames;
+    s->channels = channels;
+    s->rate = rate;
+    s->length = length;
+    if (in_pack_mapping(data, length))
+    {
+        s->data = data;
+    }
+    else
+    {
+        s->owned = malloc(length ? length : 1);
+        if (!s->owned) { free(s); g_lastError = MA_OUT_OF_MEMORY; return 0; }
+        memcpy(s->owned, data, length);
+        s->data = s->owned;
+        __sync_fetch_and_add(&g_lazyCopied, 1);
+    }
+    s->refs = 1;
+    __sync_fetch_and_add(&g_lazyLoaded, 1);
     return (uint64_t)(uintptr_t)s;
 }
 
@@ -286,7 +539,24 @@ EXPORT int wa_sound_kind(uint64_t sound) { Sound* s = (Sound*)(uintptr_t)sound; 
 EXPORT uint64_t wa_sound_length_frames(uint64_t sound) { Sound* s = (Sound*)(uintptr_t)sound; return s ? s->frames : 0; }
 EXPORT uint32_t wa_sound_channels(uint64_t sound) { Sound* s = (Sound*)(uintptr_t)sound; return s ? s->channels : 0; }
 EXPORT uint32_t wa_sound_rate(uint64_t sound) { Sound* s = (Sound*)(uintptr_t)sound; return s ? s->rate : 0; }
-EXPORT int16_t* wa_sound_pcm(uint64_t sound) { Sound* s = (Sound*)(uintptr_t)sound; return s ? s->pcm : NULL; }
+EXPORT int16_t* wa_sound_pcm(uint64_t sound)
+{
+    Sound* s = (Sound*)(uintptr_t)sound;
+    if (!s) return NULL;
+    if (s->lazy && !s->pinned)
+    {
+        // The engine reads or writes the samples themselves (AudioClip.GetData and SetData): they are decoded and
+        // from now on kept, outside the cache.
+        pthread_mutex_lock(&g_lock);
+        if (!s->pinned)
+        {
+            cache_unlink(s);
+            if (sound_decode_locked(s)) s->pinned = 1;
+        }
+        pthread_mutex_unlock(&g_lock);
+    }
+    return s->pcm;
+}
 EXPORT void wa_sound_release(uint64_t sound)
 {
     Sound* s = (Sound*)(uintptr_t)sound;
@@ -298,16 +568,12 @@ EXPORT void wa_sound_release(uint64_t sound)
 
 EXPORT int wa_probe_memory(void* data, size_t length, uint64_t* frames, uint32_t* channels, uint32_t* rate)
 {
-    ma_decoder_config cfg = ma_decoder_config_init(ma_format_s16, 0, 0);
-    ma_decoder dec;
-    ma_result r = ma_decoder_init_memory(data, length, &cfg, &dec);
-    if (r != MA_SUCCESS) { g_lastError = r; return (int)r; }
-    ma_uint64 total = 0;
-    ma_decoder_get_length_in_pcm_frames(&dec, &total);
-    if (frames) *frames = total;
-    if (channels) *channels = dec.outputChannels;
-    if (rate) *rate = dec.outputSampleRate;
-    ma_decoder_uninit(&dec);
+    uint64_t f = 0;
+    uint32_t c = 0, r = 0;
+    if (!probe_memory(data, length, &f, &c, &r)) return (int)(g_lastError != MA_SUCCESS ? g_lastError : MA_ERROR);
+    if (frames) *frames = f;
+    if (channels) *channels = c;
+    if (rate) *rate = r;
     return 0;
 }
 
@@ -542,6 +808,7 @@ static void voice_release_locked(Voice* v)
     if (v->reverb) { rv_destroy(v->reverb); v->reverb = NULL; }
     if (v->decoderInit) { ma_decoder_uninit(&v->decoder); v->decoderInit = 0; }
     if (v->userInit) { ma_data_source_uninit(&v->userSource); v->userInit = 0; }
+    if (v->usesPcm && v->sound) { v->sound->pcmUsers--; v->usesPcm = 0; }
     sound_unref(v->sound);
     v->sound = NULL;
     v->used = 0;
@@ -579,9 +846,33 @@ EXPORT uint64_t wa_voice_play(uint64_t sound, uint64_t group, int startPaused, i
     switch (s->kind)
     {
     case KIND_PCM:
-        r = ma_audio_buffer_ref_init(ma_format_s16, s->channels, s->pcm, s->frames, &v->bufref);
+        if (s->lazy && !s->pcm)
+        {
+            // Not decoded (never played, or dropped from the cache since). A short one is decoded now, which takes
+            // a few milliseconds once; a long one plays from a decoder of its own like a stream and is not kept.
+            if ((size_t)(s->frames * s->channels * sizeof(int16_t)) <= g_decodeNowBytes && sound_decode_locked(s))
+            {
+                cache_add_newest(s);
+            }
+            else
+            {
+                ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 0, 0);
+                r = ma_decoder_init_memory(s->data, s->length, &cfg, &v->decoder);
+                if (r == MA_SUCCESS) { v->decoderInit = 1; ds = &v->decoder; g_streamedLazy++; }
+                break;
+            }
+        }
+        else if (s->cached)
+        {
+            cache_unlink(s);
+            cache_add_newest(s);
+        }
+        r = ma_audio_buffer_ref_init(ma_format_s16, s->channels, s->pcm, s->pcmFrames, &v->bufref);
         v->bufref.sampleRate = s->rate;
         ds = &v->bufref;
+        v->usesPcm = 1;
+        s->pcmUsers++;
+        if (s->lazy) cache_trim();
         break;
     case KIND_MEMORY_STREAM:
     case KIND_FILE_STREAM:
@@ -904,6 +1195,15 @@ EXPORT void wa_set_allocator(void* alloc, void* realloc_, void* free_)
 EXPORT int wa_init(uint32_t sampleRate, uint32_t channels, int nullBackend)
 {
     if (g_initialized) return 0;
+    // PORT17_AUDIO_LAZY=0: every sound decoded when loaded (the old way, 1.7 GB for the official content);
+    // PORT17_AUDIO_CACHE_MB: the budget of the cache of decoded sounds (64); PORT17_AUDIO_DECODE_KB: the largest
+    // sound, as samples, that is decoded whole when played (384: four seconds in mono); PORT17_AUDIO_CHECK=1:
+    // every quick look at an Ogg stream is compared with what the decoder says.
+    const char* e;
+    if ((e = getenv("PORT17_AUDIO_LAZY")) && *e) g_lazy = atoi(e);
+    if ((e = getenv("PORT17_AUDIO_CACHE_MB")) && *e) g_cacheBudget = (size_t)atoi(e) << 20;
+    if ((e = getenv("PORT17_AUDIO_DECODE_KB")) && *e) g_decodeNowBytes = (size_t)atoi(e) << 10;
+    if ((e = getenv("PORT17_AUDIO_CHECK")) && *e) g_checkProbe = atoi(e);
     g_allocCallbacks.pUserData = NULL;
     g_allocCallbacks.onMalloc = host_malloc;
     g_allocCallbacks.onRealloc = host_realloc;
@@ -992,6 +1292,12 @@ EXPORT void wa_update(void)
         if (v->used && (v->stopped || (v->autoRelease && v->ended))) voice_release_locked(v);
         if (v->used) { used++; if (ma_sound_is_playing(&v->snd)) playing++; }
     }
-    if (++g_updates % 600 == 0) LOGI("audio: %d voices playing of %d live, %llu created, engine time %llu frames", playing, used, (unsigned long long)g_voicesCreated, (unsigned long long)ma_engine_get_time_in_pcm_frames(&g_engine));
+    if (++g_updates % 600 == 0)
+    {
+        LOGI("audio: %d voices playing of %d live, %llu created, engine time %llu frames", playing, used, (unsigned long long)g_voicesCreated, (unsigned long long)ma_engine_get_time_in_pcm_frames(&g_engine));
+        if (g_lazy) LOGI("audio: %llu sounds kept compressed (%llu of them as copies); decoded on play %llu times, %.1f MiB in %.0f ms (slowest %.1f ms), %llu played as streams; cache %.1f of %.0f MiB, %llu dropped from it%s",
+            (unsigned long long)g_lazyLoaded, (unsigned long long)g_lazyCopied, (unsigned long long)g_decodes, g_decodedBytes / 1048576.0, g_decodeMicros / 1000.0, g_slowestDecodeMicros / 1000.0,
+            (unsigned long long)g_streamedLazy, g_cacheBytes / 1048576.0, g_cacheBudget / 1048576.0, (unsigned long long)g_dropped, g_checkProbe ? "; lengths checked against the decoder" : "");
+    }
     pthread_mutex_unlock(&g_lock);
 }

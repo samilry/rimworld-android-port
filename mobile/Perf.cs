@@ -460,6 +460,19 @@ namespace PortMobile
 						Console.WriteLine("[mobile] perf: loading the saved game " + loadName + " again");
 						GameDataSaveLoader.LoadGame(loadName);
 					}
+					else if (parts[0] == "load" && parts.Length == 2)
+					{
+						// "load=NAME": this saved game, from the main menu or from another game (and "reload" means this one from now on).
+						loadName = parts[1].Trim();
+						Console.WriteLine("[mobile] perf: loading the saved game " + loadName);
+						GameDataSaveLoader.LoadGame(loadName);
+					}
+					else if (parts[0] == "menu")
+					{
+						// "menu=1": back to the main menu, as the game's own menu entry does it.
+						Console.WriteLine("[mobile] perf: back to the main menu");
+						GenScene.GoToMainMenu();
+					}
 					else if (parts[0] == "camera" && parts.Length == 2 && Current.ProgramState == ProgramState.Playing && Find.CurrentMap != null)
 					{
 						// "camera=SIZE" or "camera=SIZE:X:Z": the zoom, at the middle of the map or at a cell.
@@ -475,6 +488,22 @@ namespace PortMobile
 					else if (parts[0] == "abilities" && parts.Length == 2 && Current.ProgramState == ProgramState.Playing && Find.CurrentMap != null)
 					{
 						Abilities(parts[1].Trim());
+					}
+					else if (parts[0] == "memdump" && parts.Length == 2)
+					{
+						// "memdump=LABEL": what the memory consists of, to logs/memdump-LABEL.txt; "memdump=LABEL:nowalk" leaves the managed heap out.
+						string[] what = parts[1].Trim().Split(':');
+						MemDiag.Dump(what[0], what.Length < 2 || what[1] != "nowalk");
+					}
+					else if (parts[0] == "evict" && parts.Length == 2)
+					{
+						// "evict=all", "evict=SECONDS", "evict=report": see ColdTextures.
+						ColdTextures.Command(parts[1].Trim());
+					}
+					else if (parts[0] == "gc")
+					{
+						// "gc=1": one full blocking collection; "gc=compact": the same with the large objects moved together.
+						MemDiag.Collect(parts.Length == 2 && parts[1].Trim() == "compact");
 					}
 					else if (parts[0] == "speed" && parts.Length == 2)
 					{

@@ -90,8 +90,10 @@ fi
 if want imgui; then
   echo "== imgui"
   node native/imgui/gen-imgui-c.js build/scan/imgui-ast.json ref/tmp_Brutal.ImGui/Brutal.ImGui.decompiled.cs build/scan/imgui-plain.txt "$OUT/imgui_c.cpp"
+  # imgui_draw.cpp loads font files through PortFontFileLoad (native/imgui/port_fonts.cpp: mapped, not read into the heap).
+  "$CXX" $TARGET $CXXFLAGS $IMGUI_DEFS -DImFileLoadToMemory=PortFontFileLoad -I "$IMGUI" -c -o "$OBJ/imgui_draw.o" "$IMGUI/imgui_draw.cpp"
   "$CXX" $TARGET $CXXFLAGS $IMGUI_DEFS -shared -I "$IMGUI" -o "$LIB/libimgui.so" \
-    "$IMGUI/imgui.cpp" "$IMGUI/imgui_draw.cpp" "$IMGUI/imgui_tables.cpp" "$IMGUI/imgui_widgets.cpp" "$IMGUI/imgui_demo.cpp" "$OUT/imgui_c.cpp" -lm -llog
+    "$IMGUI/imgui.cpp" "$OBJ/imgui_draw.o" "$IMGUI/imgui_tables.cpp" "$IMGUI/imgui_widgets.cpp" "$IMGUI/imgui_demo.cpp" native/imgui/port_fonts.cpp "$OUT/imgui_c.cpp" -lm -llog
 fi
 
 if want freetype; then
