@@ -39,6 +39,7 @@ namespace PortMobile
 			MemTrim.Start(harmony);
 			BakeDepth.Start(harmony);
 			ColdTextures.Start(harmony);
+			AtlasSeams.Start(harmony);
 		}
 
 		private static bool menuTimed;
