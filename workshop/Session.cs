@@ -101,6 +101,14 @@ namespace PortWorkshop
 
 		private static Machine machine;
 
+		// SteamKit2 knows Android as nothing at all (EOSType.Unknown); some of Steam's servers then refuse the sign-in with
+		// TryAnotherCM. The phone's kernel is a Linux 6.
+		private const EOSType OsType = EOSType.Linux6x;
+
+		// A sign-in Steam asked to try on another of its servers: the remembered token is good, the server is not.
+		private static volatile bool logOnElsewhere;
+		private static int logOnAttempts;
+
 		/// <summary>Connects (and signs in with the remembered token, if there is one). Idempotent.</summary>
 		public static void Start()
 		{
@@ -181,7 +189,19 @@ namespace PortWorkshop
 			connected = false;
 			CancelAuth();
 			Log("disconnected" + (callback.UserInitiated ? " (asked for)" : ""));
-			if (wanted && !callback.UserInitiated)
+			if (wanted && logOnElsewhere)
+			{
+				logOnElsewhere = false;
+				State = SessionState.Connecting;
+				Task.Delay(1000).ContinueWith(_ =>
+				{
+					if (wanted && !connected)
+					{
+						client.Connect();
+					}
+				});
+			}
+			else if (wanted && !callback.UserInitiated)
 			{
 				State = SessionState.Connecting;
 				Message = Texts.Say("和 Steam 的连接断了，正在重连……", "The connection to Steam was lost, reconnecting...");
@@ -203,6 +223,7 @@ namespace PortWorkshop
 		{
 			if (callback.Result == EResult.OK)
 			{
+				logOnAttempts = 0;
 				cellId = callback.CellID;
 				State = SessionState.Online;
 				Message = "";
@@ -210,12 +231,41 @@ namespace PortWorkshop
 				return;
 			}
 			Log("sign-in refused: " + callback.Result + " / " + callback.ExtendedResult);
+			bool transient = callback.Result == EResult.TryAnotherCM || callback.Result == EResult.ServiceUnavailable || callback.Result == EResult.Busy || callback.Result == EResult.Timeout || callback.Result == EResult.Fail;
+			if (transient && logOnAttempts < 6 && TryReadLogin(out _, out _))
+			{
+				logOnAttempts++;
+				Message = Texts.Say("这台 Steam 服务器没接受，换一台再试……", "That Steam server did not take it, trying another...");
+				MarkCurrentServerBad();
+				logOnElsewhere = true;
+				client.Disconnect();
+				return;
+			}
 			// A remembered token that no longer works (expired, revoked, the password changed): it goes.
 			DeleteLogin();
 			Account = "";
 			State = SessionState.SignedOut;
 			Message = Texts.Say("Steam 没有接受登录（" + callback.Result + "），请重新登录。", "Steam did not accept the sign-in (" + callback.Result + "); please sign in again.");
 			StartQr();
+		}
+
+		/// <summary>The server of this connection goes to the back of the list (SteamKit2 keeps the marking to itself).</summary>
+		private static void MarkCurrentServerBad()
+		{
+			try
+			{
+				var endPoint = client.CurrentEndPoint;
+				var mark = typeof(SteamKit2.Discovery.SmartCMServerList).GetMethod("TryMark", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+				if (endPoint != null && mark != null)
+				{
+					mark.Invoke(client.Servers, new object[] { endPoint, ProtocolTypes.WebSocket | ProtocolTypes.Tcp, SteamKit2.Discovery.ServerQuality.Bad });
+					Log("server " + endPoint + " marked bad");
+				}
+			}
+			catch (Exception e)
+			{
+				Log("could not mark the server: " + e.Message);
+			}
 		}
 
 		private static void OnLoggedOff(SteamUser.LoggedOffCallback callback)
@@ -235,6 +285,7 @@ namespace PortWorkshop
 				AccessToken = token,
 				ShouldRememberPassword = true,
 				LoginID = machine.LoginId,
+				ClientOSType = OsType,
 			});
 		}
 
@@ -248,6 +299,7 @@ namespace PortWorkshop
 				Password = password,
 				IsPersistentSession = true,
 				DeviceFriendlyName = "RimWorld (Android)",
+				ClientOSType = OsType,
 				// A QR code is approved by scanning it; Steam Guard only takes part in a password sign-in.
 				Authenticator = account != null ? new Guard() : null,
 			};
@@ -265,6 +317,10 @@ namespace PortWorkshop
 		private static void StartQr()
 		{
 			CancelAuth();
+			if (!connected)
+			{
+				return;
+			}
 			var cancel = authCancel = new CancellationTokenSource();
 			Task.Run(async () =>
 			{

@@ -1,5 +1,6 @@
 #!/bin/bash
 # Puts build/workshop (PortWorkshop.dll and the libraries it loads) into game/workshop on the phone.
+# A file in use by the running game is replaced by a rename: the game keeps the old one until it starts again.
 # usage: host/push-workshop.sh [file.dll ...]      (default: all of build/workshop/*.dll)
 ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
 export MSYS_NO_PATHCONV=1
@@ -11,6 +12,6 @@ UID_=$("$ADB" shell "dumpsys package $PKG | grep -m1 -o 'appId=[0-9]*' | cut -d=
 FILES=${*:-$(cd build/workshop && ls *.dll)}
 for n in $FILES; do
   "$ADB" push "$(cygpath -w build/workshop/$n)" /data/local/tmp/ws.tmp > /dev/null
-  "$ADB" shell "su -c 'cp /data/local/tmp/ws.tmp $G/workshop/$n; chown $UID_:1078 $G/workshop/$n; chmod 660 $G/workshop/$n'"
+  "$ADB" shell "su -c 'cp /data/local/tmp/ws.tmp $G/workshop/$n.new; chown $UID_:1078 $G/workshop/$n.new; chmod 660 $G/workshop/$n.new; mv -f $G/workshop/$n.new $G/workshop/$n'"
   echo "$n $(md5sum build/workshop/$n | cut -c1-8)"
 done
