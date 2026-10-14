@@ -40,6 +40,8 @@ namespace PortMobile
 			BakeDepth.Start(harmony);
 			ColdTextures.Start(harmony);
 			AtlasSeams.Start(harmony);
+			// Last: the mods' replacements that hold their own copy of a method patched above.
+			InlineGuard.Run();
 		}
 
 		private static bool menuTimed;

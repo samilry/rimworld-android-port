@@ -326,7 +326,7 @@ namespace PortMobile
 		private const int InspectTabWindowId = -235086;
 
 		/// <summary>
-		/// Prefix of DoExtraGuiControls. The game puts a tool's extra controls (rotate buttons, drawing styles) in a
+		/// Prefix of DoExtraGuiControls (Designator_Place's and the base one). The game puts a tool's extra controls (rotate buttons, drawing styles) in a
 		/// small window above the description box; when that is above the top of the screen (a tall Architect menu
 		/// at a large UI scale) they go to the right of the description box instead, and to the right of an open
 		/// inspect tab that would cover them.
@@ -508,7 +508,8 @@ namespace PortMobile
 
 		public static void Start(Harmony harmony)
 		{
-			harmony.Patch(AccessTools.Method(typeof(Designator), nameof(Designator.DoExtraGuiControls)), postfix: new HarmonyMethod(typeof(DragConfirm), nameof(Controls)));
+			// The controls of every tool are kept on the screen, not only a building's: a tall Architect menu (many mods' categories) put them above its top.
+			harmony.Patch(AccessTools.Method(typeof(Designator), nameof(Designator.DoExtraGuiControls)), prefix: new HarmonyMethod(typeof(Placement), nameof(Placement.KeepControlsOnScreen)), postfix: new HarmonyMethod(typeof(DragConfirm), nameof(Controls)));
 			harmony.Patch(AccessTools.Method(typeof(DesignatorManager), nameof(DesignatorManager.DesignatorManagerUpdate)), postfix: new HarmonyMethod(typeof(DragConfirm), nameof(AfterUpdate)));
 			harmony.Patch(AccessTools.Method(typeof(DesignatorManager), nameof(DesignatorManager.DesignationManagerOnGUI)), postfix: new HarmonyMethod(typeof(DragConfirm), nameof(OnGUI)));
 		}
