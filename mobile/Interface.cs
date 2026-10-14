@@ -24,6 +24,7 @@ namespace PortMobile
 
 		private static readonly IDictionary ActiveTips = (IDictionary)AccessTools.Field(typeof(TooltipHandler), "activeTips").GetValue(null);
 		private static readonly FieldInfo TipFrame = AccessTools.Field(typeof(TooltipHandler), "frame");
+		private static readonly FieldInfo ButtonDown = AccessTools.Field(typeof(GUI), "_buttonDownActive");
 		private static readonly FieldInfo CurrentScrollView = AccessTools.Field(typeof(SteamDeck), "currentScrollView");
 
 		// While a hold on the interface lasts, and a frame or two after it, the left button's events are swallowed.
@@ -31,6 +32,16 @@ namespace PortMobile
 		// What a hold showed stays until the next touch.
 		private static bool keepTips;
 		private static bool keyboardShown;
+
+		// A finger that begins in a list with something to scroll presses nothing until it is known to be a tap (see
+		// Touch): while it scrolls, the list that begins at this point of the screen follows it, and goes on for a
+		// while after it lifts. mobile.txt: listTouch=0 gives the press at once again, and the scrolling of the game's
+		// own Steam Deck code with it.
+		private static bool listTouch = true;
+		private static bool listScrolling, coasting;
+		private static float activeX, activeY;
+
+		public static bool ListTouch => listTouch && TapAssist.Ready;
 
 		// The lists being drawn in the current press event (they nest): whether the press landed in each.
 		private static readonly List<bool> open = new List<bool>();
@@ -41,8 +52,11 @@ namespace PortMobile
 			harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.BeginScrollView), new[] { typeof(Rect), typeof(Vector2).MakeByRefType(), typeof(Rect), typeof(bool) }), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeScrollView)));
 			harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.EndScrollView)), postfix: new HarmonyMethod(typeof(Interface), nameof(AfterScrollView)));
 			harmony.Patch(AccessTools.Method(typeof(Root), nameof(Root.OnGUI)), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeGui)));
+			// The engine hands a mouse event to the window under the mouse before the game's OnGUI sees it.
+			harmony.Patch(AccessTools.Method(typeof(GUI), nameof(GUI.DispatchInputToWindows)), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeGui)));
 			harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.ButtonInvisibleDraggable)), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeDraggableButton)));
 			harmony.Patch(AccessTools.Method(typeof(TooltipHandler), nameof(TooltipHandler.DoTooltipGUI)), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeTooltips)));
+			listTouch = Settings.Get("listTouch", 1) != 0;
 		}
 
 		// ---- told by Touch ----
@@ -65,7 +79,68 @@ namespace PortMobile
 			ShowTipsNow();
 			keepTips = true;
 			GUIUtility.hotControl = 0;
+			// The engine's button remembers its press by itself: forgotten, so that the release finds nothing to fire.
+			ButtonDown?.SetValue(null, false);
 			suppressClickUntilFrame = int.MaxValue;
+		}
+
+		/// <summary>A list still moving on its own stops under a finger. True if the list that begins at this point of the screen was moving.</summary>
+		public static bool StopCoasting(float originX, float originY)
+		{
+			bool was = coasting && Mathf.Abs(originX - activeX) <= 1.5f && Mathf.Abs(originY - activeY) <= 1.5f;
+			coasting = false;
+			scrollViewVelocity = default(Vector2);
+			return was;
+		}
+
+		/// <summary>A finger has rested on a list (nothing was pressed): the tooltips show now, and stay after it lifts.</summary>
+		public static void HoldInList()
+		{
+			ShowTipsNow();
+			keepTips = true;
+		}
+
+		/// <summary>The finger that rested on a list now drags what it is on: the tooltips of the rest go away.</summary>
+		public static void HoldBecameDrag()
+		{
+			if (keepTips)
+			{
+				keepTips = false;
+				ActiveTips.Clear();
+			}
+		}
+
+		/// <summary>The finger drags the list that begins at this point of the screen.</summary>
+		public static void BeginListScroll(float originX, float originY)
+		{
+			listScrolling = true;
+			coasting = false;
+			activeX = originX;
+			activeY = originY;
+			scrollVelocityRecords.Clear();
+			scrollViewVelocity = default(Vector2);
+		}
+
+		/// <summary>The finger has lifted (keepSpeed), or the scrolling was broken off: the list keeps the speed of the last moments, as the game does it on a Steam Deck.</summary>
+		public static void EndListScroll(bool keepSpeed)
+		{
+			if (!listScrolling)
+			{
+				return;
+			}
+			listScrolling = false;
+			scrollViewVelocity = default(Vector2);
+			if (keepSpeed)
+			{
+				for (int i = 0; i < scrollVelocityRecords.Count; i++)
+				{
+					if (Time.time - scrollVelocityRecords[i].time < 0.057f)
+					{
+						scrollViewVelocity += scrollVelocityRecords[i].delta;
+					}
+				}
+			}
+			coasting = scrollViewVelocity != default(Vector2);
 		}
 
 		/// <summary>The finger of a hold has lifted: its release (still on its way) is swallowed too.</summary>
@@ -80,6 +155,8 @@ namespace PortMobile
 		/// <summary>Once per frame: the soft keyboard follows the text focus.</summary>
 		public static void Update()
 		{
+			// A press that a control in a list used is no longer seen as a press when the list ends: nothing is carried over.
+			open.Clear();
 			bool wanted = UnityStubs.Internal.TextFocus.CapturesText;
 			if (wanted != keyboardShown)
 			{
@@ -106,6 +183,39 @@ namespace PortMobile
 		/// </summary>
 		public static bool FingerScroll(Rect outRect, ref Vector2 scrollPosition)
 		{
+			if (ListTouch)
+			{
+				// Only the list the finger began in moves; it is known by where it begins on the screen.
+				if ((!listScrolling && !coasting) || !TapAssist.ScreenOrigin(outRect, out float x, out float y) || Mathf.Abs(x - activeX) > 1.5f || Mathf.Abs(y - activeY) > 1.5f)
+				{
+					return false;
+				}
+				if (listScrolling)
+				{
+					// How far the mouse (which is with the finger) moved in this frame; the game hands it out once a frame.
+					Vector2 moved = UnityGUIBugsFixer.CurrentEventDelta;
+					if (moved != Vector2.zero)
+					{
+						// The game counts in units of its scale; a window made smaller to fit has smaller ones.
+						moved *= Prefs.UIScale / TapAssist.CurrentScale();
+						scrollPosition -= moved;
+						if (scrollVelocityRecords.Count > 60)
+						{
+							scrollVelocityRecords.RemoveRange(0, 40);
+						}
+						scrollVelocityRecords.Add((Time.time, -moved));
+						Clamp(ref scrollPosition);
+					}
+				}
+				else if (Event.current.type == EventType.Repaint)
+				{
+					scrollPosition += scrollViewVelocity;
+					scrollViewVelocity = Vector2.MoveTowards(scrollViewVelocity, default(Vector2), Time.deltaTime * 90f);
+					Clamp(ref scrollPosition);
+					coasting = scrollViewVelocity != default(Vector2);
+				}
+				return false;
+			}
 			if (DragAndDropWidget.Dragging || Widgets.Painting || ReorderableWidget.Dragging)
 			{
 				return false;
@@ -176,11 +286,20 @@ namespace PortMobile
 		public static void BeforeScrollView(Rect outRect, Rect viewRect)
 		{
 			Event current = Event.current;
-			if (current == null || current.rawType != EventType.MouseDown)
+			if (current == null)
 			{
 				return;
 			}
-			bool scrolls = viewRect.height > outRect.height + 1f || viewRect.width > outRect.width + 1f;
+			bool down = viewRect.height > outRect.height + 1f, across = viewRect.width > outRect.width + 1f;
+			bool scrolls = down || across;
+			if (scrolls && listTouch && current.rawType == EventType.Repaint)
+			{
+				TapAssist.NoteList(outRect, down, across);
+			}
+			if (current.rawType != EventType.MouseDown)
+			{
+				return;
+			}
 			open.Add(scrolls && current.type == EventType.MouseDown && current.button == 0 && FingerDown && Mouse.IsOver(outRect));
 		}
 
@@ -217,7 +336,10 @@ namespace PortMobile
 			}
 		}
 
-		/// <summary>Prefix of Root.OnGUI: the left button's events are swallowed around a hold on the interface.</summary>
+		/// <summary>
+		/// Prefix of Root.OnGUI and of the engine's GUI.DispatchInputToWindows (which runs the window under the mouse
+		/// first): the left button's events are swallowed around a hold on the interface.
+		/// </summary>
 		public static void BeforeGui()
 		{
 			Event current = Event.current;

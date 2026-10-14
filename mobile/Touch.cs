@@ -22,6 +22,10 @@ namespace PortMobile
 	///   two fingers    pinch to zoom around the fingers, drag to move
 	/// on the interface
 	///   tap, drag      the left button, as a mouse
+	///   in a list      (a scroll view with more in it than it shows) a tap clicks when the finger lifts; a drag
+	///                  along the list scrolls it and presses nothing; a drag across it, or a drag after resting
+	///                  the finger, is the left button again (a slider, painting a row of cells or a column of
+	///                  checkboxes, moving a row)
 	///   two fingers    over a window: the wheel (pinch) and a middle-button drag (moving both fingers), which is
 	///                  what moves and zooms a mod's own map or graph; the game's map is left alone meanwhile
 	/// </summary>
@@ -64,6 +68,9 @@ namespace PortMobile
 			Box,       // a hold on the map with nothing to order: the selection box stays and the finger drags it
 			Tool,      // a designator or targeter took the press (as a mouse for now)
 			Held,      // a hold on the interface: tooltips, no click
+			ListPending, // a finger in a list with something to scroll: nothing is pressed until it is known what the touch is
+			ListHeld,  // it rested there: tooltips; a drag from here drags what the finger is on
+			ListScroll, // it dragged along the list: the list follows, nothing is pressed at all
 			Two,       // two fingers: zoom and pan (for the map) or wheel and middle drag (for a window)
 			Finished   // nothing more to recognise in this touch; wait for all fingers to lift
 		}
@@ -91,6 +98,16 @@ namespace PortMobile
 		private static double pendingWheel;
 		// A finger that landed and lifted between two frames: still a tap.
 		private static Finger quickTap;
+		// Where the press of the current touch went (TapAssist may have moved it onto a control beside the finger), whether
+		// the finger has travelled the drag threshold since, and how far the engine's mouse still is from the finger.
+		private static Vector2 pressAt, cursorOffset;
+		private static bool dragged;
+		private static bool steady = true;
+		// The list the current touch began in: the directions it scrolls in, and where it begins on the screen.
+		private static bool listDown, listAcross;
+		private static float listX, listY;
+		// The touch caught a list that was still moving: lifting the finger then clicks nothing.
+		private static bool caughtList;
 
 		public static bool Verbose;
 
@@ -110,6 +127,9 @@ namespace PortMobile
 			Interface.Start(harmony);
 			MapTools.Start(harmony);
 			UiScale.Start(harmony);
+			steady = Settings.Get("tapSteady", 1) != 0;
+			TapAssist.Start(harmony, density);
+			TouchSizes.Start(harmony);
 			DiagFloatMenu.Start(harmony);
 			Log("touch layer on (density " + density.ToString("F2") + ", drag threshold " + DragThreshold.ToString("F0") + " px)");
 		}
@@ -226,6 +246,7 @@ namespace PortMobile
 				Button(Right, false);
 			}
 			Replay.Feed();
+			TouchSizes.BeforeInterface();
 			UiScale.Update();
 			Interface.Update();
 			MapTools.Update();
@@ -245,16 +266,28 @@ namespace PortMobile
 				{
 					Interface.HoldEnded();
 				}
+				if (mode == Mode.ListScroll)
+				{
+					Interface.EndListScroll(true);
+				}
+				bool tapInList = mode == Mode.ListPending && !caughtList;
 				// The last finger has lifted: the release reaches the game where the finger was.
 				if (leftDown) Button(Left, false);
 				if (middleDown) Button(Middle, false);
 				mode = Mode.None;
 				gestureWindow = null;
+				if (tapInList)
+				{
+					// A tap in a list: the press now, the release next frame (above), a click for the game.
+					Trace("tap in a list at " + pressAt);
+					Cursor(pressAt);
+					Button(Left, true);
+				}
 				if (quickTap != null)
 				{
 					// The press now, the release next frame (above), a click for the game.
 					Trace("quick tap at " + quickTap.pos);
-					Cursor(quickTap.pos);
+					Cursor(TapAssist.Adjust(quickTap.pos));
 					Button(Left, true);
 					quickTap = null;
 				}
@@ -287,7 +320,19 @@ namespace PortMobile
 				first.seen = true;
 				framesDown = 0;
 				last = first.pos;
-				Cursor(first.pos);
+				pressAt = TapAssist.Adjust(first.pos);
+				cursorOffset = Vector2.zero;
+				dragged = false;
+				Cursor(pressAt);
+				bool inList = Interface.ListTouch && TapAssist.ListAt(pressAt, out listDown, out listAcross, out listX, out listY);
+				caughtList = Interface.StopCoasting(inList ? listX : float.NaN, inList ? listY : float.NaN);
+				if (inList)
+				{
+					// The finger may be about to scroll the list: the mouse is there, but nothing is pressed yet.
+					mode = Mode.ListPending;
+					Trace("touch begins in a list at " + first.pos + (listDown ? ", scrolls down" : "") + (listAcross ? ", scrolls across" : ""));
+					return;
+				}
 				Button(Left, true);
 				Trace("touch begins at " + first.pos);
 				return;
@@ -295,9 +340,16 @@ namespace PortMobile
 			Vector2 delta = first.pos - last;
 			last = first.pos;
 			framesDown++;
-			bool moved = (first.pos - first.start).magnitude > DragThreshold;
+			if (!dragged && (first.pos - first.start).magnitude > DragThreshold)
+			{
+				// From here on the touch is a drag: the engine's mouse goes on from where the press went.
+				dragged = true;
+				cursorOffset = pressAt - first.pos;
+			}
+			bool moved = dragged;
 			bool held = Now - first.downTime > HoldSeconds;
 			Mode was = mode;
+			bool pressedNow = false;
 			if (mode == Mode.Pending && framesDown >= 2)
 			{
 				// The game handled the press during the previous frame's dispatch: what did it do with it?
@@ -353,6 +405,37 @@ namespace PortMobile
 						Pan(first.pos - first.start);
 					}
 					break;
+				case Mode.ListPending:
+				case Mode.ListHeld:
+					if (moved)
+					{
+						Vector2 travelled = first.pos - first.start;
+						// Along the list unless clearly across it: scrolling is what a drag in a list mostly means.
+						bool along = Mathf.Abs(travelled.x) > 1.5f * Mathf.Abs(travelled.y) ? listAcross : listDown;
+						if (mode == Mode.ListPending && along)
+						{
+							mode = Mode.ListScroll;
+							Interface.BeginListScroll(listX, listY);
+						}
+						else
+						{
+							// Across the list, or after resting on it: the finger drags what it is on, as a mouse does. The
+							// press now, where the touch began; the mouse sets off from there next frame.
+							if (mode == Mode.ListHeld)
+							{
+								Interface.HoldBecameDrag();
+							}
+							mode = Mode.Interface;
+							Button(Left, true);
+							pressedNow = true;
+						}
+					}
+					else if (mode == Mode.ListPending && held)
+					{
+						mode = Mode.ListHeld;
+						Interface.HoldInList();
+					}
+					break;
 				case Mode.Interface:
 					if (held && !moved && !DragAndDropWidget.Dragging && !ReorderableWidget.Dragging && !Widgets.Painting)
 					{
@@ -364,13 +447,50 @@ namespace PortMobile
 				default:
 					break;
 			}
-			if (mode != Mode.Pan && changed)
+			if (mode != Mode.Pan && !pressedNow)
 			{
-				Cursor(first.pos);
+				MoveCursor(first, changed);
 			}
 			if (mode != was)
 			{
 				Trace("touch at " + first.pos + ": " + was + " -> " + mode + " (frame " + framesDown + ", box " + BoxActive + ", tool " + ToolActive + ", window " + (WindowAt(first.start)?.GetType().Name ?? "none") + ")");
+			}
+		}
+
+		/// <summary>
+		/// The engine's mouse during a touch of one finger. Until the finger has travelled the drag threshold the mouse
+		/// stays where the press went: a tap is released on the control it pressed, however the fingertip rolls while it
+		/// lifts (a button fires only when press and release are both on it). Once the finger drags, on the interface the
+		/// mouse goes on from where it was and closes in on the finger within a few frames, so that a list or a slider
+		/// does not jump by the threshold; on the map it is under the finger at once. mobile.txt: tapSteady=0 lets the
+		/// mouse follow every movement as before.
+		/// </summary>
+		private static void MoveCursor(Finger finger, bool changed)
+		{
+			if (!dragged)
+			{
+				if (!steady && changed)
+				{
+					Cursor(finger.pos + (pressAt - finger.start));
+				}
+				return;
+			}
+			if (mode != Mode.Interface && mode != Mode.Pending && mode != Mode.ListScroll)
+			{
+				cursorOffset = Vector2.zero;
+			}
+			if (cursorOffset != Vector2.zero)
+			{
+				cursorOffset *= 0.7f;
+				if (cursorOffset.sqrMagnitude < 1f)
+				{
+					cursorOffset = Vector2.zero;
+				}
+				Cursor(finger.pos + cursorOffset);
+			}
+			else if (changed)
+			{
+				Cursor(finger.pos);
 			}
 		}
 
@@ -434,6 +554,7 @@ namespace PortMobile
 
 		private static void CancelWhatTheFirstFingerStarted()
 		{
+			Interface.EndListScroll(false);
 			KeepBoxOff();
 			MapTools.CancelDeferred();
 			if (Playing && Find.DesignatorManager != null && Find.DesignatorManager.Dragger.Dragging)

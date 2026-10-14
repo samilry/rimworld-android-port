@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using Brutal.Numerics;
 using HarmonyLib;
 using RimWorld;
 using UnityEngine;
@@ -41,6 +42,15 @@ namespace PortMobile
 			}
 			OfferInOptions();
 			harmony.Patch(AccessTools.Method(typeof(Window), nameof(Window.WindowOnGUI)), prefix: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.Before)), finalizer: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.After)));
+			try
+			{
+				Type backend = AccessTools.TypeByName("RimWorldWaylith.Imgui.ImGuiGuiBackend");
+				harmony.Patch(AccessTools.Method(backend, "GuiToScreenPoint"), postfix: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.AfterGuiToScreen)));
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] window fit: positions inside a fitted window are left as the engine gives them: " + e.Message);
+			}
 			Console.WriteLine("[mobile] UI scale " + preferred.ToString("F2") + " (" + Screen.width + "x" + Screen.height + " -> " + Mathf.RoundToInt(Screen.width / preferred) + "x" + Mathf.RoundToInt(Screen.height / preferred) + ")");
 		}
 
@@ -195,6 +205,25 @@ namespace PortMobile
 			GUI.matrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(scale, scale, 1f));
 			__instance.windowRect = passed;
 			active = true;
+		}
+
+		/// <summary>
+		/// Postfix of the backend's GuiToScreenPoint. The game asks where on the screen a point of the interface being
+		/// drawn is by handing over the point divided by its scale, and wants the answer in units of that scale; the
+		/// engine answers with the offset of the open groups plus the matrix times what it was handed. That is the
+		/// right answer while the matrix is the game's scale. Inside a window drawn smaller the offset is in the
+		/// window's smaller units and comes out too large (or, in a list scrolled far, too negative): a row being
+		/// dragged to another place in such a window (the mod page) then lands some rows away from the finger, the
+		/// further the list is scrolled. Here the point is put through the matrix as it is drawn.
+		/// </summary>
+		public static void AfterGuiToScreen(Vector2 guiPoint, ref Vector2 __result, float ___m00, float ___m11, bool ___rotated, float2 ___translate, float2 ___offset)
+		{
+			float scale = Prefs.UIScale;
+			if (___rotated || scale <= 0f || (Mathf.Abs(___m00 - scale) < 0.0001f && Mathf.Abs(___m11 - scale) < 0.0001f))
+			{
+				return;
+			}
+			__result = new Vector2((___m00 * (___offset.X + guiPoint.x * scale) + ___translate.X) / scale, (___m11 * (___offset.Y + guiPoint.y * scale) + ___translate.Y) / scale);
 		}
 
 		/// <summary>Finalizer of Window.WindowOnGUI: runs whether or not the window's code threw.</summary>

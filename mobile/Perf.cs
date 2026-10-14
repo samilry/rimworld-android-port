@@ -495,6 +495,14 @@ namespace PortMobile
 						string[] what = parts[1].Trim().Split(':');
 						MemDiag.Dump(what[0], what.Length < 2 || what[1] != "nowalk");
 					}
+					else if (parts[0] == "controls" && parts.Length == 2)
+					{
+						// "controls=LABEL": every control of the interface as it was last drawn (kind, window, left, top, width, height in pixels), to logs/controls-LABEL.txt.
+						string folder = Path.Combine(AppContext.BaseDirectory, "..", "logs");
+						Directory.CreateDirectory(folder);
+						File.WriteAllText(Path.Combine(folder, "controls-" + parts[1].Trim() + ".txt"), TapAssist.Describe());
+						Console.WriteLine("[mobile] perf: the controls of the interface written (" + parts[1].Trim() + ")");
+					}
 					else if (parts[0] == "evict" && parts.Length == 2)
 					{
 						// "evict=all", "evict=SECONDS", "evict=report": see ColdTextures.
