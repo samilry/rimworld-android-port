@@ -427,6 +427,62 @@ namespace PortWorkshop
 			}
 		}
 
+		/// <summary>
+		/// For testing from the PC: the ids in game/workshop-test.txt are looked up and their manifests fetched (nothing is
+		/// downloaded beyond the manifests, nothing is installed); the outcome goes to the log. The file is deleted.
+		/// </summary>
+		private static bool downloadAfterAdding;
+
+		public static void TestManifests()
+		{
+			if (downloadAfterAdding && !Busy)
+			{
+				downloadAfterAdding = false;
+				DownloadSelected();
+				return;
+			}
+			string file = Path.Combine(AppContext.BaseDirectory, "workshop-test.txt");
+			if (!File.Exists(file) || Busy)
+			{
+				return;
+			}
+			string text = File.ReadAllText(file);
+			List<ulong> ids = ParseIds(text);
+			File.Delete(file);
+			if (text.Contains("download"))
+			{
+				// "download <links or ids>": what the player does with the field and the button, from the PC.
+				Log("test: adding " + ids.Count + " id(s) and downloading what gets chosen");
+				downloadAfterAdding = true;
+				Run("test add", () => Add(ids, true));
+				return;
+			}
+			Run("test", async () =>
+			{
+				List<PublishedFileDetails> details = await Session.Details(ids);
+				byte[] key = await Session.DepotKey();
+				List<Server> servers = await Session.Servers();
+				foreach (PublishedFileDetails one in details.Where(d => d.hcontent_file != 0))
+				{
+					ulong code = await Session.RequestCode(one.hcontent_file);
+					foreach (Server server in servers.Take(10))
+					{
+						try
+						{
+							string token = await Session.CdnToken(server);
+							DepotManifest manifest = await Session.Cdn.DownloadManifestAsync(Session.App, one.hcontent_file, code, server, key, null, token);
+							Log("test: manifest of " + one.publishedfileid + " from " + server.Host + " (" + server.Type + (token != null ? ", token" : "") + "): " + (manifest.Files?.Count ?? 0) + " files");
+							break;
+						}
+						catch (Exception e)
+						{
+							Log("test: manifest of " + one.publishedfileid + " from " + server.Host + " (" + server.Type + "): " + e.Message);
+						}
+					}
+				}
+			});
+		}
+
 		/// <summary>As the Steam client does it: RimWorld's depot holds the item; its manifest lists the files and their chunks.</summary>
 		private static async Task FromDepot(Item item, string folder)
 		{
@@ -434,12 +490,16 @@ namespace PortWorkshop
 			List<Server> servers = await Session.Servers();
 			ulong code = await Session.RequestCode(item.Manifest);
 			DepotManifest manifest = null;
+			Server chunkServer = null;
 			Exception last = null;
-			foreach (Server server in servers.Take(6))
+			foreach (Server server in servers.Take(10))
 			{
 				try
 				{
-					manifest = await Session.Cdn.DownloadManifestAsync(Session.App, item.Manifest, code, server, key);
+					string token = await Session.CdnToken(server);
+					manifest = await Session.Cdn.DownloadManifestAsync(Session.App, item.Manifest, code, server, key, null, token);
+					chunkServer = server;
+					Log("manifest of " + item.Id + " from " + server.Host + (token != null ? " (with a token)" : ""));
 					break;
 				}
 				catch (Exception e)
@@ -494,12 +554,13 @@ namespace PortWorkshop
 					int written = -1;
 					Exception failure = null;
 					int start = Interlocked.Increment(ref next);
-					for (int attempt = 0; attempt < 4 && written < 0; attempt++)
+					for (int attempt = 0; attempt < 5 && written < 0; attempt++)
 					{
-						Server server = servers[(start + attempt) % Math.Min(servers.Count, 6)];
+						Server server = attempt == 0 ? chunkServer : servers[(start + attempt) % Math.Min(servers.Count, 10)];
 						try
 						{
-							written = await Session.Cdn.DownloadDepotChunkAsync(Session.App, job.chunk, server, buffer, key);
+							string token = await Session.CdnToken(server);
+							written = await Session.Cdn.DownloadDepotChunkAsync(Session.App, job.chunk, server, buffer, key, null, token);
 						}
 						catch (Exception e)
 						{

@@ -590,11 +590,44 @@ namespace PortWorkshop
 					Log("content servers through the connection failed (" + e.Message + "), asking the web API");
 					found = await ContentServerDirectoryService.LoadAsync(client.Configuration, cellId, CancellationToken.None);
 				}
-				List<Server> usable = found.Where(s => (s.Type == "SteamCache" || s.Type == "CDN") && (s.AllowedAppIds == null || s.AllowedAppIds.Length == 0 || s.AllowedAppIds.Contains(App))).OrderBy(s => s.WeightedLoad).ToList();
+				List<Server> usable = found.Where(s => (s.Type == "SteamCache" || s.Type == "CDN") && (s.AllowedAppIds == null || s.AllowedAppIds.Length == 0 || s.AllowedAppIds.Contains(App))).OrderBy(s => s.Type == "SteamCache" ? 0 : 1).ThenBy(s => s.WeightedLoad).ToList();
 				servers = usable.Count > 0 ? usable : found.ToList();
 				Log(servers.Count + " content servers: " + string.Join(", ", servers.Take(4).Select(s => s.Host)));
 			}
 			return servers;
+		}
+
+		private static readonly Dictionary<string, (string token, DateTime until)> cdnTokens = new Dictionary<string, (string, DateTime)>();
+
+		/// <summary>
+		/// The token a content server of one of Steam's partners wants with every request (the servers in China are all
+		/// partners'; without it they answer 403). Valve's own servers want none. Kept per host until it expires.
+		/// </summary>
+		public static async Task<string> CdnToken(Server server)
+		{
+			if (server.Type != "CDN" || string.IsNullOrEmpty(server.Host))
+			{
+				return null;
+			}
+			lock (cdnTokens)
+			{
+				if (cdnTokens.TryGetValue(server.Host, out var known) && known.until > DateTime.UtcNow.AddMinutes(2))
+				{
+					return known.token;
+				}
+			}
+			RequireOnline();
+			SteamContent.CDNAuthToken answer = await content.GetCDNAuthToken(App, App, server.Host);
+			if (answer.Result != EResult.OK)
+			{
+				Log("no token for " + server.Host + ": " + answer.Result);
+				return null;
+			}
+			lock (cdnTokens)
+			{
+				cdnTokens[server.Host] = (answer.Token, answer.Expiration);
+			}
+			return answer.Token;
 		}
 
 		public static Task<ulong> RequestCode(ulong manifest)

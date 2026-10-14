@@ -207,6 +207,10 @@ namespace PortWorkshop
 
 		private void DoOnline(Rect rect)
 		{
+			if (Time.frameCount % 120 == 0)
+			{
+				Downloads.TestManifests();
+			}
 			bool busy = Downloads.Busy;
 			float y = rect.y;
 			Widgets.Label(new Rect(rect.x, y, rect.width - 170f, 36f), Texts.Say("已登录：", "Signed in: ") + Session.Account);
