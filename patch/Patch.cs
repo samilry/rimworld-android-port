@@ -126,6 +126,10 @@ internal static class Patch
 		{
 			return CheckReferences(args[1]);
 		}
+		if (args[0] == "--corelib")
+		{
+			return PatchCoreLib(args[1], args[2]);
+		}
 		string folder = args[0];
 		var resolver = new InMemoryResolver();
 		foreach (string dir in args)
@@ -373,6 +377,122 @@ internal static class Patch
 		{
 			Console.WriteLine(ModPrep.PrepareFolder(root, resolver, Console.WriteLine));
 		}
+		return 0;
+	}
+
+	/// <summary>
+	/// The runtime fork's WaylithClr.MonoStringHashCode, which the game's runtimeconfig turns on: string.GetHashCode()
+	/// is Mono's hash (the same for a string on every launch) instead of the stock runtime's, which is seeded at random
+	/// per process. The game derives things from it, e.g. which of first and last name a colonist without a nickname is
+	/// called (NameTriple.Nick), so these changed on every launch and differed from the PC. Ludeon's System.Private.CoreLib
+	/// computes it in String.GetMonoHashCode; this gives the runtime pack's CoreLib the same method and makes
+	/// GetHashCode() call it, always (this runtime only runs the game). Nothing else changes: the dictionaries'
+	/// non-randomized string comparer, GetHashCode(ReadOnlySpan) and the ignore-case hashes stay as they are, as in the fork.
+	/// The pack's CoreLib is ReadyToRun; the output is IL only (host/corelib.sh compiles it again with crossgen2).
+	/// usage: --corelib <the pack's System.Private.CoreLib.dll> <output>
+	/// </summary>
+	private static int PatchCoreLib(string input, string output)
+	{
+		ModuleDefinition module = ModuleDefinition.ReadModule(input, new ReaderParameters { ReadingMode = ReadingMode.Immediate, InMemory = true });
+		TypeDefinition str = module.GetType("System.String");
+		if (str.Methods.Any(m => m.Name == "GetMonoHashCode"))
+		{
+			Console.WriteLine("already has String.GetMonoHashCode");
+			return 1;
+		}
+		FieldDefinition firstChar = str.Fields.First(f => f.Name == "_firstChar");
+		MethodDefinition getHashCode = str.Methods.Single(m => m.Name == "GetHashCode" && !m.IsStatic && m.Parameters.Count == 0);
+		TypeReference int32 = module.TypeSystem.Int32;
+
+		// private unsafe int GetMonoHashCode(): Ludeon's, which is the old .NET Framework 64-bit string hash (up to the first '\0').
+		//   fixed (char* p = &_firstChar) { int h1 = 5381, h2 = h1; char* s = p; int c;
+		//     while ((c = s[0]) != 0) { h1 = ((h1 << 5) + h1) ^ c; c = s[1]; if (c == 0) break; h2 = ((h2 << 5) + h2) ^ c; s += 2; }
+		//     return h1 + h2 * 1566083941; }
+		var mono = new MethodDefinition("GetMonoHashCode", MethodAttributes.Private | MethodAttributes.HideBySig, int32);
+		MethodBody body = mono.Body;
+		var pinned = new VariableDefinition(new PinnedType(new ByReferenceType(module.TypeSystem.Char)));
+		var h1 = new VariableDefinition(int32);
+		var h2 = new VariableDefinition(int32);
+		var s = new VariableDefinition(new PointerType(module.TypeSystem.Char));
+		var c = new VariableDefinition(int32);
+		foreach (VariableDefinition v in new[] { pinned, h1, h2, s, c })
+		{
+			body.Variables.Add(v);
+		}
+		body.InitLocals = true;
+		ILProcessor il = body.GetILProcessor();
+		Instruction loopTest = Instruction.Create(OpCodes.Ldloc, s);
+		Instruction done = Instruction.Create(OpCodes.Ldloc, h1);
+		Instruction loopBody = Instruction.Create(OpCodes.Ldloc, h1);
+		il.Emit(OpCodes.Ldarg_0);
+		il.Emit(OpCodes.Ldflda, firstChar);
+		il.Emit(OpCodes.Stloc, pinned);
+		il.Emit(OpCodes.Ldloc, pinned);
+		il.Emit(OpCodes.Conv_U);
+		il.Emit(OpCodes.Stloc, s);
+		il.Emit(OpCodes.Ldc_I4, 5381);
+		il.Emit(OpCodes.Stloc, h1);
+		il.Emit(OpCodes.Ldloc, h1);
+		il.Emit(OpCodes.Stloc, h2);
+		il.Emit(OpCodes.Br, loopTest);
+		// h1 = ((h1 << 5) + h1) ^ c
+		il.Append(loopBody);
+		il.Emit(OpCodes.Ldc_I4_5);
+		il.Emit(OpCodes.Shl);
+		il.Emit(OpCodes.Ldloc, h1);
+		il.Emit(OpCodes.Add);
+		il.Emit(OpCodes.Ldloc, c);
+		il.Emit(OpCodes.Xor);
+		il.Emit(OpCodes.Stloc, h1);
+		// c = s[1]; if (c == 0) break;
+		il.Emit(OpCodes.Ldloc, s);
+		il.Emit(OpCodes.Ldc_I4_2);
+		il.Emit(OpCodes.Add);
+		il.Emit(OpCodes.Ldind_U2);
+		il.Emit(OpCodes.Stloc, c);
+		il.Emit(OpCodes.Ldloc, c);
+		il.Emit(OpCodes.Brfalse, done);
+		// h2 = ((h2 << 5) + h2) ^ c
+		il.Emit(OpCodes.Ldloc, h2);
+		il.Emit(OpCodes.Ldc_I4_5);
+		il.Emit(OpCodes.Shl);
+		il.Emit(OpCodes.Ldloc, h2);
+		il.Emit(OpCodes.Add);
+		il.Emit(OpCodes.Ldloc, c);
+		il.Emit(OpCodes.Xor);
+		il.Emit(OpCodes.Stloc, h2);
+		// s += 2
+		il.Emit(OpCodes.Ldloc, s);
+		il.Emit(OpCodes.Ldc_I4_4);
+		il.Emit(OpCodes.Add);
+		il.Emit(OpCodes.Stloc, s);
+		// while ((c = s[0]) != 0)
+		il.Append(loopTest);
+		il.Emit(OpCodes.Ldind_U2);
+		il.Emit(OpCodes.Dup);
+		il.Emit(OpCodes.Stloc, c);
+		il.Emit(OpCodes.Brtrue, loopBody);
+		// return h1 + h2 * 1566083941
+		il.Append(done);
+		il.Emit(OpCodes.Ldloc, h2);
+		il.Emit(OpCodes.Ldc_I4, 1566083941);
+		il.Emit(OpCodes.Mul);
+		il.Emit(OpCodes.Add);
+		il.Emit(OpCodes.Ret);
+		str.Methods.Add(mono);
+
+		// GetHashCode() { return GetMonoHashCode(); }   (stays AggressiveInlining, as in the fork)
+		getHashCode.Body = new MethodBody(getHashCode);
+		ILProcessor gh = getHashCode.Body.GetILProcessor();
+		gh.Emit(OpCodes.Ldarg_0);
+		gh.Emit(OpCodes.Call, mono);
+		gh.Emit(OpCodes.Ret);
+
+		// Written as plain IL for arm64 (the ReadyToRun code is gone; crossgen2 wants IL-only input).
+		module.Attributes = (module.Attributes & ~ModuleAttributes.ILLibrary) | ModuleAttributes.ILOnly;
+		module.Architecture = TargetArchitecture.ARM64;
+		module.Write(output);
+		Console.WriteLine("String.GetHashCode() -> GetMonoHashCode(): " + output);
 		return 0;
 	}
 

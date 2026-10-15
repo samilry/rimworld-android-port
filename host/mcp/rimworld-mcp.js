@@ -441,6 +441,10 @@ tool('rw_kill', 'TEST GAMES ONLY: kills a pawn or destroys a thing (id), or ever
   { id: str(''), kind: str('') }, [],
   async args => textResult(await agent('kill', args)));
 
+tool('rw_hash', 'string.GetHashCode() on the phone for each of texts (should be the PC\'s Mono hash: host/corelib.sh).',
+  { texts: { type: 'array', items: { type: 'string' } } }, ['texts'],
+  async args => textResult(await agent('hash', args)));
+
 tool('rw_save', 'TEST GAMES ONLY: saves the game being played under name (overwrites a save of that name: never a name of the user\'s).',
   { name: str('') }, ['name'],
   async args => textResult(await agent('save', args)));

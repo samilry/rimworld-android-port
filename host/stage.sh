@@ -20,6 +20,12 @@ what=${1:-all}
 if [ "$what" = runtime ] || [ "$what" = all ]; then
   "$ADB" shell "rm -rf $D/runtime"
   "$ADB" push "$RT" "$D/runtime" | tail -1 | cut -c1-100
+  # CoreLib with the runtime fork's string hash (host/corelib.sh builds it).
+  if [ -f build/runtime/System.Private.CoreLib.dll ]; then
+    "$ADB" push build/runtime/System.Private.CoreLib.dll "$D/runtime/" | tail -1 | cut -c1-100
+  else
+    echo "build/runtime/System.Private.CoreLib.dll missing (host/corelib.sh): the pack's CoreLib stays, string hashes change per launch"
+  fi
 fi
 
 if [ "$what" = game ] || [ "$what" = build ] || [ "$what" = all ]; then

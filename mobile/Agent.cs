@@ -284,10 +284,11 @@ namespace PortMobile
 				case "heal": return HealPawn(args);
 				case "kill": return KillThings(args);
 				case "save": return SaveGame(args);
+				case "hash": return StringHashes(args);
 				case "relation": return AddRelation(args);
 				case "rituals": return Rituals();
 				case "marry": return StartMarriage(args);
-				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, pawn, menu, research, spawn, makepawn, heal, kill, save, relation, rituals, marry, ping)");
+				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, pawn, menu, research, spawn, makepawn, heal, kill, save, hash, relation, rituals, marry, ping)");
 			}
 		}
 
@@ -1214,6 +1215,28 @@ namespace PortMobile
 			}
 			GameDataSaveLoader.SaveGame(name);
 			return Answer(w => w.WriteString("saved", name));
+		}
+
+		/// <summary>string.GetHashCode() of each of args.texts (the runtime fork's Mono hash, host/corelib.sh): the same numbers as on the PC.</summary>
+		private static string StringHashes(JsonElement args)
+		{
+			var texts = new List<string>();
+			if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("texts", out JsonElement list) && list.ValueKind == JsonValueKind.Array)
+			{
+				foreach (JsonElement t in list.EnumerateArray())
+				{
+					texts.Add(t.GetString() ?? "");
+				}
+			}
+			return Answer(w =>
+			{
+				w.WriteStartArray("hashes");
+				foreach (string t in texts)
+				{
+					w.WriteNumberValue(t.GetHashCode());
+				}
+				w.WriteEndArray();
+			});
 		}
 
 		/// <summary>Adds a relation between two pawns (args: a, b = ids; def = Lover, Fiance, Spouse, ...).</summary>
