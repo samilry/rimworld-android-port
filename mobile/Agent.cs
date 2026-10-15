@@ -8,10 +8,13 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using HarmonyLib;
 using RimWorld;
 using RimWorld.Planet;
 using UnityEngine;
 using Verse;
+using Verse.AI;
+using Verse.AI.Group;
 
 namespace PortMobile
 {
@@ -273,7 +276,9 @@ namespace PortMobile
 				case "zones": return Zones();
 				case "incident": return FireIncident(args);
 				case "world": return WorldObjects(args);
-				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, ping)");
+				case "pawn": return PawnInfo(args);
+				case "menu": return MenuAt(args);
+				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, pawn, menu, ping)");
 			}
 		}
 
@@ -859,6 +864,165 @@ namespace PortMobile
 				}
 				w.WriteEndArray();
 			});
+		}
+
+		/// <summary>
+		/// What the game thinks of one pawn (args: id): downed, in bed, mental state, faction, current job and queue, lord,
+		/// hediffs; with args.by (another pawn's id) also whether that one can reserve and reach it, as orders check.
+		/// </summary>
+		private static string PawnInfo(JsonElement args)
+		{
+			if (!Playing)
+			{
+				return Failure("no map is shown");
+			}
+			if (!(ThingById(Str(args, "id")) is Pawn pawn))
+			{
+				return Failure("no pawn with that id on this map");
+			}
+			Pawn by = Has(args, "by") ? ThingById(Str(args, "by")) as Pawn : null;
+			return Answer(w =>
+			{
+				w.WriteString("label", pawn.LabelShortCap);
+				w.WriteString("faction", pawn.Faction?.Name);
+				w.WriteBoolean("downed", pawn.Downed);
+				w.WriteBoolean("dead", pawn.Dead);
+				w.WriteBoolean("inBed", pawn.InBed());
+				w.WriteBoolean("drafted", pawn.Drafted);
+				w.WriteString("mentalState", pawn.MentalStateDef?.defName);
+				w.WriteBoolean("prisoner", pawn.IsPrisonerOfColony);
+				w.WriteString("job", pawn.CurJob?.def.defName);
+				w.WriteString("jobReport", SafeReport(pawn));
+				w.WriteNumber("queued", pawn.jobs?.jobQueue?.Count ?? 0);
+				w.WriteString("lord", pawn.GetLord()?.LordJob?.GetType().Name);
+				w.WriteString("carriedBy", pawn.CarriedBy?.LabelShortCap);
+				w.WriteBoolean("forbidden", pawn.IsForbidden(Faction.OfPlayer));
+				w.WriteStartArray("hediffs");
+				foreach (Hediff hediff in pawn.health.hediffSet.hediffs)
+				{
+					w.WriteStringValue(hediff.LabelCap + (hediff.Part != null ? " (" + hediff.Part.LabelCap + ")" : ""));
+				}
+				w.WriteEndArray();
+				if (by != null)
+				{
+					w.WriteBoolean("byCanReach", by.CanReach(pawn, Verse.AI.PathEndMode.OnCell, Danger.Deadly));
+					w.WriteBoolean("byCanReserve", by.CanReserve(pawn, 1, -1, null, true));
+					w.WriteString("reservedBy", by.Map.reservationManager.FirstRespectedReserver(pawn, by)?.LabelShortCap);
+					w.WriteBoolean("wantsRescue", HealthAIUtility.WantsToBeRescued(pawn));
+					w.WriteBoolean("canRescueNow", HealthAIUtility.CanRescueNow(by, pawn, true));
+					w.WriteBoolean("willJoinIfRescued", pawn.mindState.WillJoinColonyIfRescued);
+					w.WriteBoolean("canSuckle", ChildcareUtility.CanSuckle(pawn, out _));
+					w.WriteBoolean("shouldSeekMedicalRest", HealthAIUtility.ShouldSeekMedicalRest(pawn));
+					w.WriteBoolean("alwaysDowned", pawn.ageTracker.CurLifeStage.alwaysDowned);
+					w.WriteString("medCare", pawn.playerSettings?.medCare.ToString());
+					w.WriteString("bedFor", RestUtility.FindBedFor(pawn, by, checkSocialProperness: false)?.LabelShortCap);
+				}
+				var patched = Harmony.GetPatchInfo(AccessTools.Method(typeof(FloatMenuOptionProvider_RescuePawn), "GetSingleOptionFor", new[] { typeof(Pawn), typeof(FloatMenuContext) }));
+				if (patched != null)
+				{
+					w.WriteStartArray("rescuePatches");
+					foreach (Patch patch in patched.Prefixes.Concat(patched.Postfixes).Concat(patched.Transpilers).Concat(patched.Finalizers))
+					{
+						w.WriteStringValue(patch.owner + " " + patch.PatchMethod.DeclaringType?.FullName + "." + patch.PatchMethod.Name);
+					}
+					w.WriteEndArray();
+				}
+			});
+		}
+
+		private static readonly AccessTools.FieldRef<List<FloatMenuOptionProvider>> Providers = AccessTools.StaticFieldRefAccess<List<FloatMenuOptionProvider>>(AccessTools.Field(typeof(FloatMenuMakerMap), "providers"));
+
+		/// <summary>
+		/// The orders the selected pawns would get for a right click on a cell (args: x, z), as the game makes them, and for
+		/// each menu provider whether it applies there and what it gave for each thing on the cell: to find out why an
+		/// order is missing. Nothing is ordered.
+		/// </summary>
+		private static string MenuAt(JsonElement args)
+		{
+			if (!Playing)
+			{
+				return Failure("no map is shown");
+			}
+			var pawns = Find.Selector.SelectedPawns.ToList();
+			if (pawns.Count == 0)
+			{
+				return Failure("select a pawn first");
+			}
+			Vector3 at = new IntVec3(Int(args, "x", 0), 0, Int(args, "z", 0)).ToVector3Shifted();
+			List<FloatMenuOption> options = FloatMenuMakerMap.GetOptions(new List<Pawn>(pawns), at, out FloatMenuContext context);
+			return Answer(w =>
+			{
+				w.WriteStartArray("options");
+				foreach (FloatMenuOption option in options)
+				{
+					w.WriteStringValue(option.Label + (option.Disabled ? " [disabled]" : ""));
+				}
+				w.WriteEndArray();
+				if (context == null)
+				{
+					return;
+				}
+				w.WriteStartArray("providers");
+				foreach (FloatMenuOptionProvider provider in Providers())
+				{
+					string name = provider.GetType().Name;
+					string result;
+					try
+					{
+						FloatMenuMakerMap.currentProvider = provider;
+						if (!context.ValidSelectedPawns.Any())
+						{
+							result = "no valid selected pawn";
+						}
+						else if (!provider.Applies(context))
+						{
+							continue; // most do not: left out
+						}
+						else
+						{
+							var parts = new List<string>();
+							int own = provider.GetOptions(context).Count();
+							if (own > 0)
+							{
+								parts.Add(own + " for the cell");
+							}
+							foreach (Pawn clicked in context.ClickedPawns)
+							{
+								if (!provider.TargetPawnValid(clicked, context))
+								{
+									parts.Add(clicked.LabelShort + ": target not valid");
+									continue;
+								}
+								var got = provider.GetOptionsFor(clicked, context).Where(o => o != null).Select(o => o.Label).ToList();
+								parts.Add(clicked.LabelShort + ": " + (got.Count == 0 ? "nothing" : string.Join(" / ", got)));
+							}
+							result = parts.Count == 0 ? "applies, nothing" : string.Join("; ", parts);
+						}
+					}
+					catch (Exception e)
+					{
+						result = "threw " + e.GetType().Name + ": " + e.Message;
+					}
+					finally
+					{
+						FloatMenuMakerMap.currentProvider = null;
+					}
+					w.WriteStringValue(name + " -> " + result);
+				}
+				w.WriteEndArray();
+			});
+		}
+
+		private static string SafeReport(Pawn pawn)
+		{
+			try
+			{
+				return pawn.jobs?.curDriver?.GetReport();
+			}
+			catch (Exception e)
+			{
+				return "(" + e.GetType().Name + ")";
+			}
 		}
 
 		/// <summary>The zones of the current map: label, kind, cell count, bounds, and what grows or is stored.</summary>

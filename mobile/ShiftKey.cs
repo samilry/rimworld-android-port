@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using RimWorld;
 using UnityEngine;
@@ -75,8 +76,12 @@ namespace PortMobile
 		}
 
 		// The button is a window of the top layer (as tooltips are): the inspector's tabs open over the left edge whenever
-		// a colonist is selected, and a button under them could not be pressed just when it is wanted.
+		// a colonist is selected, and a button under them could not be pressed just when it is wanted. It is not put over
+		// what such a window shows either (a storage filter's expand arrows are just there): where a window covers its
+		// place it moves to that window's right edge, and where there is no room for it beside the windows (a window as
+		// wide as the screen) it is not shown.
 		private const int WindowId = 73195733;
+		private const float Gap = 6f;
 
 		/// <summary>From the end of the play screen's interface, every frame: the button's window is asked for again.</summary>
 		public static void OnGui()
@@ -90,7 +95,36 @@ namespace PortMobile
 				return;
 			}
 			var screenRect = new Rect(atX >= 0f ? atX : 14f, atY >= 0f ? atY : Mathf.Round(UI.screenHeight * 0.38f), Width, Height);
+			if (!BesideWindows(ref screenRect))
+			{
+				return;
+			}
 			Find.WindowStack.ImmediateWindow(WindowId, screenRect, WindowLayer.Super, DrawButton, doBackground: false, absorbInputAroundWindow: false, shadowAlpha: 0f);
+		}
+
+		/// <summary>Moves the rectangle right of every window over it; false when that leaves the left half of the screen.</summary>
+		private static bool BesideWindows(ref Rect rect)
+		{
+			IList<Window> windows = Find.WindowStack.Windows;
+			for (int pass = 0; pass < 8; pass++)
+			{
+				bool moved = false;
+				for (int i = 0; i < windows.Count; i++)
+				{
+					Window window = windows[i];
+					if (window.ID == -WindowId || window.layer == WindowLayer.Super || !window.windowRect.Overlaps(rect))
+					{
+						continue;
+					}
+					rect.x = window.windowRect.xMax + Gap;
+					moved = true;
+				}
+				if (!moved)
+				{
+					return rect.xMax <= UI.screenWidth / 2f;
+				}
+			}
+			return false;
 		}
 
 		private static void DrawButton()

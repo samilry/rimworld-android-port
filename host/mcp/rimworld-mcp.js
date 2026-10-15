@@ -412,6 +412,14 @@ tool('rw_world', 'The world: the player\'s caravans (pawns, tile, moving, inspec
   { limit: num('settlements, default 12'), from: str('measure from this caravan instead of home') }, [],
   async args => textResult(await agent('world', args)));
 
+tool('rw_pawn', 'What the game thinks of a pawn (id): downed, bed, mental state, job, lord, carried by, hediffs; with by (another pawn id) whether that one can reach / reserve / rescue it.',
+  { id: str(''), by: str('') }, ['id'],
+  async args => textResult(await agent('pawn', args)));
+
+tool('rw_menu', 'Diagnosis: the orders the selected pawns would get for a right click on map cell (x, z), and what every applying menu provider gave for each pawn there. Nothing is ordered.',
+  { x: num('cell x'), z: num('cell z') }, ['x', 'z'],
+  async args => textResult(await agent('menu', args)));
+
 tool('rw_log', 'The game\'s log since the last call (the first call only sets the starting point): errors with their stacks, counted. all: true also lists warnings and other lines. Secrets (API keys) are masked.',
   { all: { type: 'boolean' }, max_lines: num('other lines shown with all, default 60') }, [],
   async args => textResult(summarizeLog(newLogLines(), !!args.all, args.max_lines || 60)));
