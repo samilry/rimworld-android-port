@@ -38,6 +38,7 @@ namespace PortMobile
 			FrameRate.Start(harmony);
 			Perf.Start(harmony);
 			WorldLabels.Start(harmony);
+			ResearchTree.Start(harmony);
 			MemTrim.Start(harmony);
 			BakeDepth.Start(harmony);
 			ColdTextures.Start(harmony);
