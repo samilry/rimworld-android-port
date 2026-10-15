@@ -278,7 +278,16 @@ namespace PortMobile
 				case "world": return WorldObjects(args);
 				case "pawn": return PawnInfo(args);
 				case "menu": return MenuAt(args);
-				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, pawn, menu, ping)");
+				case "research": return FinishResearch(args);
+				case "spawn": return SpawnThing(args);
+				case "makepawn": return MakePawn(args);
+				case "heal": return HealPawn(args);
+				case "kill": return KillThings(args);
+				case "save": return SaveGame(args);
+				case "relation": return AddRelation(args);
+				case "rituals": return Rituals();
+				case "marry": return StartMarriage(args);
+				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, pawn, menu, research, spawn, makepawn, heal, kill, save, relation, rituals, marry, ping)");
 			}
 		}
 
@@ -1017,6 +1026,267 @@ namespace PortMobile
 				}
 				w.WriteEndArray();
 			});
+		}
+
+		// ---- for testing: changes to the game being played (only ever reached with the agent switched on) ----
+
+		/// <summary>Finishes a research project (args: def, a ResearchProjectDef name) and every one it needs first. Without def: the names that hold args.query.</summary>
+		private static string FinishResearch(JsonElement args)
+		{
+			if (Current.Game == null)
+			{
+				return Failure("not in a game");
+			}
+			string name = Str(args, "def");
+			if (string.IsNullOrEmpty(name))
+			{
+				string query = Str(args, "query", "");
+				var found = DefDatabase<ResearchProjectDef>.AllDefsListForReading.Where(d => d.defName.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0 || d.label.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0).Select(d => d.defName + " (" + d.label + (d.IsFinished ? ", done" : "") + ")").Take(40).ToList();
+				return Answer(w => { w.WriteStartArray("projects"); foreach (string f in found) w.WriteStringValue(f); w.WriteEndArray(); });
+			}
+			ResearchProjectDef target = DefDatabase<ResearchProjectDef>.GetNamedSilentFail(name);
+			if (target == null)
+			{
+				return Failure("no research project " + name);
+			}
+			var done = new List<string>();
+			void Finish(ResearchProjectDef proj)
+			{
+				if (proj.IsFinished)
+				{
+					return;
+				}
+				foreach (ResearchProjectDef pre in proj.prerequisites ?? new List<ResearchProjectDef>())
+				{
+					Finish(pre);
+				}
+				foreach (ResearchProjectDef pre in proj.hiddenPrerequisites ?? new List<ResearchProjectDef>())
+				{
+					Finish(pre);
+				}
+				Find.ResearchManager.FinishProject(proj, false, null, false);
+				done.Add(proj.defName);
+			}
+			Finish(target);
+			return Answer(w => { w.WriteStartArray("finished"); foreach (string d in done) w.WriteStringValue(d); w.WriteEndArray(); });
+		}
+
+		/// <summary>Spawns a thing on the current map (args: def, stuff, count, x, z, rot 0-3). A building is the colony's and complete. Without def: the def names that hold args.query.</summary>
+		private static string SpawnThing(JsonElement args)
+		{
+			if (!Playing)
+			{
+				return Failure("no map is shown");
+			}
+			string name = Str(args, "def");
+			if (string.IsNullOrEmpty(name))
+			{
+				string query = Str(args, "query", "");
+				var found = DefDatabase<ThingDef>.AllDefsListForReading.Where(d => d.defName.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0 || (d.label ?? "").IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0).Select(d => d.defName + " (" + d.label + ", " + d.category + ")").Take(40).ToList();
+				return Answer(w => { w.WriteStartArray("defs"); foreach (string f in found) w.WriteStringValue(f); w.WriteEndArray(); });
+			}
+			ThingDef def = DefDatabase<ThingDef>.GetNamedSilentFail(name);
+			if (def == null)
+			{
+				return Failure("no thing def " + name);
+			}
+			ThingDef stuff = Has(args, "stuff") ? DefDatabase<ThingDef>.GetNamedSilentFail(Str(args, "stuff")) : (def.MadeFromStuff ? GenStuff.DefaultStuffFor(def) : null);
+			Map map = Find.CurrentMap;
+			var cell = new IntVec3(Int(args, "x", Find.CameraDriver.MapPosition.x), 0, Int(args, "z", Find.CameraDriver.MapPosition.z));
+			int count = Math.Max(1, Int(args, "count", 1));
+			var placed = new List<string>();
+			while (count > 0)
+			{
+				Thing thing = ThingMaker.MakeThing(def, stuff);
+				int n = Math.Min(count, def.stackLimit);
+				thing.stackCount = n;
+				count -= n;
+				if (def.category == ThingCategory.Building)
+				{
+					if (thing.def.CanHaveFaction)
+					{
+						thing.SetFaction(Faction.OfPlayer);
+					}
+					GenSpawn.Spawn(thing, cell, map, new Rot4(Int(args, "rot", 0)), WipeMode.Vanish);
+					placed.Add(thing.ThingID);
+					break;
+				}
+				if (!GenPlace.TryPlaceThing(thing, cell, map, ThingPlaceMode.Near))
+				{
+					return Failure("no room near " + cell);
+				}
+				placed.Add(thing.ThingID + " x" + n);
+			}
+			return Answer(w => { w.WriteStartArray("spawned"); foreach (string t in placed) w.WriteStringValue(t); w.WriteEndArray(); });
+		}
+
+		/// <summary>Makes a pawn on the current map (args: kind = PawnKindDef, faction = player / hostile / a FactionDef name, x, z, downed).</summary>
+		private static string MakePawn(JsonElement args)
+		{
+			if (!Playing)
+			{
+				return Failure("no map is shown");
+			}
+			PawnKindDef kind = DefDatabase<PawnKindDef>.GetNamedSilentFail(Str(args, "kind", "Colonist"));
+			if (kind == null)
+			{
+				return Failure("no pawn kind " + Str(args, "kind"));
+			}
+			string f = Str(args, "faction", "player");
+			Faction faction = f == "player" ? Faction.OfPlayer
+				: f == "hostile" ? Find.FactionManager.RandomEnemyFaction(false, false, false)
+				: f == "none" ? null
+				: Find.FactionManager.AllFactionsListForReading.FirstOrDefault(x => x.def.defName == f);
+			Pawn pawn = PawnGenerator.GeneratePawn(kind, faction);
+			var cell = new IntVec3(Int(args, "x", Find.CameraDriver.MapPosition.x), 0, Int(args, "z", Find.CameraDriver.MapPosition.z));
+			GenSpawn.Spawn(pawn, CellFinder.StandableCellNear(cell, Find.CurrentMap, 5f), Find.CurrentMap);
+			if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("downed", out JsonElement d) && d.ValueKind == JsonValueKind.True)
+			{
+				HealthUtility.DamageUntilDowned(pawn, allowBleedingWounds: false);
+			}
+			return Answer(w =>
+			{
+				w.WriteString("id", pawn.ThingID);
+				w.WriteString("label", pawn.LabelShortCap);
+				w.WriteString("faction", pawn.Faction?.Name);
+				w.WriteBoolean("downed", pawn.Downed);
+			});
+		}
+
+		/// <summary>Heals a pawn's injuries (args: id; all: true for every colonist on the map).</summary>
+		private static string HealPawn(JsonElement args)
+		{
+			if (!Playing)
+			{
+				return Failure("no map is shown");
+			}
+			var pawns = new List<Pawn>();
+			if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("all", out JsonElement a) && a.ValueKind == JsonValueKind.True)
+			{
+				pawns.AddRange(Find.CurrentMap.mapPawns.FreeColonistsSpawned);
+			}
+			else if (ThingById(Str(args, "id")) is Pawn one)
+			{
+				pawns.Add(one);
+			}
+			foreach (Pawn pawn in pawns)
+			{
+				HealthUtility.HealNonPermanentInjuriesAndRestoreLegs(pawn);
+			}
+			return Answer(w => w.WriteNumber("healed", pawns.Count));
+		}
+
+		/// <summary>Kills a pawn or destroys a thing (args: id; or kind: hostile for every hostile pawn and turret on the map).</summary>
+		private static string KillThings(JsonElement args)
+		{
+			if (!Playing)
+			{
+				return Failure("no map is shown");
+			}
+			var things = new List<Thing>();
+			if (Str(args, "kind") == "hostile")
+			{
+				things.AddRange(Find.CurrentMap.mapPawns.AllPawnsSpawned.Where(x => x.HostileTo(Faction.OfPlayer) && !x.Dead));
+				things.AddRange(Find.CurrentMap.listerThings.ThingsInGroup(ThingRequestGroup.BuildingArtificial).Where(x => x.def.building != null && x.def.building.IsTurret && x.HostileTo(Faction.OfPlayer)));
+			}
+			else if (ThingById(Str(args, "id")) is Thing one)
+			{
+				things.Add(one);
+			}
+			foreach (Thing thing in things)
+			{
+				thing.Kill(null, null);
+			}
+			return Answer(w => w.WriteNumber("killed", things.Count));
+		}
+
+		/// <summary>Saves the game being played under a name (args: name), as the save menu does.</summary>
+		private static string SaveGame(JsonElement args)
+		{
+			if (Current.Game == null)
+			{
+				return Failure("not in a game");
+			}
+			string name = Str(args, "name");
+			if (string.IsNullOrEmpty(name))
+			{
+				return Failure("a name is needed");
+			}
+			GameDataSaveLoader.SaveGame(name);
+			return Answer(w => w.WriteString("saved", name));
+		}
+
+		/// <summary>Adds a relation between two pawns (args: a, b = ids; def = Lover, Fiance, Spouse, ...).</summary>
+		private static string AddRelation(JsonElement args)
+		{
+			if (!(ThingById(Str(args, "a")) is Pawn a) || !(ThingById(Str(args, "b")) is Pawn b))
+			{
+				return Failure("two pawn ids are needed (a, b)");
+			}
+			PawnRelationDef def = DefDatabase<PawnRelationDef>.GetNamedSilentFail(Str(args, "def", "Lover"));
+			if (def == null)
+			{
+				return Failure("no relation " + Str(args, "def"));
+			}
+			a.relations.AddDirectRelation(def, b);
+			return Answer(w => w.WriteString("relation", a.LabelShort + " - " + def.defName + " - " + b.LabelShort));
+		}
+
+		/// <summary>The rituals of the colony's primary ideoligion: label, def, and what they take place at.</summary>
+		private static string Rituals()
+		{
+			Ideo ideo = Faction.OfPlayer?.ideos?.PrimaryIdeo;
+			if (ideo == null)
+			{
+				return Failure("no ideoligion");
+			}
+			return Answer(w =>
+			{
+				w.WriteString("ideo", ideo.name);
+				w.WriteBoolean("classic", Find.IdeoManager.classicMode);
+				w.WriteStartArray("rituals");
+				foreach (Precept precept in ideo.PreceptsListForReading)
+				{
+					if (!(precept is Precept_Ritual ritual))
+					{
+						continue;
+					}
+					w.WriteStartObject();
+					w.WriteString("label", ritual.LabelCap);
+					w.WriteString("def", ritual.def.defName);
+					w.WriteBoolean("playerCanStart", ritual.def.mergeRitualGizmosFromAllIdeos || !ritual.isAnytime || true);
+					var targets = new List<string>();
+					try
+					{
+						if (ritual.obligationTargetFilter != null)
+						{
+							targets.AddRange(ritual.obligationTargetFilter.GetTargetInfos(null));
+						}
+					}
+					catch (Exception e)
+					{
+						targets.Add("(" + e.GetType().Name + ")");
+					}
+					w.WriteString("targets", string.Join(", ", targets));
+					w.WriteEndObject();
+				}
+				w.WriteEndArray();
+			});
+		}
+
+		/// <summary>Starts the marriage ceremony of two fiancés now (args: a, b = ids), as the game does after ten days of engagement.</summary>
+		private static string StartMarriage(JsonElement args)
+		{
+			if (!(ThingById(Str(args, "a")) is Pawn a) || !(ThingById(Str(args, "b")) is Pawn b))
+			{
+				return Failure("two pawn ids are needed (a, b)");
+			}
+			if (!a.relations.DirectRelationExists(PawnRelationDefOf.Fiance, b))
+			{
+				a.relations.AddDirectRelation(PawnRelationDefOf.Fiance, b);
+			}
+			bool started = a.Map.lordsStarter.TryStartMarriageCeremony(a, b);
+			return Answer(w => w.WriteBoolean("started", started));
 		}
 
 		private static string SafeReport(Pawn pawn)

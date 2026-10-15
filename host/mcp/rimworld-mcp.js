@@ -421,6 +421,41 @@ tool('rw_menu', 'Diagnosis: the orders the selected pawns would get for a right 
   { x: num('cell x'), z: num('cell z') }, ['x', 'z'],
   async args => textResult(await agent('menu', args)));
 
+tool('rw_research', 'TEST GAMES ONLY: finishes a research project and its prerequisites (def). Without def lists projects matching query.',
+  { def: str(''), query: str('') }, [],
+  async args => textResult(await agent('research', args)));
+
+tool('rw_spawn', 'TEST GAMES ONLY: spawns a thing at a cell (def, stuff, count, x, z, rot); buildings come complete and the colony\'s. Without def lists defs matching query.',
+  { def: str(''), stuff: str(''), count: num(''), x: num(''), z: num(''), rot: num(''), query: str('') }, [],
+  async args => textResult(await agent('spawn', args)));
+
+tool('rw_makepawn', 'TEST GAMES ONLY: makes a pawn (kind, faction = player/hostile/none/FactionDef, x, z, downed).',
+  { kind: str(''), faction: str(''), x: num(''), z: num(''), downed: { type: 'boolean' } }, [],
+  async args => textResult(await agent('makepawn', args)));
+
+tool('rw_heal', 'TEST GAMES ONLY: heals a pawn (id) or all colonists (all: true).',
+  { id: str(''), all: { type: 'boolean' } }, [],
+  async args => textResult(await agent('heal', args)));
+
+tool('rw_kill', 'TEST GAMES ONLY: kills a pawn or destroys a thing (id), or every hostile pawn and turret on the map (kind: hostile).',
+  { id: str(''), kind: str('') }, [],
+  async args => textResult(await agent('kill', args)));
+
+tool('rw_save', 'TEST GAMES ONLY: saves the game being played under name (overwrites a save of that name: never a name of the user\'s).',
+  { name: str('') }, ['name'],
+  async args => textResult(await agent('save', args)));
+
+tool('rw_relation', 'TEST GAMES ONLY: adds a relation (def: Lover, Fiance, Spouse ...) between pawns a and b.',
+  { a: str(''), b: str(''), def: str('') }, ['a', 'b'],
+  async args => textResult(await agent('relation', args)));
+
+tool('rw_rituals', 'The rituals of the colony\'s ideoligion and what they take place at.', {}, [],
+  async () => textResult(await agent('rituals')));
+
+tool('rw_marry', 'TEST GAMES ONLY: makes pawns a and b engaged if needed and starts their marriage ceremony now.',
+  { a: str(''), b: str('') }, ['a', 'b'],
+  async args => textResult(await agent('marry', args)));
+
 tool('rw_log', 'The game\'s log since the last call (the first call only sets the starting point): errors with their stacks, counted. all: true also lists warnings and other lines. Secrets (API keys) are masked.',
   { all: { type: 'boolean' }, max_lines: num('other lines shown with all, default 60') }, [],
   async args => textResult(summarizeLog(newLogLines(), !!args.all, args.max_lines || 60)));
