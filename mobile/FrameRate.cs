@@ -14,7 +14,8 @@ namespace PortMobile
 	/// Two choices on the graphics page of the options, as the 1.6 port had them (tools/portmobile/FrameRate.cs and
 	/// Schedule.cs there), kept in mobile.txt as "frameRate=" and "schedule=".
 	///
-	/// Frame rate limit: 30, 60 or 90 frames a second. Fewer frames mean less heat, and a cooler phone keeps its
+	/// Frame rate limit: 30, 60, 90 or 120 frames a second (the phone's display runs at 30 to 165 Hz; the system's highest
+	/// rate is a display setting of the phone, 120 here). Fewer frames mean less heat, and a cooler phone keeps its
 	/// processor faster for the simulation. The engine holds the limit with its own timer (Application.targetFrameRate);
 	/// the compositor is told the rate, so that the display can run at it or at a multiple.
 	///
@@ -76,7 +77,7 @@ namespace PortMobile
 			return displayRate;
 		}
 
-		public static readonly int[] Choices = { 30, 60, 90 };
+		public static readonly int[] Choices = { 30, 60, 90, 120 };
 		public const int Default = 0, Frames = 1, Ticks = 2;
 		private const float GameTimeCapMs = 45.454544f, TicksTimeCapMs = 150f;
 
@@ -91,7 +92,16 @@ namespace PortMobile
 
 		private static int Clamp(int rate)
 		{
-			return rate <= 30 ? 30 : rate >= 90 ? 90 : 60;
+			// The nearest choice.
+			int best = Choices[0];
+			foreach (int choice in Choices)
+			{
+				if (Math.Abs(choice - rate) < Math.Abs(best - rate))
+				{
+					best = choice;
+				}
+			}
+			return best;
 		}
 
 		/// <summary>What the game multiplies its speed factor with to get the most ticks it runs in one frame (2 in the game's code).</summary>
