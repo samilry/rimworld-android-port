@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using HarmonyLib;
@@ -22,6 +23,13 @@ namespace PortMobile
 	/// small method of the game that could be copied into them, get their replacement made again (by Harmony itself,
 	/// with their patches as they are): a patched method is not copied into code compiled after it was patched.
 	/// While the port puts its own patches in, this waits and is done once for all of them at the end.
+	///
+	/// The engine's own code is the other half. Its per-frame methods are compiled at full optimisation during the
+	/// loading screens, before the port is there, and they may hold a copy of a small engine method the port patches
+	/// (1.7.4979 made GUI.ProcessPendingWindows two calls in a try/finally, and ImguiDispatch.Dispatch took it in: the
+	/// tap assist and the agent no longer saw the end of a frame). So, once, after the port's patches: every method of
+	/// the engine's assemblies whose code calls one of the small engine methods the port patched is made again too
+	/// (Harmony, with an empty postfix).
 	/// </summary>
 	internal static class InlineGuard
 	{
@@ -96,6 +104,109 @@ namespace PortMobile
 				deferred = null;
 			}
 			Rebuild(batch, "the port's patches");
+			RebuildEngineCallers(batch);
+		}
+
+		// The engine's assemblies (not the game's: Assembly-CSharp is what mods patch, and its callers are left to the above).
+		private static readonly HashSet<string> EngineAssemblies = new HashSet<string> { "RimWorld", "UnityStubs", "Waylith", "Waylith.UnityCompat" };
+
+		private static void RebuildEngineCallers(HashSet<MethodBase> portPatched)
+		{
+			var clock = Stopwatch.StartNew();
+			var targets = new HashSet<MethodBase>();
+			foreach (MethodBase method in portPatched)
+			{
+				if (EngineAssemblies.Contains(method.Module.Assembly.GetName().Name))
+				{
+					targets.Add(method);
+				}
+			}
+			if (targets.Count == 0)
+			{
+				return;
+			}
+			var todo = new List<(MethodBase caller, MethodBase callee)>();
+			int scanned = 0;
+			lock (sync)
+			{
+				foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+				{
+					if (!EngineAssemblies.Contains(assembly.GetName().Name))
+					{
+						continue;
+					}
+					Type[] types;
+					try
+					{
+						types = assembly.GetTypes();
+					}
+					catch (ReflectionTypeLoadException e)
+					{
+						types = Array.FindAll(e.Types, t => t != null);
+					}
+					foreach (Type type in types)
+					{
+						if (type.IsGenericTypeDefinition || type.IsInterface)
+						{
+							continue;
+						}
+						const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+						foreach (MethodBase method in type.GetMethods(all).Cast<MethodBase>().Concat(type.GetConstructors(all)))
+						{
+							if (method.IsAbstract || method.IsGenericMethodDefinition || patched.Contains(method) || targets.Contains(method))
+							{
+								continue;
+							}
+							scanned++;
+							foreach (MethodBase callee in Callees(method))
+							{
+								if (targets.Contains(callee))
+								{
+									todo.Add((method, callee));
+									break;
+								}
+							}
+						}
+					}
+				}
+			}
+			long looked = clock.ElapsedMilliseconds;
+			var harmony = new Harmony("port17.inline");
+			var nothing = new HarmonyMethod(typeof(InlineGuard), nameof(Nothing));
+			int made = 0;
+			rebuilding++;
+			try
+			{
+				foreach (var (caller, callee) in todo)
+				{
+					try
+					{
+						harmony.Patch(caller, postfix: nothing);
+						made++;
+						Console.WriteLine("[mobile] inline guard: engine method " + Name(caller) + " made again (it calls " + Name(callee) + ")");
+					}
+					catch (Exception e)
+					{
+						Console.WriteLine("[mobile] inline guard: could not make engine method " + Name(caller) + " again: " + e.GetType().Name + ": " + e.Message);
+					}
+				}
+			}
+			finally
+			{
+				rebuilding--;
+			}
+			lock (sync)
+			{
+				foreach (var (caller, _) in todo)
+				{
+					patched.Add(caller);
+				}
+			}
+			Console.WriteLine("[mobile] inline guard: " + targets.Count + " small engine methods patched by the port; " + scanned + " engine methods looked through in " + looked + " ms, " + made + " of " + todo.Count + " that call them made again (" + clock.ElapsedMilliseconds + " ms in all)");
+		}
+
+		public static void Nothing()
+		{
 		}
 
 		/// <summary>Postfix of Harmony's PatchFunctions.UpdateWrapper (every patch, every unpatch).</summary>

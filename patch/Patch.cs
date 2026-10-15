@@ -86,6 +86,15 @@ internal static class Patch
 		["/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"] = "/system/fonts/NotoSansCJK-Regular.ttc",
 		["/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"] = "/system/fonts/DroidSansFallback.ttf",
 		["/usr/share/fonts/noto/NotoSansThai-Regular.ttf"] = "/system/fonts/NotoSansThai-Regular.ttf",
+		// From 1.7.4979 the fallbacks are looked up by file name among the fonts found under the system's font folders
+		// (UnityStubs' Font.GetPathsToOSFonts, Linux: /usr/share/fonts and others): the phone keeps its fonts in
+		// /system/fonts, and some of them under other names.
+		["/usr/share/fonts"] = "/system/fonts",
+		["DejaVuSans.ttf"] = "DroidSans.ttf",
+		["NotoSansSymbols-Regular.ttf"] = "NotoSansSymbols-Regular-Subsetted.ttf",
+		["NotoSansSymbols2-Regular.ttf"] = "NotoSansSymbols-Regular-Subsetted2.ttf",
+		["LiberationSans-Regular.ttf"] = "Roboto-Regular.ttf",
+		["DroidSansFallbackFull.ttf"] = "DroidSansFallback.ttf",
 		// MonoMod (inside 0Harmony.dll) calls the phone "Android" when this file exists and then has no system support for it; as "Linux" its LinuxSystem works here (bionic has the same mmap/mprotect, arm64 ABI is implemented).
 		["/system/build.prop"] = "/system/build.prop.treated-as-linux",
 	};
