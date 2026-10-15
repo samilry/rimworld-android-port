@@ -362,7 +362,8 @@ tool('rw_click',
       // A gizmo's label hangs below its button: the button is what takes the tap.
       const cx = x + w / 2;
       const all = await agent('screen', { window: pick.w === -1 ? 'map' : String(pick.w), max: 2000 });
-      const above = all.controls.filter(c => c.w === pick.w && c.r[0] <= cx && cx <= c.r[0] + c.r[2] && y - (c.r[1] + c.r[3]) >= -h && y - (c.r[1] + c.r[3]) <= 30)
+      // Only a button of about the label's width whose bottom edge the label touches (a gizmo); not a wide bar the text lies on.
+      const above = all.controls.filter(c => c.w === pick.w && c.r[0] <= cx && cx <= c.r[0] + c.r[2] && c.r[2] <= w * 1.6 + 10 && y - (c.r[1] + c.r[3]) >= -h && y - (c.r[1] + c.r[3]) <= 30 && c.r[1] < y)
         .sort((a, b) => (y - (a.r[1] + a.r[3])) - (y - (b.r[1] + b.r[3])))[0];
       if (above) { [x, y, w, h] = above.r; pick.from = 'button above the text'; }
     }

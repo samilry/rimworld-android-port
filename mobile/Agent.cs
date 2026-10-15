@@ -407,7 +407,13 @@ namespace PortMobile
 			TapAssist.Snapshot(controls, texts, windows);
 			string contains = Str(args, "contains");
 			string which = Str(args, "window");
-			int onlyWindow = which == "top" ? windows.Count - 1 : which == "map" ? -1 : int.TryParse(which, out int n) ? n : int.MinValue;
+			// "top": the topmost window that is more than a small overlay (the Shift button, a message, a tooltip).
+			int topWindow = windows.Count - 1;
+			while (topWindow > 0 && (windows[topWindow].x1 - windows[topWindow].x0) * (windows[topWindow].y1 - windows[topWindow].y0) < 300f * 300f)
+			{
+				topWindow--;
+			}
+			int onlyWindow = which == "top" ? topWindow : which == "map" ? -1 : int.TryParse(which, out int n) ? n : int.MinValue;
 			int max = Int(args, "max", 250);
 			bool Wanted(int window) => onlyWindow == int.MinValue || window == onlyWindow;
 			return Answer(w =>

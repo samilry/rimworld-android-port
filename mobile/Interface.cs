@@ -17,7 +17,7 @@ namespace PortMobile
 	///   the next touch, and clicks nothing;
 	///   the tooltips of a tap do not linger (the engine's mouse stays where the last finger was);
 	///   the soft keyboard comes up while a text field has the focus;
-	///   a search box (the game's QuickSearchWidget: the info card's, the load dialog's, a mod's) takes the focus only
+	///   a search box (the game's QuickSearchWidget: the info card's, the load dialog's; a mod's, by "search" in its name) takes the focus only
 	///   from a finger on it: given the focus by code (as the info card's is when it opens), it is let go at once, so
 	///   that the keyboard does not come up by itself. Other text fields (a name to type) keep such a focus.
 	///   mobile.txt: searchFocusOnTap=0 lets search boxes keep it too;
@@ -238,12 +238,21 @@ namespace PortMobile
 				return;
 			}
 			string name = GUI.GetNameOfFocusedControl();
-			if (name != null && name.StartsWith("QuickSearchWidget_", StringComparison.Ordinal))
+			if (IsSearchBox(name))
 			{
 				GUI.FocusControl(null);
 				lastFocus = 0;
 				if (Touch.Verbose) Console.WriteLine("[mobile] the search box " + name + " was given the focus without a finger on it: let go");
 			}
+		}
+
+		/// <summary>
+		/// A search box by the name it was given: the game's QuickSearchWidget, and the mods' own (Dubs Mint Menus focuses
+		/// "Search", "BuildSearch", "BenchSearch", "ReSearch" when its windows open).
+		/// </summary>
+		private static bool IsSearchBox(string name)
+		{
+			return name != null && (name.StartsWith("QuickSearchWidget_", StringComparison.Ordinal) || name.IndexOf("search", StringComparison.OrdinalIgnoreCase) >= 0);
 		}
 
 		public static bool FingerDown => Touch.TouchInProgress;
