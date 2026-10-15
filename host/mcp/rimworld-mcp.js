@@ -445,6 +445,10 @@ tool('rw_hash', 'string.GetHashCode() on the phone for each of texts (should be 
   { texts: { type: 'array', items: { type: 'string' } } }, ['texts'],
   async args => textResult(await agent('hash', args)));
 
+tool('rw_tune', 'For measuring: switches frame rate and scheduling settings while the game runs (set: ["frames=90", "schedule=2", "wait=300"], as perfcmd.txt takes them; not saved), and reports the frame wait since the last call.',
+  { set: { type: 'array', items: { type: 'string' } } }, [],
+  async args => textResult(await agent('tune', args)));
+
 tool('rw_save', 'TEST GAMES ONLY: saves the game being played under name (overwrites a save of that name: never a name of the user\'s).',
   { name: str('') }, ['name'],
   async args => textResult(await agent('save', args)));

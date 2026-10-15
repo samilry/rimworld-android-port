@@ -288,7 +288,8 @@ namespace PortMobile
 				case "relation": return AddRelation(args);
 				case "rituals": return Rituals();
 				case "marry": return StartMarriage(args);
-				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, pawn, menu, research, spawn, makepawn, heal, kill, save, hash, relation, rituals, marry, ping)");
+				case "tune": return Tune(args);
+				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, pawn, menu, research, spawn, makepawn, heal, kill, save, hash, relation, rituals, marry, tune, ping)");
 			}
 		}
 
@@ -1236,6 +1237,33 @@ namespace PortMobile
 					w.WriteNumberValue(t.GetHashCode());
 				}
 				w.WriteEndArray();
+			});
+		}
+
+		/// <summary>
+		/// For measuring: settings of the frame rate and the scheduling switched while the game runs (args.set, e.g.
+		/// ["frames=90", "schedule=2", "wait=300"]: what perfcmd.txt takes; not saved to mobile.txt), and the report of the
+		/// frame wait since the last call.
+		/// </summary>
+		private static string Tune(JsonElement args)
+		{
+			if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("set", out JsonElement list) && list.ValueKind == JsonValueKind.Array)
+			{
+				foreach (JsonElement item in list.EnumerateArray())
+				{
+					string[] parts = (item.GetString() ?? "").Split(new[] { '=' }, 2);
+					string name = parts[0].Trim(), value = parts.Length == 2 ? parts[1].Trim() : "1";
+					if (!FrameRate.Set(name, value))
+					{
+						Sched.Set(name, value);
+					}
+				}
+			}
+			return Answer(w =>
+			{
+				w.WriteString("frameRate", FrameRate.Describe());
+				w.WriteString("wait", FrameRate.DescribeWait());
+				w.WriteString("sched", Sched.Describe());
 			});
 		}
 
