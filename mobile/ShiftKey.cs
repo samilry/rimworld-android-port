@@ -74,10 +74,11 @@ namespace PortMobile
 			}
 		}
 
-		/// <summary>
-		/// Drawn at the start of the play screen's interface: the game looks at clicks on the map last, so a press on
-		/// the button is used up before the map can take it for a click on the ground.
-		/// </summary>
+		// The button is a window of the top layer (as tooltips are): the inspector's tabs open over the left edge whenever
+		// a colonist is selected, and a button under them could not be pressed just when it is wanted.
+		private const int WindowId = 73195733;
+
+		/// <summary>From the end of the play screen's interface, every frame: the button's window is asked for again.</summary>
 		public static void OnGui()
 		{
 			if (!enabled || Current.ProgramState != ProgramState.Playing || Current.Game == null || Find.UIRoot == null || LongEventHandler.ShouldWaitForEvent)
@@ -88,7 +89,13 @@ namespace PortMobile
 			{
 				return;
 			}
-			var rect = new Rect(atX >= 0f ? atX : 14f, atY >= 0f ? atY : Mathf.Round(UI.screenHeight * 0.38f), Width, Height);
+			var screenRect = new Rect(atX >= 0f ? atX : 14f, atY >= 0f ? atY : Mathf.Round(UI.screenHeight * 0.38f), Width, Height);
+			Find.WindowStack.ImmediateWindow(WindowId, screenRect, WindowLayer.Super, DrawButton, doBackground: false, absorbInputAroundWindow: false, shadowAlpha: 0f);
+		}
+
+		private static void DrawButton()
+		{
+			var rect = new Rect(0f, 0f, Width, Height);
 			if (Event.current.type == EventType.Repaint)
 			{
 				Color colour = GUI.color;

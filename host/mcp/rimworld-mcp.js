@@ -336,10 +336,12 @@ tool('rw_screen',
   async args => textResult(await agent('screen', { contains: args.contains, window: args.window, max: args.max || 150 })));
 
 tool('rw_click',
-  'Taps the control (or text) that says `text`, found through rw_screen: an exact match first, then one that contains it. nth picks among several; window narrows to "top", "map" or a window index.',
+  'Taps the control (or text) that says `text`, found through rw_screen: an exact match first, then one that contains it. nth picks among several; window narrows to "top" (the topmost window with a match), "map" or a window index.',
   { text: str('the label'), nth: num('0 = first'), window: str('"top", "map" or an index') }, ['text'],
   async args => {
-    const screen = await agent('screen', { contains: args.text, window: args.window, max: 400 });
+    // "top": the topmost window that has a match (the topmost window itself may be a title or a tooltip).
+    const topOnly = args.window === 'top';
+    const screen = await agent('screen', { contains: args.text, window: topOnly ? undefined : args.window, max: 400 });
     const wanted = args.text.toLowerCase();
     const candidates = []
       .concat(screen.controls.filter(c => c.t).map(c => ({ ...c, from: 'control' })))
@@ -348,6 +350,10 @@ tool('rw_click',
       const parts = c.t.toLowerCase().split(' | ');
       return parts.includes(wanted) ? 0 : c.from === 'control' ? 1 : 2;
     };
+    if (topOnly && candidates.length) {
+      const topWindow = Math.max(...candidates.map(c => c.w));
+      for (let i = candidates.length - 1; i >= 0; i--) if (candidates[i].w !== topWindow) candidates.splice(i, 1);
+    }
     candidates.sort((a, b) => score(a) - score(b) || b.w - a.w);
     const pick = candidates[args.nth || 0];
     if (!pick) return { ...textResult('nothing on the screen says "' + args.text + '"'), isError: true };
@@ -368,7 +374,7 @@ tool('rw_state', 'The game\'s state: program state, loading, windows, and in a g
   async () => textResult(await agent('state')));
 
 tool('rw_find', 'Things on the current map whose id, def name or label holds query (nearest to the camera first), with their cell and, when visible, their screen position.',
-  { query: str('part of a label, def name, or an id'), kind: str('pawn, building, item, plant or any'), limit: num('default 20') }, ['query'],
+  { query: str('part of a label, def name, or an id'), kind: str('pawn, hostile (pawns hostile to the colony), building, item, plant or any'), limit: num('default 20') }, ['query'],
   async args => textResult(await agent('find', args)));
 
 tool('rw_camera', 'Moves the camera to a thing (id) or a cell (x, z); zoom sets the view size (11 close ... 60 far).',
@@ -397,6 +403,14 @@ tool('rw_cell', 'Where a map cell is on the screen (phone px).',
 
 tool('rw_zones', 'The zones of the current map (growing, stockpile, ...) with their size, bounds and crop.', {}, [],
   async () => textResult(await agent('zones')));
+
+tool('rw_incident', 'For testing: fires an incident on the current map now (def, e.g. TraderCaravanArrival, RaidEnemy, VisitorGroup; points optional). Without def, lists incident defs whose name holds query.',
+  { def: str(''), points: num(''), query: str('') }, [],
+  async args => textResult(await agent('incident', args)));
+
+tool('rw_world', 'The world: the player\'s caravans (pawns, tile, moving, inspect text) and the nearest settlements (faction, hostile, can trade, distance), with screen positions while the world is shown.',
+  { limit: num('settlements, default 12'), from: str('measure from this caravan instead of home') }, [],
+  async args => textResult(await agent('world', args)));
 
 tool('rw_log', 'The game\'s log since the last call (the first call only sets the starting point): errors with their stacks, counted. all: true also lists warnings and other lines. Secrets (API keys) are masked.',
   { all: { type: 'boolean' }, max_lines: num('other lines shown with all, default 60') }, [],

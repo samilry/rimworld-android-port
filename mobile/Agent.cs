@@ -271,7 +271,9 @@ namespace PortMobile
 				case "messages": return RecentMessages(args);
 				case "cell": return CellOnScreen(args);
 				case "zones": return Zones();
-				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, ping)");
+				case "incident": return FireIncident(args);
+				case "world": return WorldObjects(args);
+				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, ping)");
 			}
 		}
 
@@ -508,7 +510,7 @@ namespace PortMobile
 			var found = new List<Thing>();
 			foreach (Thing thing in map.listerThings.AllThings)
 			{
-				bool kindFits = kind == "pawn" ? thing is Pawn : kind == "building" ? thing.def.category == ThingCategory.Building : kind == "item" ? thing.def.category == ThingCategory.Item : kind == "plant" ? thing is Plant : true;
+				bool kindFits = kind == "hostile" ? thing is Pawn hp && hp.HostileTo(Faction.OfPlayer) && !hp.Dead : kind == "pawn" ? thing is Pawn : kind == "building" ? thing.def.category == ThingCategory.Building : kind == "item" ? thing.def.category == ThingCategory.Item : kind == "plant" ? thing is Plant : true;
 				if (!kindFits)
 				{
 					continue;
@@ -537,6 +539,21 @@ namespace PortMobile
 					if (thing.Faction != null)
 					{
 						w.WriteString("faction", thing.Faction == Faction.OfPlayer ? "player" : thing.Faction.Name);
+					}
+					if (thing is Pawn pawn)
+					{
+						if (pawn.HostileTo(Faction.OfPlayer))
+						{
+							w.WriteBoolean("hostile", true);
+						}
+						if (pawn.Downed)
+						{
+							w.WriteBoolean("downed", true);
+						}
+						if (pawn.Drafted)
+						{
+							w.WriteBoolean("drafted", true);
+						}
 					}
 					if (ScreenPoint(thing.DrawPos, out float x, out float y))
 					{
@@ -682,6 +699,163 @@ namespace PortMobile
 					string tip = item.ArchivedTooltip ?? "";
 					w.WriteString("text", tip.Length > 300 ? tip.Substring(0, 300) + "..." : tip);
 					w.WriteEndObject();
+				}
+				w.WriteEndArray();
+			});
+		}
+
+		/// <summary>
+		/// For testing: fires an incident on the current map as the storyteller would (args: def = an IncidentDef name, e.g.
+		/// TraderCaravanArrival, RaidEnemy, VisitorGroup, ManhunterPack; points optional). Without def: the incident defs
+		/// whose name holds args.query, so that one can be found.
+		/// </summary>
+		private static string FireIncident(JsonElement args)
+		{
+			if (!Playing)
+			{
+				return Failure("no map is shown");
+			}
+			string name = Str(args, "def");
+			if (string.IsNullOrEmpty(name))
+			{
+				string query = Str(args, "query", "");
+				var found = DefDatabase<IncidentDef>.AllDefsListForReading.Where(d => d.defName.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0).Select(d => d.defName).Take(60).ToList();
+				return Answer(w =>
+				{
+					w.WriteStartArray("incidents");
+					foreach (string n in found)
+					{
+						w.WriteStringValue(n);
+					}
+					w.WriteEndArray();
+				});
+			}
+			IncidentDef def = DefDatabase<IncidentDef>.GetNamedSilentFail(name);
+			if (def == null)
+			{
+				return Failure("no incident " + name + " (ask with query)");
+			}
+			IncidentParms parms = StorytellerUtility.DefaultParmsNow(def.category, Find.CurrentMap);
+			if (Has(args, "points"))
+			{
+				parms.points = Float(args, "points", parms.points);
+			}
+			parms.forced = true;
+			bool fired = def.Worker.TryExecute(parms);
+			float points = parms.points;
+			return Answer(w =>
+			{
+				w.WriteString("incident", def.defName);
+				w.WriteBoolean("fired", fired);
+				w.WriteNumber("points", Mathf.Round(points));
+			});
+		}
+
+		/// <summary>
+		/// The world: the player's caravans (pawns, where, moving to), and the settlements nearest to the home map (or to
+		/// args.from, a caravan's label) with faction, distance, whether one can trade there; with the screen position of
+		/// each when the world is shown. args: limit (settlements, default 12).
+		/// </summary>
+		private static string WorldObjects(JsonElement args)
+		{
+			if (Current.ProgramState != ProgramState.Playing)
+			{
+				return Failure("not in a game");
+			}
+			int limit = Int(args, "limit", 12);
+			bool worldShown = !WorldRendererUtility.DrawingMap;
+			Map home = Find.AnyPlayerHomeMap;
+			PlanetTile origin = home != null ? home.Tile : PlanetTile.Invalid;
+			string from = Str(args, "from");
+			foreach (Caravan c in Find.WorldObjects.Caravans)
+			{
+				if (from != null && c.IsPlayerControlled && c.Label.IndexOf(from, StringComparison.OrdinalIgnoreCase) >= 0)
+				{
+					origin = c.Tile;
+				}
+			}
+			void Screen(Utf8JsonWriter w, WorldObject o)
+			{
+				if (!worldShown)
+				{
+					return;
+				}
+				Vector3 world = o.DrawPos;
+				Vector3 toCamera = Find.WorldCamera.transform.position - world;
+				if (Vector3.Dot(toCamera, world) <= 0f)
+				{
+					return; // the other side of the planet
+				}
+				Vector2 ui = GenWorldUI.WorldToUIPosition(world);
+				float x = ui.x * Prefs.UIScale, y = ui.y * Prefs.UIScale;
+				if (x >= 0f && y >= 0f && x < UnityEngine.Screen.width && y < UnityEngine.Screen.height)
+				{
+					w.WriteStartArray("screen");
+					w.WriteNumberValue(Mathf.Round(x));
+					w.WriteNumberValue(Mathf.Round(y));
+					w.WriteEndArray();
+				}
+			}
+			return Answer(w =>
+			{
+				w.WriteBoolean("worldShown", worldShown);
+				if (home != null)
+				{
+					w.WriteNumber("homeTile", home.Tile.tileId);
+				}
+				w.WriteStartArray("caravans");
+				foreach (Caravan c in Find.WorldObjects.Caravans)
+				{
+					if (!c.IsPlayerControlled)
+					{
+						continue;
+					}
+					w.WriteStartObject();
+					w.WriteString("label", c.Label);
+					w.WriteNumber("tile", c.Tile.tileId);
+					w.WriteBoolean("moving", c.pather != null && c.pather.Moving);
+					if (c.pather != null && c.pather.Moving)
+					{
+						w.WriteNumber("destination", c.pather.Destination.tileId);
+					}
+					w.WriteStartArray("pawns");
+					foreach (Pawn pawn in c.PawnsListForReading)
+					{
+						w.WriteStringValue(pawn.LabelShort);
+					}
+					w.WriteEndArray();
+					string inspect = "";
+					try
+					{
+						inspect = c.GetInspectString();
+					}
+					catch (Exception e)
+					{
+						inspect = "(" + e.GetType().Name + ")";
+					}
+					w.WriteString("inspect", inspect.Length > 500 ? inspect.Substring(0, 500) : inspect);
+					Screen(w, c);
+					w.WriteEndObject();
+				}
+				w.WriteEndArray();
+				w.WriteStartArray("settlements");
+				if (origin.Valid)
+				{
+					var near = Find.WorldObjects.Settlements.Where(st => st.Faction != Faction.OfPlayer && st.Tile.Layer == origin.Layer)
+						.Select(st => (st, d: Find.WorldGrid.ApproxDistanceInTiles(origin, st.Tile)))
+						.OrderBy(t => t.d).Take(limit).ToList();
+					foreach (var (st, d) in near)
+					{
+						w.WriteStartObject();
+						w.WriteString("label", st.LabelCap);
+						w.WriteString("faction", st.Faction?.Name);
+						w.WriteBoolean("hostile", st.Faction != null && st.Faction.HostileTo(Faction.OfPlayer));
+						w.WriteBoolean("canTrade", st.CanTradeNow);
+						w.WriteNumber("tile", st.Tile.tileId);
+						w.WriteNumber("distance", Mathf.Round(d));
+						Screen(w, st);
+						w.WriteEndObject();
+					}
 				}
 				w.WriteEndArray();
 			});

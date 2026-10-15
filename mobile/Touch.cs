@@ -196,7 +196,8 @@ namespace PortMobile
 			{
 				if (OnWorld)
 				{
-					return Find.WorldSelector != null && Find.WorldSelector.NumSelectedObjects > 0;
+					// The route planner (planning a caravan's way) adds a waypoint on a right click, with nothing selected.
+					return (Find.WorldSelector != null && Find.WorldSelector.NumSelectedObjects > 0) || (Find.World != null && Find.WorldRoutePlanner.Active);
 				}
 				return Playing && Find.Selector.SelectedPawns.Count > 0;
 			}
