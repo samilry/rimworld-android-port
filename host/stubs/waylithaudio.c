@@ -36,6 +36,7 @@ EXPORT uint64_t wa_sound_load_memory_stream(void* data, size_t length, int copy)
 EXPORT uint64_t wa_sound_load_pcm(void* data, uint64_t frames, uint32_t channels, uint32_t rate, int format) { (void)data; (void)frames; (void)channels; (void)rate; (void)format; return handle(); }
 EXPORT int16_t* wa_sound_pcm(uint64_t sound) { (void)sound; return NULL; }
 EXPORT uint32_t wa_sound_rate(uint64_t sound) { (void)sound; return 0; }
+EXPORT uint64_t wa_sound_resident_bytes(uint64_t sound) { (void)sound; return 0; }
 EXPORT void wa_sound_release(uint64_t sound) { (void)sound;  }
 EXPORT uint64_t wa_time_frames(void) {  return 0; }
 EXPORT void wa_update(void) {   }

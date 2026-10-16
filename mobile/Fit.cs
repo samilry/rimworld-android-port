@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Reflection;
 using Brutal.Numerics;
 using HarmonyLib;
 using RimWorld;
@@ -41,6 +42,15 @@ namespace PortMobile
 				Console.WriteLine("[mobile] uiScale not read: " + e.Message);
 			}
 			OfferInOptions();
+			// 1.7.4980 caps the scale at what keeps a 1024 x 768 window on the screen (ResolutionUtility.ResolveUIScale:
+			// at most the larger of the smallest choice and min(width / 1024, height / 768)), 1.66 on this screen: the
+			// phone's 1.85 was cut down, and Update below would have taken that for the player's choice and saved it.
+			// Here the windows that do not fit are made smaller one by one (WindowFit), so the scale is the one set.
+			MethodInfo resolve = AccessTools.Method(typeof(ResolutionUtility), "ResolveUIScale");
+			if (resolve != null)
+			{
+				harmony.Patch(resolve, prefix: new HarmonyMethod(typeof(UiScale), nameof(Uncapped)));
+			}
 			harmony.Patch(AccessTools.Method(typeof(Window), nameof(Window.WindowOnGUI)), prefix: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.Before)), finalizer: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.After)));
 			try
 			{
@@ -71,6 +81,16 @@ namespace PortMobile
 			{
 				Console.WriteLine("[mobile] could not add the phone's UI scale to the options: " + e.Message);
 			}
+		}
+
+		/// <summary>
+		/// Prefix of ResolutionUtility.ResolveUIScale (1.7.4980): the scale set, times the system's display scaling as the
+		/// game counts it (1 on the phone: the GLFW shim's content scale is 1), without the cap.
+		/// </summary>
+		public static bool Uncapped(float preference, ref float __result)
+		{
+			__result = preference * ResolutionUtility.DpiScale;
+			return false;
 		}
 
 		/// <summary>Every frame.</summary>

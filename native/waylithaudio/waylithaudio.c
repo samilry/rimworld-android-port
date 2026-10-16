@@ -557,6 +557,20 @@ EXPORT int16_t* wa_sound_pcm(uint64_t sound)
     }
     return s->pcm;
 }
+// The memory a sound holds now (1.7.4980 counts it for each sound it loads, AudioClip's Bytes): its samples while they
+// are decoded, and a copy of the compressed data it keeps. Data that lies in an asset pack's mapping, and files, are
+// not the sound's.
+EXPORT uint64_t wa_sound_resident_bytes(uint64_t sound)
+{
+    Sound* s = (Sound*)(uintptr_t)sound;
+    if (!s) return 0;
+    pthread_mutex_lock(&g_lock);
+    uint64_t bytes = 0;
+    if (s->pcm) bytes += s->pcmBytes ? s->pcmBytes : s->pcmFrames * s->channels * sizeof(int16_t);
+    if (s->owned) bytes += s->length;
+    pthread_mutex_unlock(&g_lock);
+    return bytes;
+}
 EXPORT void wa_sound_release(uint64_t sound)
 {
     Sound* s = (Sound*)(uintptr_t)sound;
