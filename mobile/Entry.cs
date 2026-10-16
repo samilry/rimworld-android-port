@@ -39,6 +39,7 @@ namespace PortMobile
 			Perf.Start(harmony);
 			WorldLabels.Start(harmony);
 			ResearchTree.Start(harmony);
+			Squad.Start(harmony);
 			Counters.Start(harmony);
 			MemTrim.Start(harmony);
 			BakeDepth.Start(harmony);

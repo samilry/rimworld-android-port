@@ -19,6 +19,8 @@ namespace PortMobile
 	///   drag           moves the camera (the ground follows the finger)
 	///   hold           with something selected: a right click (orders); otherwise the selection box starts and
 	///                  moving the finger then selects an area
+	///   with a drafted squad selected (Squad): a tap is the order (a right click) or, on one of the colony's own,
+	///                  adds it to the selection or takes it out; a hold is the left button (select, or a box)
 	///   two fingers    pinch to zoom around the fingers, drag to move
 	/// on the interface
 	///   tap, drag      the left button, as a mouse
@@ -108,6 +110,10 @@ namespace PortMobile
 		private static float listX, listY;
 		// The touch caught a list that was still moving: lifting the finger then clicks nothing.
 		private static bool caughtList;
+		// The touch began with a drafted squad selected (Squad): a tap on the map orders, a hold selects.
+		private static bool squadTouch;
+		// Where the last finger lifted (its last movement often comes in the same batch as the lifting).
+		private static Vector2 liftedAt;
 
 		public static bool Verbose;
 
@@ -250,13 +256,13 @@ namespace PortMobile
 				Button(Right, false);
 			}
 			Agent.Update();
-			Replay.Feed();
+			bool replayed = Replay.Feed();
 			TouchSizes.BeforeInterface();
 			ShiftKey.Update();
 			UiScale.Update();
 			Interface.Update();
 			MapTools.Update();
-			bool changed = Drain();
+			bool changed = Drain() | replayed;
 			int count = fingers.Count;
 			if (count == 0)
 			{
@@ -277,9 +283,27 @@ namespace PortMobile
 					Interface.EndListScroll(true);
 				}
 				bool tapInList = mode == Mode.ListPending && !caughtList;
+				bool squadTap = mode == Mode.Map && squadTouch;
+				if (squadTap)
+				{
+					// The release that follows selects nothing: the tap is an order, or adds to the squad (below).
+					KeepBoxOff();
+				}
+				if (mode == Mode.Box && dragged)
+				{
+					// The box ends where the finger lifted, not where it was a frame before.
+					Cursor(liftedAt);
+				}
 				// The last finger has lifted: the release reaches the game where the finger was.
 				if (leftDown) Button(Left, false);
 				if (middleDown) Button(Middle, false);
+				if (squadTap && !Squad.TapJoins())
+				{
+					// A right click where the finger was: the squad's order.
+					Trace("squad order at " + last);
+					Button(Right, true);
+					releaseRightNextFrame = 2;
+				}
 				mode = Mode.None;
 				gestureWindow = null;
 				if (tapInList)
@@ -324,6 +348,7 @@ namespace PortMobile
 			{
 				// A new touch: the press goes to the game at once, so that the interface responds like to a mouse.
 				mode = Mode.Pending;
+				squadTouch = Squad.Active;
 				Interface.TouchBegan();
 				first.seen = true;
 				framesDown = 0;
@@ -386,7 +411,11 @@ namespace PortMobile
 					}
 					else if (held)
 					{
-						if (SomethingToOrder)
+						if (squadTouch)
+						{
+							mode = Mode.Box; // the game's own left button: lifting selects what is there, moving draws a box
+						}
+						else if (SomethingToOrder)
 						{
 							// A right click where the finger rests: orders for what is selected.
 							KeepBoxOff();
@@ -670,6 +699,10 @@ namespace PortMobile
 					{
 						finger.pos = pos;
 						fingers.Remove(finger);
+						if (fingers.Count == 0)
+						{
+							liftedAt = pos;
+						}
 						if (!finger.seen && type == Up && fingers.Count == 0 && mode == Mode.None)
 						{
 							quickTap = finger;
@@ -693,18 +726,19 @@ namespace PortMobile
 			private static int checkCountdown;
 			private static bool verboseBefore;
 
-			public static void Feed()
+			/// <summary>Plays the steps that are due; true if a finger moved (as Drain says for real fingers).</summary>
+			public static bool Feed()
 			{
 				if (steps.Count == 0)
 				{
 					if (--checkCountdown > 0)
 					{
-						return;
+						return false;
 					}
 					checkCountdown = 30;
 					if (!File.Exists(FilePath))
 					{
-						return;
+						return false;
 					}
 					var culture = System.Globalization.CultureInfo.InvariantCulture;
 					foreach (string line in File.ReadAllLines(FilePath))
@@ -723,17 +757,19 @@ namespace PortMobile
 					verboseBefore = Verbose;
 					Verbose = true;
 					Log("replaying " + steps.Count + " scripted touch events");
-					return;
+					return false;
 				}
+				bool changed = false;
 				while (steps.Count > 0 && Now - started >= steps.Peek().at)
 				{
 					var step = steps.Dequeue();
-					Apply(step.type, 1000 + step.id, step.pos);
+					changed |= Apply(step.type, 1000 + step.id, step.pos);
 				}
 				if (steps.Count == 0)
 				{
 					Verbose = verboseBefore;
 				}
+				return changed;
 			}
 		}
 	}
