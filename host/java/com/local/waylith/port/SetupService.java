@@ -33,6 +33,10 @@ public final class SetupService extends Service
                 int code;
                 try
                 {
+                    // The runtime's crypto shim (Cecil hashes public keys with SHA1 when it writes an assembly) has to be
+                    // loaded through Java first, so that its JNI_OnLoad gets the VM and this app's class loader; the
+                    // game's process does the same (host.c, java_load_library). Without it: a null pointer in the shim.
+                    System.load(libdir + "/libSystem.Security.Cryptography.Native.Android.so");
                     System.loadLibrary("porthost");
                     code = runSetup(ext.getPath(), root, libdir);
                 }
