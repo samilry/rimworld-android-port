@@ -85,6 +85,7 @@ static int opt_identity = 1;
 static int opt_coherentOnly = 1;
 static int opt_flush = 0;
 static int opt_logFrames = 5;
+static int opt_noDebugUtils; // "debugutils=0": VK_EXT_debug_utils is hidden from the engine (to try the stand-ins below on a driver that has it)
 
 static long g_presents, g_acquires, g_presentFailures, g_acquireFailures;
 
@@ -453,6 +454,7 @@ static void read_options(void)
         else if (strcmp(tok, "frames") == 0) opt_logFrames = v;
         else if (strcmp(tok, "memlog") == 0) opt_memlog = v;
         else if (strcmp(tok, "pools") == 0) opt_pools = v;
+        else if (strcmp(tok, "debugutils") == 0) opt_noDebugUtils = !v;
     }
 }
 
@@ -995,10 +997,63 @@ static PFN_vkVoidFunction device_hook(const char* name, PFN_vkVoidFunction real)
     return NULL;
 }
 
+// VK_EXT_debug_utils labels and names where the driver has no such extension (Adreno 650 with its 2021 driver, a
+// Xiaomi Mi 10 Pro): the engine's release build still labels every render pass (FrameRenderer.BeginPassDebugLabel,
+// compiled with DEV_OR_TESTER) without asking whether the extension is there, and calls the null pointer it was
+// given: SIGSEGV at pc 0 on the RenderThread two seconds after the start. These do nothing instead.
+static VKAPI_ATTR void VKAPI_CALL noop_CmdLabel(VkCommandBuffer cb, const VkDebugUtilsLabelEXT* label) { (void)cb; (void)label; }
+static VKAPI_ATTR void VKAPI_CALL noop_CmdEndLabel(VkCommandBuffer cb) { (void)cb; }
+static VKAPI_ATTR void VKAPI_CALL noop_QueueLabel(VkQueue queue, const VkDebugUtilsLabelEXT* label) { (void)queue; (void)label; }
+static VKAPI_ATTR void VKAPI_CALL noop_QueueEndLabel(VkQueue queue) { (void)queue; }
+static VKAPI_ATTR VkResult VKAPI_CALL noop_SetObjectName(VkDevice device, const VkDebugUtilsObjectNameInfoEXT* info) { (void)device; (void)info; return VK_SUCCESS; }
+static VKAPI_ATTR VkResult VKAPI_CALL noop_SetObjectTag(VkDevice device, const VkDebugUtilsObjectTagInfoEXT* info) { (void)device; (void)info; return VK_SUCCESS; }
+
+static PFN_vkVoidFunction debug_utils_noop(const char* name)
+{
+    PFN_vkVoidFunction noop = NULL;
+    if (strcmp(name, "vkCmdBeginDebugUtilsLabelEXT") == 0 || strcmp(name, "vkCmdInsertDebugUtilsLabelEXT") == 0) noop = (PFN_vkVoidFunction)noop_CmdLabel;
+    else if (strcmp(name, "vkCmdEndDebugUtilsLabelEXT") == 0) noop = (PFN_vkVoidFunction)noop_CmdEndLabel;
+    else if (strcmp(name, "vkQueueBeginDebugUtilsLabelEXT") == 0 || strcmp(name, "vkQueueInsertDebugUtilsLabelEXT") == 0) noop = (PFN_vkVoidFunction)noop_QueueLabel;
+    else if (strcmp(name, "vkQueueEndDebugUtilsLabelEXT") == 0) noop = (PFN_vkVoidFunction)noop_QueueEndLabel;
+    else if (strcmp(name, "vkSetDebugUtilsObjectNameEXT") == 0) noop = (PFN_vkVoidFunction)noop_SetObjectName;
+    else if (strcmp(name, "vkSetDebugUtilsObjectTagEXT") == 0) noop = (PFN_vkVoidFunction)noop_SetObjectTag;
+    if (noop)
+    {
+        static int logged;
+        if (logged++ < 8) LOGI("vulkan: %s is missing (no VK_EXT_debug_utils); a stand-in that does nothing is used", name);
+    }
+    return noop;
+}
+
+static PFN_vkEnumerateInstanceExtensionProperties real_EnumerateInstanceExtensions;
+
+static VKAPI_ATTR VkResult VKAPI_CALL hook_EnumerateInstanceExtensions(const char* layer, uint32_t* count, VkExtensionProperties* props)
+{
+    if (!opt_noDebugUtils || layer) return real_EnumerateInstanceExtensions(layer, count, props);
+    uint32_t n = 0;
+    VkResult r = real_EnumerateInstanceExtensions(NULL, &n, NULL);
+    if (r != VK_SUCCESS) return r;
+    VkExtensionProperties* all = (VkExtensionProperties*)calloc(n ? n : 1, sizeof *all);
+    r = real_EnumerateInstanceExtensions(NULL, &n, all);
+    uint32_t kept = 0;
+    for (uint32_t i = 0; i < n; i++) if (strcmp(all[i].extensionName, "VK_EXT_debug_utils") != 0) all[kept++] = all[i];
+    if (!props)
+    {
+        *count = kept;
+        free(all);
+        return VK_SUCCESS;
+    }
+    uint32_t copied = *count < kept ? *count : kept;
+    memcpy(props, all, copied * sizeof *all);
+    *count = copied;
+    free(all);
+    return copied < kept ? VK_INCOMPLETE : VK_SUCCESS;
+}
+
 static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL hook_GetDeviceProcAddr(VkDevice device, const char* name)
 {
     PFN_vkVoidFunction real = g_gdpa(device, name);
-    if (!real) return NULL;
+    if (!real) return debug_utils_noop(name);
     PFN_vkVoidFunction hook = device_hook(name, real);
     return hook ? hook : real;
 }
@@ -1007,9 +1062,14 @@ API VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance in
 {
     if (!ensure() || !name) return NULL;
     PFN_vkVoidFunction real = g_gipa(instance, name);
-    if (!real) return NULL;
+    if (!real) return instance ? debug_utils_noop(name) : NULL;
     if (instance && !g_instance) g_instance = instance;
     if (strcmp(name, "vkGetInstanceProcAddr") == 0) return (PFN_vkVoidFunction)vkGetInstanceProcAddr;
+    if (strcmp(name, "vkEnumerateInstanceExtensionProperties") == 0)
+    {
+        real_EnumerateInstanceExtensions = (PFN_vkEnumerateInstanceExtensionProperties)real;
+        return opt_noDebugUtils ? (PFN_vkVoidFunction)hook_EnumerateInstanceExtensions : real;
+    }
     if (strcmp(name, "vkCreateInstance") == 0) { real_CreateInstance = (PFN_vkCreateInstance)real; return (PFN_vkVoidFunction)hook_CreateInstance; }
     if (strcmp(name, "vkCreateDevice") == 0) { real_CreateDevice = (PFN_vkCreateDevice)real; return (PFN_vkVoidFunction)hook_CreateDevice; }
     if (strcmp(name, "vkGetDeviceProcAddr") == 0) { g_gdpa = (PFN_vkGetDeviceProcAddr)real; return (PFN_vkVoidFunction)hook_GetDeviceProcAddr; }
