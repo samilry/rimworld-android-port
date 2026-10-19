@@ -61,6 +61,11 @@ if [ -n "$TEST_PACKAGE" ]; then
 fi
 "$BT/aapt2.exe" link -o "$OUT/unsigned.apk" --manifest "$MANIFEST" -I "$SDK/platforms/android-34/android.jar" --min-sdk-version 26 --target-sdk-version 34
 (cd "$OUT/apk" && "$JDK/bin/jar.exe" uf ../unsigned.apk lib classes.dex)
+# The notices, in every APK: host/licenses/NOTICE.txt (the notice RimWorld's EULA asks of mods, the open source parts and
+# their licenses) and the license texts; the tester's import dialog shows them (MainActivity.showNotices).
+mkdir -p "$OUT/apk/assets/licenses"
+cp host/licenses/* "$OUT/apk/assets/licenses/"
+(cd "$OUT/apk" && "$JDK/bin/jar.exe" uf ../unsigned.apk assets/licenses)
 
 if [ "$PAYLOAD" = 1 ]; then
   # What host/stage.sh puts on the phone, in the layout of the app's external files folder.

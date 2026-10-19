@@ -14,10 +14,15 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.method.LinkMovementMethod;
+import android.text.style.ClickableSpan;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
@@ -562,9 +567,23 @@ public final class MainActivity extends NativeActivity
                     {
                         text = "上次没有成功：" + shownProblem + "\n\n" + text;
                     }
-                    new AlertDialog.Builder(MainActivity.this)
+                    // The notice RimWorld's EULA asks of mods, and the way to the licenses of what the APK contains.
+                    SpannableStringBuilder message = new SpannableStringBuilder(text);
+                    message.append("\n\n本程序是 RimWorld 的非官方安卓移植，免费提供，与 Ludeon Studios 无关，也未经其认可。\n")
+                        .append(LUDEON_NOTICE).append("\n\n");
+                    int start = message.length();
+                    message.append("关于与开源许可");
+                    message.setSpan(new ClickableSpan()
+                    {
+                        @Override
+                        public void onClick(View view)
+                        {
+                            showNotices();
+                        }
+                    }, start, message.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    AlertDialog dialog = new AlertDialog.Builder(MainActivity.this)
                         .setTitle("导入你自己的 RimWorld")
-                        .setMessage(text)
+                        .setMessage(message)
                         .setCancelable(false)
                         .setPositiveButton("选择压缩包", new DialogInterface.OnClickListener()
                         {
@@ -588,6 +607,11 @@ public final class MainActivity extends NativeActivity
                             }
                         })
                         .show();
+                    TextView shown = (TextView) dialog.findViewById(android.R.id.message);
+                    if (shown != null)
+                    {
+                        shown.setMovementMethod(LinkMovementMethod.getInstance());
+                    }
                 }
             });
             String[] event = takeGameEvent();
@@ -843,6 +867,95 @@ public final class MainActivity extends NativeActivity
         catch (IOException none)
         {
             return "";
+        }
+    }
+
+    /** RimWorld's EULA: the notice a mod made with Ludeon's materials has to carry, word for word. */
+    private static final String LUDEON_NOTICE = "Portions of the materials used to create this content/mod are trademarks and/or copyrighted works of Ludeon Studios Inc. "
+        + "All rights reserved by Ludeon. This content/mod is not official and is not endorsed by Ludeon.";
+
+    /** About and licenses: assets/licenses/NOTICE.txt (host/licenses), then the license texts themselves. On the UI thread. */
+    private void showNotices()
+    {
+        new AlertDialog.Builder(this)
+            .setTitle("关于与开源许可")
+            .setMessage(readAsset("licenses/NOTICE.txt"))
+            .setPositiveButton("关闭", null)
+            .setNeutralButton("许可原文", new DialogInterface.OnClickListener()
+            {
+                public void onClick(DialogInterface dialog, int which)
+                {
+                    showLicenseList();
+                }
+            })
+            .show();
+    }
+
+    private void showLicenseList()
+    {
+        List<String> names = new ArrayList<String>();
+        try
+        {
+            for (String name : getAssets().list("licenses"))
+            {
+                if (!name.equals("NOTICE.txt"))
+                {
+                    names.add(name);
+                }
+            }
+        }
+        catch (IOException ignored)
+        {
+        }
+        java.util.Collections.sort(names, String.CASE_INSENSITIVE_ORDER);
+        final String[] items = names.toArray(new String[0]);
+        new AlertDialog.Builder(this)
+            .setTitle("许可原文")
+            .setItems(items, new DialogInterface.OnClickListener()
+            {
+                public void onClick(DialogInterface dialog, int which)
+                {
+                    new AlertDialog.Builder(MainActivity.this)
+                        .setTitle(items[which])
+                        .setMessage(readAsset("licenses/" + items[which]))
+                        .setPositiveButton("返回", new DialogInterface.OnClickListener()
+                        {
+                            public void onClick(DialogInterface dialog, int which)
+                            {
+                                showLicenseList();
+                            }
+                        })
+                        .show();
+                }
+            })
+            .setPositiveButton("关闭", null)
+            .show();
+    }
+
+    private String readAsset(String name)
+    {
+        try
+        {
+            InputStream in = getAssets().open(name);
+            try
+            {
+                java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+                byte[] buffer = new byte[16384];
+                int n;
+                while ((n = in.read(buffer)) > 0)
+                {
+                    bytes.write(buffer, 0, n);
+                }
+                return new String(bytes.toByteArray(), "UTF-8").replace("\r\n", "\n").replace("﻿", "");
+            }
+            finally
+            {
+                in.close();
+            }
+        }
+        catch (IOException none)
+        {
+            return "（找不到 " + name + "）";
         }
     }
 

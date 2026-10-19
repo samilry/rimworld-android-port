@@ -1,0 +1,122 @@
+Port17：RimWorld 1.7 安卓移植（测试版）
+关于与许可 / About and licenses
+
+
+一、与 Ludeon Studios 的关系
+----------
+
+本程序是 RimWorld 的非官方安卓移植，性质上是玩家自制的 mod，免费提供，与 Ludeon Studios 无关。
+
+安装包里没有 RimWorld 的任何游戏文件。第一次启动时，由玩家导入自己购买的 RimWorld 1.7（以及自己拥有的 DLC）；没有正版游戏就无法运行。
+
+按 RimWorld 用户协议（EULA）的要求，声明如下：
+
+Portions of the materials used to create this content/mod are trademarks and/or copyrighted works of Ludeon Studios Inc. All rights reserved by Ludeon. This content/mod is not official and is not endorsed by Ludeon.
+
+（中文意思：制作本内容/mod 所用材料的一部分是 Ludeon Studios Inc. 的商标和/或受版权保护的作品，Ludeon 保留所有权利。本内容/mod 不是官方作品，也未经 Ludeon 认可。）
+
+RimWorld 是 Ludeon Studios Inc. 的商标。
+
+
+二、第三方开源组件 / Third-party open source components
+----------
+
+本程序用到下列开源组件，各按自己的许可分发。许可原文就在本文件夹里（在程序里点“许可原文”可以逐个查看），文件名写在每一项的最后。
+
+This program includes the components below, each under its own license; the license texts are in this folder (file names at the end of each entry).
+
+● .NET 10 runtime (Microsoft.NETCore.App.Runtime.android-arm64 10.0.12): libcoreclr.so, libclrjit.so, libSystem.*.so, the class libraries (runtime/), the Java helper classes in classes.dex; System.IO.Hashing 10.0.12. System.Private.CoreLib.dll is the package's with one method changed (string.GetHashCode, as in Ludeon's own runtime) and compiled again.
+MIT License. Copyright (c) .NET Foundation and Contributors.
+https://github.com/dotnet/runtime
+→ dotnet-LICENSE.txt, dotnet-THIRD-PARTY-NOTICES.txt
+
+● Harmony 3.0 (0Harmony.dll, the RimWorld 1.7 build of the Harmony mod; the port rewrites a few of its calls so that it works on Android).
+MIT License. Copyright (c) 2017 Andreas Pardeike.
+https://github.com/pardeike/Harmony
+→ Harmony-LICENSE.txt
+It contains MonoMod (MIT License, Copyright (c) 2015 - 2020 0x0ade, https://github.com/MonoMod/MonoMod → MonoMod-LICENSE.txt) and Iced (MIT License, Copyright (C) 2018-present iced project and contributors, https://github.com/icedland/iced → iced-LICENSE.txt).
+
+● libmm_exhelper.so: MonoMod's native exception helper (MIT, see MonoMod above), rebuilt for Android with LLVM's libunwind linked in.
+
+● Mono.Cecil 0.11.6
+MIT License. Copyright (c) 2008 - 2015 Jb Evain, Copyright (c) 2008 - 2011 Novell, Inc.
+https://github.com/jbevain/cecil
+→ Mono.Cecil-LICENSE.txt
+
+● SteamKit2 3.4.0 (game/workshop/SteamKit2.dll, used by the Workshop downloader)
+GNU Lesser General Public License, version 2.1. Copyright (C) 2018 Ryan Stecker & SteamRE Team.
+Source: https://github.com/SteamRE/SteamKit
+The file is the unmodified library from its NuGet package, kept as a separate DLL; it can be replaced with a build of your own.
+本组件按 LGPL-2.1 分发：文件未作修改、单独存放，可以换成自己编译的版本；源码见上面的网址。
+→ SteamKit2-license.txt, LGPL-2.1.txt
+
+● protobuf-net 3.2.56 and protobuf-net.Core 3.2.56
+Apache License 2.0. Marc Gravell.
+https://github.com/protobuf-net/protobuf-net
+→ protobuf-net-Licence.txt, Apache-2.0.txt
+
+● QRCoder 1.8.1
+MIT License. Copyright (c) 2013-2025 Raffael Herrmann, Copyright (c) 2024-2025 Shane Krueger.
+https://github.com/Shane32/QRCoder
+→ QRCoder-LICENSE.txt
+
+● ZstdSharp 0.8.7, a C# port of Zstandard
+MIT License. Copyright (c) 2021 Oleg Stepanischev.
+https://github.com/oleg-st/ZstdSharp
+Zstandard: BSD License. Copyright (c) Meta Platforms, Inc. and affiliates.
+→ ZstdSharp-LICENSE.txt, zstd-LICENSE.txt
+
+● Vulkan Memory Allocator 3.3.0 (libvma.so)
+MIT License. Copyright (c) 2017-2025 Advanced Micro Devices, Inc.
+https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
+→ VulkanMemoryAllocator-LICENSE.txt
+
+● Vulkan-Headers 1.3.296 (used to build libvma.so and libvulkan.so)
+Apache License 2.0 or MIT License. Copyright The Khronos Group Inc.
+https://github.com/KhronosGroup/Vulkan-Headers
+→ Vulkan-Headers-LICENSE.md, Apache-2.0.txt, Vulkan-Headers-MIT.txt
+
+● Dear ImGui 1.92.2, docking branch (libimgui.so, libimgui_freetype.so)
+MIT License. Copyright (c) 2014-2025 Omar Cornut.
+https://github.com/ocornut/imgui
+→ imgui-LICENSE.txt
+
+● FreeType 2.13.3 (inside libimgui_freetype.so), under the FreeType License:
+Portions of this software are copyright (c) 2024 The FreeType Project (https://freetype.org). All rights reserved.
+→ FreeType-LICENSE.txt, FreeType-FTL.txt
+
+● gli and glm (libgli.so)
+The Happy Bunny License (Modified MIT License) or the MIT License. Copyright (c) 2010 - 2020 G-Truc Creation (gli), Copyright (c) 2005 - G-Truc Creation (glm).
+https://github.com/g-truc/gli, https://github.com/g-truc/glm
+→ gli-LICENSE.txt, glm-copying.txt
+
+● glslang 11.2 (inside libslang.so, from the Android NDK's sources)
+BSD 3-Clause and the other permissive licenses listed in its license file. Copyright The Khronos Group Inc., 3Dlabs Inc. Ltd., LunarG, Inc., Google Inc. and others.
+https://github.com/KhronosGroup/glslang
+→ glslang-LICENSE.txt
+With shaderc's default resource limits (Apache License 2.0, Copyright Google Inc., https://github.com/google/shaderc → shaderc-LICENSE.txt).
+
+● miniaudio 0.11.22 (inside libwaylithaudio.so)
+Public domain (Unlicense) or MIT No Attribution. David Reid.
+https://miniaud.io
+→ miniaudio-LICENSE.txt
+
+● stb_image, stb_image_write (libstb.so) and stb_vorbis (inside libwaylithaudio.so)
+MIT License or public domain. Copyright (c) 2017 Sean Barrett.
+https://github.com/nothings/stb
+→ stb-LICENSE.txt
+
+● android_native_app_glue (inside libporthost.so)
+Apache License 2.0. Copyright (C) 2010 The Android Open Source Project.
+→ android_native_app_glue-NOTICE.txt, Apache-2.0.txt
+
+● LLVM libc++ and libunwind (linked into several of the .so files by the Android NDK's compiler)
+Apache License 2.0 with LLVM Exceptions.
+https://llvm.org
+→ LLVM-LICENSE.txt
+
+
+三、本移植自己的部分
+----------
+
+PortHooks、PortMobile、PortSetup、PortWorkshop，以及 libporthost、libglfw、libvulkan（Vulkan 拦截层）、libsteam_api64（空实现）、libmonomodc 等，是本移植自己写的，不含 Ludeon 的代码。ModRules.txt 是 mod 排序规则表。
