@@ -564,8 +564,34 @@ API void port17_vulkan_window_changed(void)
     }
 }
 
+// The engine makes the new surface before it destroys the old one (WindowRenderContext.ReplaceSurface). When Android
+// hands back the same window and the old surface still holds it, the new one fails with NATIVE_WINDOW_IN_USE (seen
+// on a Redmi K80 Ultra, HyperOS, 2.5 s after the start): the GLFW shim then has the old surface released here and
+// tries again; the engine's own destroy of that handle afterwards is skipped (it may even be the new surface's
+// handle by then, the loader reusing the freed memory).
+static VkSurfaceKHR g_releasedSurfaces[4];
+
+API void port17_vulkan_release_surface(VkInstance instance, VkSurfaceKHR surface, const VkAllocationCallbacks* alloc)
+{
+    if (!surface || !real_DestroySurface) return;
+    if (surface == g_staleSurface) g_staleSurface = VK_NULL_HANDLE;
+    if (surface == g_lastSwapchainSurface) g_lastSwapchainSurface = VK_NULL_HANDLE;
+    for (int i = 0; i < 4; i++) if (!g_releasedSurfaces[i]) { g_releasedSurfaces[i] = surface; break; }
+    LOGI("vulkan: surface %p released early: its window is wanted for a new surface", (void*)surface);
+    real_DestroySurface(instance, surface, alloc);
+}
+
 static VKAPI_ATTR void VKAPI_CALL hook_DestroySurface(VkInstance instance, VkSurfaceKHR surface, const VkAllocationCallbacks* alloc)
 {
+    for (int i = 0; i < 4; i++)
+    {
+        if (surface && g_releasedSurfaces[i] == surface)
+        {
+            g_releasedSurfaces[i] = VK_NULL_HANDLE;
+            LOGI("vulkan: destroy of the early released surface %p skipped", (void*)surface);
+            return;
+        }
+    }
     if (surface && surface == g_staleSurface) { LOGI("vulkan: stale surface %p destroyed", (void*)surface); g_staleSurface = VK_NULL_HANDLE; }
     if (surface == g_lastSwapchainSurface) g_lastSwapchainSurface = VK_NULL_HANDLE;
     real_DestroySurface(instance, surface, alloc);

@@ -417,6 +417,7 @@ internal static class StartupHook
 		AssemblyLoadContext.Default.Resolving += Resolve;
 		PretendProcessPath();
 		LimitGraphicsMemory();
+		PortHooks.Textures.Start();
 		Console.WriteLine("[port17] startup hook installed (Unity assembly names resolve to UnityStubs)");
 		PortDiag.StartIfRequested();
 	}
