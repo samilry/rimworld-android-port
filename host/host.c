@@ -5,7 +5,8 @@
 //   <ext>/game/           the game's own assemblies, Assets.zip, Data/, Rendering/ (from the owner's Steam copy)
 //   <ext>/game/args.txt   optional command line for the launcher, one argument per line
 //   <ext>/home/           HOME: the game's save data lands under it
-// The native libraries (libcoreclr.so, libclrjit.so, libSystem.*.so, our stubs) come with the APK.
+// The native libraries (libcoreclr.so, libclrjit.so, libSystem.*.so, our stubs) come with the APK. An APK built with
+// PAYLOAD=1 also carries runtime/ and game/, unpacked on its first start (java_unpack_payload).
 //
 // Everything the runtime and the game print to stdout/stderr goes to logcat under the tag "port17".
 #include <android/log.h>
@@ -230,6 +231,50 @@ static void java_load_library(struct android_app* app, const char* path)
     }
 }
 
+// Calls Payload.ensure(activity) on the Java side (host/java/.../Payload.java): an APK built with the game's files
+// inside unpacks them into <ext> when they are not there yet or are from another build. Null back: nothing to do or
+// done; otherwise the problem (the player has been shown it).
+static void java_unpack_payload(struct android_app* app)
+{
+    JavaVM* vm = app->activity->vm;
+    JNIEnv* env = NULL;
+    if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK || env == NULL)
+    {
+        LOGE("could not attach to the Java VM");
+        return;
+    }
+    jobject activity = app->activity->clazz;
+    jclass activityClass = (*env)->GetObjectClass(env, activity);
+    jmethodID getClassLoader = (*env)->GetMethodID(env, activityClass, "getClassLoader", "()Ljava/lang/ClassLoader;");
+    jobject loader = (*env)->CallObjectMethod(env, activity, getClassLoader);
+    jclass loaderClass = (*env)->FindClass(env, "java/lang/ClassLoader");
+    jmethodID loadClass = (*env)->GetMethodID(env, loaderClass, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    jstring name = (*env)->NewStringUTF(env, "com.local.waylith.port.Payload");
+    jclass payload = (jclass)(*env)->CallObjectMethod(env, loader, loadClass, name);
+    if ((*env)->ExceptionCheck(env) || payload == NULL)
+    {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+        LOGE("Payload class not found");
+        return;
+    }
+    jmethodID ensure = (*env)->GetStaticMethodID(env, payload, "ensure", "(Landroid/app/Activity;)Ljava/lang/String;");
+    jstring problem = (jstring)(*env)->CallStaticObjectMethod(env, payload, ensure, activity);
+    if ((*env)->ExceptionCheck(env))
+    {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+        LOGE("unpacking the game's files threw");
+        return;
+    }
+    if (problem != NULL)
+    {
+        const char* text = (*env)->GetStringUTFChars(env, problem, NULL);
+        LOGE("the game's files: %s", text);
+        (*env)->ReleaseStringUTFChars(env, problem, text);
+    }
+}
+
 static void* run_runtime(void* arg)
 {
     struct android_app* app = (struct android_app*)arg;
@@ -245,6 +290,7 @@ static void* run_runtime(void* arg)
     snprintf(tmp, sizeof tmp, "%s/tmp", internal);
     mkdir(home, 0775);
     mkdir(tmp, 0775);
+    java_unpack_payload(app);
     LOGI("libs %s", libdir);
     LOGI("runtime %s", runtime);
     LOGI("game %s", game);
@@ -414,10 +460,8 @@ static void* run_runtime(void* arg)
     int argc = read_args(argsPath, argv, 32, argStorage, sizeof argStorage);
     if (argc == 0)
     {
-        argv[0] = "-Headless";
-        argv[1] = "-NoCrashDialog";
-        argv[2] = "-Verbose";
-        argc = 3;
+        argv[0] = "-NoCrashDialog";
+        argc = 1;
     }
     for (int i = 0; i < argc; i++) LOGI("arg %d: %s", i, argv[i]);
 
