@@ -99,7 +99,7 @@ internal static class Patch
 		["/system/build.prop"] = "/system/build.prop.treated-as-linux",
 	};
 
-	private static int Main(string[] args)
+	internal static int Main(string[] args)
 	{
 		if (args[0] == "--members")
 		{
@@ -322,7 +322,7 @@ internal static class Patch
 	/// fork redirects those names to UnityStubs, the stock runtime refuses a resolver that answers with another name,
 	/// and type forwarding is the standard way to say the same thing.
 	/// </summary>
-	private static int WriteForwarders(string stubsPath, string outDir, string[] names)
+	internal static int WriteForwarders(string stubsPath, string outDir, string[] names)
 	{
 		AssemblyDefinition stubs = AssemblyDefinition.ReadAssembly(stubsPath, new ReaderParameters { ReadingMode = ReadingMode.Deferred, InMemory = true });
 		var publicTypes = new List<TypeDefinition>();

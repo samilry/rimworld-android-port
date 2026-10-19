@@ -1,6 +1,9 @@
 package com.local.waylith.port;
 
+import android.app.ActivityManager;
+import android.app.AlertDialog;
 import android.app.NativeActivity;
+import android.content.DialogInterface;
 import android.content.ClipData;
 import android.content.ComponentName;
 import android.content.ContentResolver;
@@ -15,6 +18,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
+import android.widget.Toast;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -26,6 +30,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -175,6 +180,11 @@ public final class MainActivity extends NativeActivity
     protected void onActivityResult(final int request, int result, final Intent data)
     {
         super.onActivityResult(request, result, data);
+        if (request == PICK_GAME_ZIP || request == PICK_GAME_FOLDER)
+        {
+            onGamePicked(request, result, data);
+            return;
+        }
         if (request != PICK_FILES && request != PICK_FOLDER)
         {
             return;
@@ -465,6 +475,471 @@ public final class MainActivity extends NativeActivity
             }
         }
         file.delete();
+    }
+
+    // ---- the tester's APK: the player's own copy of the game (PAYLOAD=port host/build.sh) ----
+
+    private static final int PICK_GAME_ZIP = 7201, PICK_GAME_FOLDER = 7202;
+
+    /** What the dialogs and the copying tell the waiting runtime thread: {"picked", root}, {"failed", why}, {"again"}, {"quit"}, {"ok"}. */
+    private final LinkedBlockingQueue<String[]> gameEvents = new LinkedBlockingQueue<String[]>();
+    private AlertDialog busyDialog;
+
+    /**
+     * Called by the host (host.c, on its runtime thread, before the runtime starts) when this is the tester's APK and
+     * the game is not prepared (setup/version.txt differs from game/port-setup.txt). Asks for the player's own copy of
+     * the game, copies it to files/import and has SetupService (setup/PortSetup.dll) make it ready; when it was imported
+     * before and only the APK is newer, the kept assemblies are prepared again without asking. Returns true when the
+     * game is ready, false when the player chose to leave (the activity is finishing then).
+     */
+    public boolean prepareGame()
+    {
+        File ext = getExternalFilesDir(null);
+        String[] kept = new File(ext, "setup/original").list();
+        boolean importedBefore = new File(ext, "game/Assets.zip").exists() && kept != null && kept.length > 0;
+        if (!importedBefore && new File(ext, "game/Assembly-CSharp.dll").exists() && new File(ext, "game/Assets.zip").exists() && !new File(ext, "game/port-setup.txt").exists())
+        {
+            // A game made ready some other way (copied from the PC by host/stage.sh, or by a full APK): kept as it is.
+            try
+            {
+                java.io.FileOutputStream out = new java.io.FileOutputStream(new File(ext, "game/port-setup.txt"));
+                out.write((readText(new File(ext, "setup/version.txt")).split("\n")[0].trim() + "\nprepared elsewhere\n").getBytes("UTF-8"));
+                out.close();
+                return true;
+            }
+            catch (IOException ignored)
+            {
+            }
+        }
+        String problem = null;
+        while (true)
+        {
+            String root = "";
+            if (!importedBefore || problem != null)
+            {
+                root = askForGame(problem);
+                if (root == null)
+                {
+                    leave();
+                    return false;
+                }
+            }
+            String[] result = runSetup(root);
+            if ("ok".equals(result[0]))
+            {
+                if (result[1].contains("注意"))
+                {
+                    tell("游戏文件已准备好", result[1]);
+                }
+                else
+                {
+                    toast("游戏文件已准备好，正在启动。" + (result[1].isEmpty() ? "" : "\n" + result[1]));
+                }
+                return true;
+            }
+            problem = result[1];
+        }
+    }
+
+    /** The dialog that asks for the game, and what follows from it; the root of the copied game, or null to leave. */
+    private String askForGame(String problem)
+    {
+        while (true)
+        {
+            gameEvents.clear();
+            final String shownProblem = problem;
+            runOnUiThread(new Runnable()
+            {
+                @Override
+                public void run()
+                {
+                    String text = "这个安装包只包含手机移植部分，不含游戏本体。请导入你自己在 Steam 上购买的 RimWorld 1.7（已购买的 DLC 会一起导入）：\n\n"
+                        + "1. 在电脑的 Steam 库里右键 RimWorld → 管理 → 浏览本地文件，打开游戏文件夹；\n"
+                        + "2. 把整个文件夹打包成 zip，传到手机上（或者直接把整个文件夹拷到手机上）；\n"
+                        + "3. 点下面的按钮选择它。\n\n"
+                        + "需要约 3 GB 空闲空间，复制和处理需要一两分钟。";
+                    if (shownProblem != null && !shownProblem.isEmpty())
+                    {
+                        text = "上次没有成功：" + shownProblem + "\n\n" + text;
+                    }
+                    new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("导入你自己的 RimWorld")
+                        .setMessage(text)
+                        .setCancelable(false)
+                        .setPositiveButton("选择压缩包", new DialogInterface.OnClickListener()
+                        {
+                            public void onClick(DialogInterface dialog, int which)
+                            {
+                                pickGame(false);
+                            }
+                        })
+                        .setNeutralButton("选择文件夹", new DialogInterface.OnClickListener()
+                        {
+                            public void onClick(DialogInterface dialog, int which)
+                            {
+                                pickGame(true);
+                            }
+                        })
+                        .setNegativeButton("退出", new DialogInterface.OnClickListener()
+                        {
+                            public void onClick(DialogInterface dialog, int which)
+                            {
+                                gameEvents.offer(new String[] { "quit" });
+                            }
+                        })
+                        .show();
+                }
+            });
+            String[] event = takeGameEvent();
+            if ("quit".equals(event[0]))
+            {
+                return null;
+            }
+            if ("picked".equals(event[0]))
+            {
+                return event[1];
+            }
+            if ("failed".equals(event[0]))
+            {
+                problem = event[1];
+            }
+            // "again": the chooser was closed without a choice; the dialog comes back.
+        }
+    }
+
+    private String[] takeGameEvent()
+    {
+        while (true)
+        {
+            try
+            {
+                return gameEvents.take();
+            }
+            catch (InterruptedException ignored)
+            {
+            }
+        }
+    }
+
+    private void pickGame(boolean folder)
+    {
+        try
+        {
+            Intent intent;
+            if (folder)
+            {
+                intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            }
+            else
+            {
+                intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("*/*");
+            }
+            startActivityForResult(intent, folder ? PICK_GAME_FOLDER : PICK_GAME_ZIP);
+        }
+        catch (Throwable problem)
+        {
+            gameEvents.offer(new String[] { "failed", "打不开文件选择器：" + problem });
+        }
+    }
+
+    /** onActivityResult for the game's pick: copies what was chosen to files/import (on a thread of its own) and finds the game in it. */
+    private void onGamePicked(final int request, int result, Intent data)
+    {
+        final Uri uri = result == RESULT_OK && data != null ? data.getData() : null;
+        if (uri == null)
+        {
+            gameEvents.offer(new String[] { "again" });
+            return;
+        }
+        final File ext = getExternalFilesDir(null);
+        if (ext.getUsableSpace() < (3L << 30))
+        {
+            gameEvents.offer(new String[] { "failed", "手机上的空闲空间不够（需要约 3 GB，现在只有 " + (ext.getUsableSpace() >> 20) + " MB）。" });
+            return;
+        }
+        showBusy("正在复制游戏文件…");
+        new Thread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                final File into = new File(ext, "import");
+                final boolean[] copying = { true };
+                pickCount.set(0);
+                pickBytes.set(0);
+                Thread meter = new Thread(new Runnable()
+                {
+                    @Override
+                    public void run()
+                    {
+                        while (copying[0])
+                        {
+                            updateBusy("正在复制游戏文件：" + pickCount.get() + " 个文件，" + (pickBytes.get() >> 20) + " MB");
+                            try
+                            {
+                                Thread.sleep(500);
+                            }
+                            catch (InterruptedException ignored)
+                            {
+                            }
+                        }
+                    }
+                });
+                meter.start();
+                try
+                {
+                    delete(into);
+                    into.mkdirs();
+                    if (request == PICK_GAME_FOLDER)
+                    {
+                        String id = DocumentsContract.getTreeDocumentId(uri);
+                        File folder = new File(into, safeName(nameOf(DocumentsContract.buildDocumentUriUsingTree(uri, id), "RimWorld")));
+                        folder.mkdirs();
+                        copyTreeInParallel(uri, id, folder);
+                    }
+                    else
+                    {
+                        String name = nameOf(uri, "RimWorld.zip");
+                        if (!name.toLowerCase().endsWith(".zip"))
+                        {
+                            throw new IOException("所选的不是 zip 压缩包（" + name + "）");
+                        }
+                        unpack(uri, new File(into, safeName(name.substring(0, name.length() - 4))));
+                    }
+                    copying[0] = false;
+                    File root = findGame(into, 4);
+                    hideBusy();
+                    if (root == null)
+                    {
+                        delete(into);
+                        gameEvents.offer(new String[] { "failed", "所选的文件里没有找到 RimWorld 的游戏文件（应包含 Version.txt、Assembly-CSharp.dll、Data 文件夹等）。请选择 Steam 里 RimWorld 的整个游戏文件夹或它的压缩包。" });
+                    }
+                    else
+                    {
+                        gameEvents.offer(new String[] { "picked", root.getPath() });
+                    }
+                }
+                catch (Throwable problem)
+                {
+                    copying[0] = false;
+                    hideBusy();
+                    delete(into);
+                    gameEvents.offer(new String[] { "failed", "复制失败：" + (problem.getMessage() != null ? problem.getMessage() : problem.toString()) });
+                }
+            }
+        }, "PortGameImport").start();
+    }
+
+    /** The folder below dir (or dir itself) that holds the game: Version.txt and Assembly-CSharp.dll side by side. */
+    private static File findGame(File dir, int depth)
+    {
+        if (new File(dir, "Version.txt").isFile() && new File(dir, "Assembly-CSharp.dll").isFile())
+        {
+            return dir;
+        }
+        File[] inside = depth > 0 ? dir.listFiles() : null;
+        if (inside != null)
+        {
+            for (File child : inside)
+            {
+                if (child.isDirectory())
+                {
+                    File found = findGame(child, depth - 1);
+                    if (found != null)
+                    {
+                        return found;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Runs SetupService on root ("" for the kept assemblies) and waits for setup/result.txt: {state, message}. */
+    private String[] runSetup(String root)
+    {
+        File ext = getExternalFilesDir(null);
+        File resultFile = new File(ext, "setup/result.txt");
+        File progressFile = new File(ext, "setup/progress.txt");
+        resultFile.delete();
+        progressFile.delete();
+        showBusy(root.isEmpty() ? "正在按新版本重新处理游戏文件…" : "正在处理游戏文件…");
+        startService(new Intent(this, SetupService.class).putExtra("root", root));
+        long started = System.currentTimeMillis();
+        long goneSince = 0;
+        while (!resultFile.exists())
+        {
+            try
+            {
+                Thread.sleep(500);
+            }
+            catch (InterruptedException ignored)
+            {
+            }
+            String step = readText(progressFile);
+            if (!step.isEmpty())
+            {
+                updateBusy("正在处理游戏文件：" + step);
+            }
+            // The setup process gone without a result (it crashed): given up a few seconds later.
+            if (System.currentTimeMillis() - started > 5000 && !setupRunning())
+            {
+                if (goneSince == 0)
+                {
+                    goneSince = System.currentTimeMillis();
+                }
+                else if (System.currentTimeMillis() - goneSince > 3000 && !resultFile.exists())
+                {
+                    hideBusy();
+                    return new String[] { "error", "处理程序意外退出了。" };
+                }
+            }
+            else
+            {
+                goneSince = 0;
+            }
+        }
+        hideBusy();
+        String text = readText(resultFile);
+        int newline = text.indexOf('\n');
+        return newline < 0 ? new String[] { text.trim(), "" } : new String[] { text.substring(0, newline).trim(), text.substring(newline + 1).trim() };
+    }
+
+    private boolean setupRunning()
+    {
+        ActivityManager manager = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
+        List<ActivityManager.RunningAppProcessInfo> processes = manager != null ? manager.getRunningAppProcesses() : null;
+        if (processes != null)
+        {
+            for (ActivityManager.RunningAppProcessInfo process : processes)
+            {
+                if (process.processName.endsWith(":setup"))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static String readText(File file)
+    {
+        try
+        {
+            InputStream in = new java.io.FileInputStream(file);
+            try
+            {
+                byte[] buffer = new byte[(int) Math.min(Math.max(file.length(), 1), 1 << 16)];
+                int n = in.read(buffer);
+                return n > 0 ? new String(buffer, 0, n, "UTF-8") : "";
+            }
+            finally
+            {
+                in.close();
+            }
+        }
+        catch (IOException none)
+        {
+            return "";
+        }
+    }
+
+    private void showBusy(final String text)
+    {
+        runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                if (busyDialog != null)
+                {
+                    busyDialog.setMessage(text);
+                    return;
+                }
+                busyDialog = new AlertDialog.Builder(MainActivity.this).setTitle("请稍候").setMessage(text).setCancelable(false).show();
+            }
+        });
+    }
+
+    private void updateBusy(final String text)
+    {
+        runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                if (busyDialog != null)
+                {
+                    busyDialog.setMessage(text);
+                }
+            }
+        });
+    }
+
+    private void hideBusy()
+    {
+        runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                if (busyDialog != null)
+                {
+                    busyDialog.dismiss();
+                    busyDialog = null;
+                }
+            }
+        });
+    }
+
+    /** A message the player confirms; blocks the calling (non-UI) thread until then. */
+    private void tell(final String title, final String text)
+    {
+        gameEvents.clear();
+        runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                new AlertDialog.Builder(MainActivity.this).setTitle(title).setMessage(text).setCancelable(false)
+                    .setPositiveButton("好的", new DialogInterface.OnClickListener()
+                    {
+                        public void onClick(DialogInterface dialog, int which)
+                        {
+                            gameEvents.offer(new String[] { "ok" });
+                        }
+                    })
+                    .show();
+            }
+        });
+        takeGameEvent();
+    }
+
+    private void toast(final String text)
+    {
+        runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                Toast.makeText(MainActivity.this, text, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    private void leave()
+    {
+        runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                finishAndRemoveTask();
+                android.os.Process.killProcess(android.os.Process.myPid());
+            }
+        });
     }
 
     /**

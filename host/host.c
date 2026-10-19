@@ -275,6 +275,119 @@ static void java_unpack_payload(struct android_app* app)
     }
 }
 
+// The first line of a small text file, or "" (trailing spaces and line ends cut).
+static void first_line(const char* path, char* out, size_t cap)
+{
+    out[0] = 0;
+    FILE* f = fopen(path, "r");
+    if (!f) return;
+    if (!fgets(out, (int)cap, f)) out[0] = 0;
+    fclose(f);
+    size_t n = strlen(out);
+    while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r' || out[n - 1] == ' ')) out[--n] = 0;
+}
+
+// The tester's APK (PAYLOAD=port host/build.sh) carries no game: <ext>/setup/PortSetup.dll makes the player's own copy
+// ready, and <ext>/game/port-setup.txt says which rules did it last (the first line of <ext>/setup/version.txt).
+static int needs_setup(const char* ext)
+{
+    char path[1100], want[256], have[256];
+    snprintf(path, sizeof path, "%s/setup/PortSetup.dll", ext);
+    if (!file_exists(path)) return 0;
+    snprintf(path, sizeof path, "%s/setup/version.txt", ext);
+    first_line(path, want, sizeof want);
+    snprintf(path, sizeof path, "%s/game/port-setup.txt", ext);
+    first_line(path, have, sizeof have);
+    return strcmp(want, have) != 0;
+}
+
+// MainActivity.prepareGame() on the Java side: the import dialogs, copying the player's game folder, and running
+// SetupService (setup/PortSetup.dll, in a process of its own: the runtime can start only once in this one). True when
+// the game is ready; false when the player left (the activity is finishing then).
+static int java_prepare_game(struct android_app* app)
+{
+    JavaVM* vm = app->activity->vm;
+    JNIEnv* env = NULL;
+    if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK || env == NULL)
+    {
+        LOGE("could not attach to the Java VM");
+        return 0;
+    }
+    jobject activity = app->activity->clazz;
+    jclass activityClass = (*env)->GetObjectClass(env, activity);
+    jmethodID prepare = (*env)->GetMethodID(env, activityClass, "prepareGame", "()Z");
+    if (prepare == NULL)
+    {
+        (*env)->ExceptionClear(env);
+        LOGE("MainActivity.prepareGame missing");
+        return 0;
+    }
+    jboolean ready = (*env)->CallBooleanMethod(env, activity, prepare);
+    if ((*env)->ExceptionCheck(env))
+    {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+        return 0;
+    }
+    return ready ? 1 : 0;
+}
+
+// SetupService.runSetup(ext, root, libdir), in the setup process: the runtime with the framework and setup/ only, running
+// setup/PortSetup.dll (setup/Setup.cs) on the imported game folder (root, "" to prepare the kept assemblies again).
+// Returns its exit code, or a negative number when the runtime did not start.
+JNIEXPORT jint JNICALL Java_com_local_waylith_port_SetupService_runSetup(JNIEnv* env, jclass cls, jstring jext, jstring jroot, jstring jlibdir)
+{
+    (void)cls;
+    const char* ext = (*env)->GetStringUTFChars(env, jext, NULL);
+    const char* root = (*env)->GetStringUTFChars(env, jroot, NULL);
+    const char* libdir = (*env)->GetStringUTFChars(env, jlibdir, NULL);
+    char runtime[1100], setup[1100], setupSlash[1100], entry[1200];
+    snprintf(runtime, sizeof runtime, "%s/runtime", ext);
+    snprintf(setup, sizeof setup, "%s/setup", ext);
+    snprintf(setupSlash, sizeof setupSlash, "%s/setup/", ext);
+    snprintf(entry, sizeof entry, "%s/PortSetup.dll", setup);
+    static char tpa[1 << 18];
+    tpa[0] = 0;
+    int count = 0;
+    add_assemblies(tpa, sizeof tpa, runtime, NULL, &count);
+    add_assemblies(tpa, sizeof tpa, setup, runtime, &count);
+    const char* keys[] = { "TRUSTED_PLATFORM_ASSEMBLIES", "APP_PATHS", "NATIVE_DLL_SEARCH_DIRECTORIES", "APP_CONTEXT_BASE_DIRECTORY", "RUNTIME_IDENTIFIER", "System.Globalization.Invariant" };
+    const char* values[] = { tpa, setup, libdir, setupSlash, "android-arm64", "true" };
+    int result = -1;
+    char coreclrPath[1100];
+    snprintf(coreclrPath, sizeof coreclrPath, "%s/libcoreclr.so", libdir);
+    void* lib = dlopen(coreclrPath, RTLD_NOW | RTLD_GLOBAL);
+    coreclr_initialize_fn init = lib ? (coreclr_initialize_fn)dlsym(lib, "coreclr_initialize") : NULL;
+    coreclr_execute_assembly_fn execute = lib ? (coreclr_execute_assembly_fn)dlsym(lib, "coreclr_execute_assembly") : NULL;
+    if (!init || !execute)
+    {
+        LOGE("setup: the runtime is not there (%s)", lib ? "entry points missing" : dlerror());
+    }
+    else
+    {
+        void* host = NULL;
+        unsigned int domain = 0;
+        int rc = init(entry, "port17-setup", (int)(sizeof keys / sizeof keys[0]), keys, values, &host, &domain);
+        if (rc < 0)
+        {
+            LOGE("setup: coreclr_initialize failed: 0x%08x", rc);
+            result = -2;
+        }
+        else
+        {
+            const char* argv[] = { ext, root };
+            unsigned int exitCode = 0;
+            rc = execute(host, domain, 2, argv, entry, &exitCode);
+            result = rc < 0 ? -3 : (int)exitCode;
+            LOGI("setup: PortSetup returned %d", result);
+        }
+    }
+    (*env)->ReleaseStringUTFChars(env, jext, ext);
+    (*env)->ReleaseStringUTFChars(env, jroot, root);
+    (*env)->ReleaseStringUTFChars(env, jlibdir, libdir);
+    return result;
+}
+
 static void* run_runtime(void* arg)
 {
     struct android_app* app = (struct android_app*)arg;
@@ -291,6 +404,15 @@ static void* run_runtime(void* arg)
     mkdir(home, 0775);
     mkdir(tmp, 0775);
     java_unpack_payload(app);
+    if (needs_setup(ext))
+    {
+        LOGI("the game is not prepared (tester's APK): asking the player for it");
+        if (!java_prepare_game(app))
+        {
+            LOGI("no game: the player left");
+            return NULL;
+        }
+    }
     LOGI("libs %s", libdir);
     LOGI("runtime %s", runtime);
     LOGI("game %s", game);
