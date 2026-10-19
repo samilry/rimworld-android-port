@@ -75,6 +75,11 @@ namespace PortMobile
 					{
 						replacement = nameof(Allocate);
 					}
+					else if (method.DeclaringType == typeof(VmaAllocationExtensions) && method.Name == "AllocateImageChecked" && parameters.Length == 7)
+					{
+						// 1.7.4982: the allocation that reclaims, relaxes and retries when memory runs short.
+						replacement = nameof(AllocateChecked);
+					}
 					else if (method.DeclaringType == typeof(VmaAllocator) && method.Name == "FreeAllocation" && parameters.Length == 1 && parameters[0].ParameterType.GetElementType() == typeof(ImageAllocationInfo))
 					{
 						replacement = nameof(Free);
@@ -117,6 +122,25 @@ namespace PortMobile
 				}
 				string label = "CameraBake.SharedDepth";
 				shared = new Shared { Info = allocator.AllocateImage(in label, in createInfo, in allocateInfo), Users = 1 };
+				bySize[key] = shared;
+				byImage[Handle(ref shared.Info)] = key;
+				return shared.Info;
+			}
+		}
+
+		/// <summary>In place of VmaAllocationExtensions.AllocateImageChecked in CreateTarget (from 1.7.4982); the shared image is allocated by it too.</summary>
+		public static ImageAllocationInfo AllocateChecked(VmaAllocator allocator, string name, ref VkImageCreateInfo createInfo, ref AllocationInfo.CreateInfo allocateInfo, uint memoryTypeBits, bool anyMemoryOnRefusal, bool reclaimOnRefusal)
+		{
+			(int, int, int) key = (createInfo.Extent.Width, createInfo.Extent.Height, (int)createInfo.Format);
+			lock (gate)
+			{
+				if (bySize.TryGetValue(key, out Shared shared))
+				{
+					shared.Users++;
+					bySize[key] = shared;
+					return shared.Info;
+				}
+				shared = new Shared { Info = allocator.AllocateImageChecked("CameraBake.SharedDepth", in createInfo, in allocateInfo, memoryTypeBits, anyMemoryOnRefusal, reclaimOnRefusal), Users = 1 };
 				bySize[key] = shared;
 				byImage[Handle(ref shared.Info)] = key;
 				return shared.Info;
