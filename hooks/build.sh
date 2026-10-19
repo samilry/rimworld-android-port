@@ -14,7 +14,7 @@ mkdir -p build
   echo "-r:\"$(cygpath -w /d/SteamLibrary/steamapps/workshop/content/294100/2009463077/1.7/Assemblies/0Harmony.dll)\""
   # The engine's texture service and Vulkan types, for hooks/Textures.cs (the game's own copies at run time).
   for f in Waylith Brutal.Vulkan Brutal.Core.Common; do echo "-r:\"$(cygpath -w "build/game/$f.dll")\""; done
-  echo "hooks/StartupHook.cs hooks/PortDiag.cs hooks/WaylithClr.cs hooks/ModPrepHost.cs hooks/HarmonyCompat.cs hooks/Textures.cs patch/ModPrep.cs"
+  echo "hooks/StartupHook.cs hooks/PortDiag.cs hooks/WaylithClr.cs hooks/ModPrepHost.cs hooks/HarmonyCompat.cs hooks/Textures.cs hooks/PortLog.cs patch/ModPrep.cs"
 } > build/hooks.rsp
 dotnet /d/Harness/rimworld/tools/roslyn/pkg/tasks/netcore/bincore/csc.dll @build/hooks.rsp
 ls -la build/PortHooks.dll | awk '{print "PortHooks.dll", $5, "bytes"}'

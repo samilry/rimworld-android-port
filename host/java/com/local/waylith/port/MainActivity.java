@@ -77,6 +77,8 @@ public final class MainActivity extends NativeActivity
         textInput = new TextInputView(this);
         addContentView(textInput, new ViewGroup.LayoutParams(1, 1));
         hideSystemBars();
+        // A report in Download/Port17 when the last run ended badly, and the "导出日志" shortcut on the icon.
+        Diagnostics.onStart(this);
     }
 
     @Override
