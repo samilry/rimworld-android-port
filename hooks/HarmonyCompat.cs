@@ -24,6 +24,13 @@ namespace PortHooks
 	/// nearly all of them, is left exactly as it is; so is one that cannot be followed with certainty (calli, a method
 	/// with a variable argument list, a path that would take more than the stack holds) or cannot be repaired this way
 	/// (a conditional jump with extra values).
+	///
+	/// Two more places where the runtime wants the stack empty and the PC's runtime does not insist (its JIT has the
+	/// switches LaxILStack and LaxRetInTry): the start of a try block, and the return of a method that returns nothing.
+	/// Vanilla Gravship Expanded (2026-10-21) turns the call "DrawFieldEdges(cells, 2900)" in
+	/// GravshipLandingMarker.DrawAt into a single "pop", so the cells stay on the stack into the try block of the
+	/// foreach that follows; here the whole mod failed in its constructor ("invalid program"). The values are popped
+	/// in front of the try block (outside it) or of the return.
 	/// </summary>
 	internal static class HarmonyCompat
 	{
@@ -51,9 +58,11 @@ namespace PortHooks
 			{
 				return;
 			}
-			// (index to insert before, how many pops, whether they take over the labels of the instruction there)
-			var fixes = new List<(int At, int Count, bool TakeLabels)>();
+			// (index to insert before, how many pops, what they take over from the instruction there: Fall nothing, Jump its
+			// labels and block starts, TryEntry its labels only: the try block itself starts after them)
+			var fixes = new List<(int At, int Count, int Kind)>();
 			bool repairable = true;
+			bool? voidReturn = ReturnsNothing(creator);
 			for (int i = 0; i < codes.Count && repairable; i++)
 			{
 				if (depth[i] == Unvisited)
@@ -69,7 +78,7 @@ namespace PortHooks
 				{
 					if (after > depth[t])
 					{
-						fixes.Add((i, after - depth[t], true));
+						fixes.Add((i, after - depth[t], Jump));
 					}
 				}
 				else if (flow == FlowControl.Cond_Branch)
@@ -86,8 +95,17 @@ namespace PortHooks
 				{
 					if (after > depth[i + 1])
 					{
-						fixes.Add((i + 1, after - depth[i + 1], false));
+						fixes.Add((i + 1, after - depth[i + 1], Fall));
 					}
+				}
+				if (depth[i] > 0 && BeginsTry(code))
+				{
+					// A try block entered with values on the stack (the least any path brings; the fixes above take the rest).
+					fixes.Add((i, depth[i], TryEntry));
+				}
+				else if (depth[i] > 0 && code.opcode == OpCodes.Ret && voidReturn == true)
+				{
+					fixes.Add((i, depth[i], Jump));
 				}
 			}
 			if (fixes.Count == 0 || !repairable)
@@ -97,23 +115,29 @@ namespace PortHooks
 			var repaired = new List<CodeInstruction>(codes);
 			// From the end backwards, so that the places stay right; where two fall on the same place, the pops that take
 			// the jump's labels go in first and the ones for the fall into it end up in front of them.
-			fixes.Sort((a, b) => a.At != b.At ? b.At.CompareTo(a.At) : b.TakeLabels.CompareTo(a.TakeLabels));
+			// (A try entry's pops come after a jump's or a fall's at the same place: those bring the depth down to the least
+			// first, then these empty the stack before the block starts.)
+			fixes.Sort((a, b) => a.At != b.At ? b.At.CompareTo(a.At) : InsertOrder(a.Kind).CompareTo(InsertOrder(b.Kind)));
 			int added = 0;
-			foreach ((int at, int count, bool takeLabels) in fixes)
+			foreach ((int at, int count, int kind) in fixes)
 			{
 				for (int k = 0; k < count; k++)
 				{
 					repaired.Insert(at, new CodeInstruction(OpCodes.Pop));
 					added++;
 				}
-				if (takeLabels)
+				if (kind != Fall)
 				{
-					// Every path that reaches the jump has to pass the pops: its labels and block starts move to the first of them.
+					// Every path that reaches the jump has to pass the pops: its labels (and, for a jump or a return, its block
+					// starts) move to the first of them. A try block starts after its pops.
 					CodeInstruction first = repaired[at], jump = repaired[at + count];
 					first.labels.AddRange(jump.labels);
 					jump.labels.Clear();
-					first.blocks.AddRange(jump.blocks.FindAll(b => b.blockType != ExceptionBlockType.EndExceptionBlock));
-					jump.blocks.RemoveAll(b => b.blockType != ExceptionBlockType.EndExceptionBlock);
+					if (kind == Jump)
+					{
+						first.blocks.AddRange(jump.blocks.FindAll(b => b.blockType != ExceptionBlockType.EndExceptionBlock));
+						jump.blocks.RemoveAll(b => b.blockType != ExceptionBlockType.EndExceptionBlock);
+					}
 				}
 			}
 			// Only a list that is balanced afterwards replaces the original.
@@ -126,12 +150,12 @@ namespace PortHooks
 				}
 			}
 			int[] again = Follow(repaired, check, out bool stillCertain);
-			if (!stillCertain || !Balanced(repaired, check, again))
+			if (!stillCertain || !Balanced(repaired, check, again, voidReturn == true))
 			{
 				// Put the labels and blocks back where they were (the instruction objects are shared with the original list).
-				foreach ((int at, int count, bool takeLabels) in fixes)
+				foreach ((int at, int count, int kind) in fixes)
 				{
-					if (takeLabels)
+					if (kind != Fall)
 					{
 						CodeInstruction first = repaired[at], jump = repaired[at + count];
 						jump.labels.AddRange(first.labels);
@@ -142,7 +166,49 @@ namespace PortHooks
 			}
 			codes.Clear();
 			codes.AddRange(repaired);
-			Console.WriteLine("[port17] a patch of " + NameOf(creator) + " left values on the stack at " + fixes.Count + " jump(s); " + added + " pop(s) added (Mono drops them, this runtime refuses the method)");
+			Console.WriteLine("[port17] a patch of " + NameOf(creator) + " left values on the stack at " + fixes.Count + " place(s) (jumps, try blocks, returns); " + added + " pop(s) added (Mono and the PC's runtime drop them, this runtime refuses the method)");
+		}
+
+		private const int Fall = 0, Jump = 1, TryEntry = 2;
+
+		/// <summary>Where several fixes fall on one place: those taking labels are inserted first (they end up last), a try entry's before all.</summary>
+		private static int InsertOrder(int kind)
+		{
+			return kind == TryEntry ? 0 : kind == Jump ? 1 : 2;
+		}
+
+		private static bool BeginsTry(CodeInstruction code)
+		{
+			return code.blocks != null && code.blocks.Exists(b => b.blockType == ExceptionBlockType.BeginExceptionBlock);
+		}
+
+		/// <summary>Whether the method being patched returns nothing (null when that cannot be told).</summary>
+		private static bool? ReturnsNothing(object creator)
+		{
+			MethodBase original = OriginalOf(creator);
+			if (original is MethodInfo info)
+			{
+				return info.ReturnType == typeof(void);
+			}
+			if (original is ConstructorInfo)
+			{
+				return true;
+			}
+			return null;
+		}
+
+		/// <summary>The method being patched: Harmony's MethodCreator.config.original.</summary>
+		private static MethodBase OriginalOf(object creator)
+		{
+			try
+			{
+				object config = creator?.GetType().GetField("config", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)?.GetValue(creator);
+				return config?.GetType().GetField("original", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)?.GetValue(config) as MethodBase;
+			}
+			catch (Exception)
+			{
+				return null;
+			}
 		}
 
 		private static string NameOf(object creator)
@@ -397,7 +463,7 @@ namespace PortHooks
 		}
 
 		/// <summary>Whether every jump and every fall into the next instruction arrives with the depth found for its target.</summary>
-		private static bool Balanced(List<CodeInstruction> codes, Dictionary<Label, int> labels, int[] depth)
+		private static bool Balanced(List<CodeInstruction> codes, Dictionary<Label, int> labels, int[] depth, bool voidReturn)
 		{
 			for (int i = 0; i < codes.Count; i++)
 			{
@@ -406,6 +472,10 @@ namespace PortHooks
 					continue;
 				}
 				CodeInstruction code = codes[i];
+				if (depth[i] != 0 && (BeginsTry(code) || (voidReturn && code.opcode == OpCodes.Ret)))
+				{
+					return false;
+				}
 				if (!Effect(code, out int pop, out int push))
 				{
 					return false;
