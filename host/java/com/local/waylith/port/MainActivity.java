@@ -448,6 +448,111 @@ public final class MainActivity extends NativeActivity
         }
     }
 
+    /**
+     * The same as unpack, read through the archive's central directory (java.util.zip.ZipFile on the chosen file's
+     * descriptor) rather than its local headers one after another: an archive a stream reader finds nothing in.
+     */
+    private void unpackByDirectory(Uri uri, File into) throws IOException
+    {
+        android.os.ParcelFileDescriptor descriptor = getContentResolver().openFileDescriptor(uri, "r");
+        if (descriptor == null)
+        {
+            throw new IOException("cannot open " + uri);
+        }
+        try
+        {
+            java.util.zip.ZipFile zip = new java.util.zip.ZipFile(new File("/proc/self/fd/" + descriptor.getFd()), java.util.zip.ZipFile.OPEN_READ, ZipNames.RAW);
+            try
+            {
+                into.mkdirs();
+                String base = into.getCanonicalPath() + File.separator;
+                java.util.Enumeration<? extends ZipEntry> entries = zip.entries();
+                while (entries.hasMoreElements())
+                {
+                    ZipEntry entry = entries.nextElement();
+                    String name = ZipNames.decode(entry.getName());
+                    File out = new File(into, name.replace('\\', '/'));
+                    if (!out.getCanonicalPath().startsWith(base))
+                    {
+                        continue;
+                    }
+                    if (entry.isDirectory() || name.endsWith("/") || name.endsWith("\\"))
+                    {
+                        out.mkdirs();
+                        continue;
+                    }
+                    File parent = out.getParentFile();
+                    if (parent != null)
+                    {
+                        parent.mkdirs();
+                    }
+                    InputStream in = zip.getInputStream(entry);
+                    try
+                    {
+                        write(in, out);
+                    }
+                    finally
+                    {
+                        in.close();
+                    }
+                }
+            }
+            finally
+            {
+                zip.close();
+            }
+        }
+        finally
+        {
+            descriptor.close();
+        }
+    }
+
+    /** The size of a chosen file and its first bytes, for telling what it is. */
+    private String describeFile(Uri uri)
+    {
+        StringBuilder text = new StringBuilder();
+        Cursor cursor = null;
+        try
+        {
+            cursor = getContentResolver().query(uri, new String[] { OpenableColumns.SIZE }, null, null, null);
+            if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0))
+            {
+                text.append(cursor.getLong(0) >> 20).append(" MB");
+            }
+        }
+        catch (Exception ignored)
+        {
+        }
+        finally
+        {
+            if (cursor != null)
+            {
+                cursor.close();
+            }
+        }
+        try
+        {
+            InputStream in = getContentResolver().openInputStream(uri);
+            if (in != null)
+            {
+                byte[] head = new byte[8];
+                int n = in.read(head);
+                in.close();
+                text.append(text.length() > 0 ? "，" : "").append("开头");
+                for (int i = 0; i < n; i++)
+                {
+                    text.append(String.format(java.util.Locale.US, " %02x", head[i] & 0xff));
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            text.append(text.length() > 0 ? "，" : "").append("读不了：").append(e.getMessage());
+        }
+        return text.toString();
+    }
+
     private void write(InputStream in, File out) throws IOException
     {
         OutputStream stream = new FileOutputStream(out);
@@ -780,7 +885,27 @@ public final class MainActivity extends NativeActivity
                         {
                             throw new IOException("所选的不是 zip 压缩包（" + name + "）");
                         }
-                        unpack(uri, new File(into, safeName(name.substring(0, name.length() - 4))));
+                        File folder = new File(into, safeName(name.substring(0, name.length() - 4)));
+                        unpack(uri, folder);
+                        if (pickCount.get() == 0)
+                        {
+                            // Not one entry where a stream reader looks for them (a tester's "RimWorld1.zip"): read again by
+                            // the archive's directory at its end, as Windows and 7-Zip do.
+                            String what = describeFile(uri);
+                            Diagnostics.trail(MainActivity.this, "nothing read from " + name + " as a stream (" + what + "): by its directory");
+                            try
+                            {
+                                unpackByDirectory(uri, folder);
+                            }
+                            catch (IOException again)
+                            {
+                                Diagnostics.trail(MainActivity.this, "by its directory: " + again);
+                            }
+                            if (pickCount.get() == 0)
+                            {
+                                throw new IOException("压缩包里一个文件也读不出来（" + what + "）。它可能不是 zip 格式（比如 7z、rar 改了扩展名），或者没有传完整。请在电脑上重新打包成 zip 再传到手机上");
+                            }
+                        }
                     }
                     copying[0] = false;
                     File root = findGame(into, 4);
@@ -852,8 +977,35 @@ public final class MainActivity extends NativeActivity
         return null;
     }
 
-    /** Runs SetupService on root ("" for the kept assemblies) and waits for setup/result.txt: {state, message}. */
+    /**
+     * Runs SetupService on root ("" for the kept assemblies) and waits for setup/result.txt: {state, message}. When the
+     * runtime did not even start (-2, coreclr_initialize failed: a tester's Redmi Note 13 Pro, every time), once more in
+     * a new process with safer runtime settings (host.c, runSetup's "safe").
+     */
     private String[] runSetup(String root)
+    {
+        String[] result = runSetupOnce(root, false);
+        if ("error".equals(result[0]) && result[1].startsWith("处理程序没能启动（-2"))
+        {
+            Diagnostics.trail(this, "the runtime did not start (" + result[1] + "): again with safer settings");
+            // The first setup process ends itself after its result: the second one is started once it is gone.
+            for (int i = 0; i < 20 && setupRunning(); i++)
+            {
+                try
+                {
+                    Thread.sleep(250);
+                }
+                catch (InterruptedException ignored)
+                {
+                }
+            }
+            String[] second = runSetupOnce(root, true);
+            return "ok".equals(second[0]) ? second : new String[] { second[0], second[1] + "（第一次：" + result[1] + "）" };
+        }
+        return result;
+    }
+
+    private String[] runSetupOnce(String root, boolean safe)
     {
         File ext = getExternalFilesDir(null);
         File resultFile = new File(ext, "setup/result.txt");
@@ -861,8 +1013,8 @@ public final class MainActivity extends NativeActivity
         resultFile.delete();
         progressFile.delete();
         showBusy(root.isEmpty() ? "正在按新版本重新处理游戏文件…" : "正在处理游戏文件…");
-        Diagnostics.trail(this, "setup starts" + (root.isEmpty() ? " (the kept assemblies again)" : " on " + root));
-        startService(new Intent(this, SetupService.class).putExtra("root", root));
+        Diagnostics.trail(this, "setup starts" + (root.isEmpty() ? " (the kept assemblies again)" : " on " + root) + (safe ? ", safer runtime settings" : ""));
+        startService(new Intent(this, SetupService.class).putExtra("root", root).putExtra("safe", safe));
         long started = System.currentTimeMillis();
         long goneSince = 0;
         while (!resultFile.exists())
@@ -921,7 +1073,7 @@ public final class MainActivity extends NativeActivity
         return false;
     }
 
-    private static String readText(File file)
+    static String readText(File file)
     {
         try
         {

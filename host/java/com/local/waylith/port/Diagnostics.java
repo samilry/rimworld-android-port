@@ -255,6 +255,25 @@ final class Diagnostics
         return selfExitAt > 0 && after >= -1000 && after <= 15000;
     }
 
+    /**
+     * The system log as far as this app may read it (its own processes': the host, the runtime, the setup process, the
+     * interposer, what the system said about them), the newest 6000 lines.
+     */
+    private static String ownLogcat()
+    {
+        try
+        {
+            Process logcat = Runtime.getRuntime().exec(new String[] { "logcat", "-d", "-v", "threadtime", "-t", "6000" });
+            byte[] text = readAll(logcat.getInputStream(), 8 << 20);
+            logcat.destroy();
+            return new String(text, Charset.forName("UTF-8"));
+        }
+        catch (Throwable t)
+        {
+            return "logcat 读不了：" + t + "\n";
+        }
+    }
+
     /** How many files and megabytes a folder holds (all the way down). */
     private static String folderSize(File dir)
     {
@@ -421,6 +440,9 @@ final class Diagnostics
             putText(zip, "files.txt", "import：" + folderSize(new File(ext, "import")) + "\ngame：" + folderSize(new File(ext, "game"))
                 + "\nsetup/original：" + folderSize(new File(ext, "setup/original")) + "\n");
             putText(zip, "exits.txt", exitHistory(context));
+            putFile(zip, "setup-stderr.txt", new File(ext, "logs/setup-stderr.txt"));
+            putFile(zip, "setup-init-error.txt", new File(ext, "setup/init-error.txt"));
+            putText(zip, "logcat.txt", ownLogcat());
             File[] crashes = new File(data, "Crashes").listFiles();
             if (crashes != null)
             {

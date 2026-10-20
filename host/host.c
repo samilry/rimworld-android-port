@@ -334,18 +334,44 @@ static int java_prepare_game(struct android_app* app)
 
 // SetupService.runSetup(ext, root, libdir), in the setup process: the runtime with the framework and setup/ only, running
 // setup/PortSetup.dll (setup/Setup.cs) on the imported game folder (root, "" to prepare the kept assemblies again).
-// Returns its exit code, or a negative number when the runtime did not start.
-JNIEXPORT jint JNICALL Java_com_local_waylith_port_SetupService_runSetup(JNIEnv* env, jclass cls, jstring jext, jstring jroot, jstring jlibdir)
+// Returns its exit code, or a negative number when the runtime did not start (-2: coreclr_initialize failed, its
+// HRESULT in setup/init-error.txt). The runtime's own words go to logs/setup-stderr.txt. tmp: the TMPDIR (as the game
+// has); safe: a second try after -2 (a tester's Redmi Note 13 Pro, 2026-10-20), with the collector's heap limited (it
+// reserves a range of the address space by the limit instead of by the machine) and without W^X double mapping.
+JNIEXPORT jint JNICALL Java_com_local_waylith_port_SetupService_runSetup(JNIEnv* env, jclass cls, jstring jext, jstring jroot, jstring jlibdir, jstring jtmp, jboolean safe)
 {
     (void)cls;
     const char* ext = (*env)->GetStringUTFChars(env, jext, NULL);
     const char* root = (*env)->GetStringUTFChars(env, jroot, NULL);
     const char* libdir = (*env)->GetStringUTFChars(env, jlibdir, NULL);
-    char runtime[1100], setup[1100], setupSlash[1100], entry[1200];
+    const char* tmp = (*env)->GetStringUTFChars(env, jtmp, NULL);
+    char runtime[1100], setup[1100], setupSlash[1100], entry[1200], home[1100], path[1200];
     snprintf(runtime, sizeof runtime, "%s/runtime", ext);
     snprintf(setup, sizeof setup, "%s/setup", ext);
     snprintf(setupSlash, sizeof setupSlash, "%s/setup/", ext);
     snprintf(entry, sizeof entry, "%s/PortSetup.dll", setup);
+    snprintf(home, sizeof home, "%s/home", ext);
+    snprintf(path, sizeof path, "%s/logs", ext);
+    mkdir(path, 0775);
+    snprintf(path, sizeof path, "%s/logs/setup-stderr.txt", ext);
+    FILE* err = fopen(path, safe ? "a" : "w");
+    if (err)
+    {
+        dup2(fileno(err), 2);
+        setvbuf(stderr, NULL, _IONBF, 0);
+    }
+    mkdir(home, 0775);
+    mkdir(tmp, 0775);
+    setenv("HOME", home, 1);
+    setenv("TMPDIR", tmp, 1);
+    if (safe)
+    {
+        setenv("DOTNET_GCHeapHardLimit", "0x60000000", 1);
+        setenv("DOTNET_EnableWriteXorExecute", "0", 1);
+    }
+    fprintf(stderr, "setup: starting the runtime%s\n", safe ? " (second try: GCHeapHardLimit 1.5 GB, no W^X)" : "");
+    snprintf(path, sizeof path, "%s/setup/init-error.txt", ext);
+    unlink(path);
     static char tpa[1 << 18];
     tpa[0] = 0;
     int count = 0;
@@ -371,6 +397,13 @@ JNIEXPORT jint JNICALL Java_com_local_waylith_port_SetupService_runSetup(JNIEnv*
         if (rc < 0)
         {
             LOGE("setup: coreclr_initialize failed: 0x%08x", rc);
+            fprintf(stderr, "setup: coreclr_initialize failed: 0x%08x\n", rc);
+            FILE* f = fopen(path, "w");
+            if (f)
+            {
+                fprintf(f, "0x%08x", rc);
+                fclose(f);
+            }
             result = -2;
         }
         else
@@ -382,9 +415,14 @@ JNIEXPORT jint JNICALL Java_com_local_waylith_port_SetupService_runSetup(JNIEnv*
             LOGI("setup: PortSetup returned %d", result);
         }
     }
+    if (result == -1)
+    {
+        fprintf(stderr, "setup: the runtime is not there (%s)\n", lib ? "entry points missing" : dlerror());
+    }
     (*env)->ReleaseStringUTFChars(env, jext, ext);
     (*env)->ReleaseStringUTFChars(env, jroot, root);
     (*env)->ReleaseStringUTFChars(env, jlibdir, libdir);
+    (*env)->ReleaseStringUTFChars(env, jtmp, tmp);
     return result;
 }
 

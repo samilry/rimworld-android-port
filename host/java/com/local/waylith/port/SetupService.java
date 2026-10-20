@@ -17,7 +17,7 @@ import java.io.IOException;
  */
 public final class SetupService extends Service
 {
-    private static native int runSetup(String ext, String root, String libdir);
+    private static native int runSetup(String ext, String root, String libdir, String tmp, boolean safe);
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId)
@@ -27,6 +27,8 @@ public final class SetupService extends Service
         final String root = intent != null && intent.getStringExtra("root") != null ? intent.getStringExtra("root") : "";
         final File ext = getExternalFilesDir(null);
         final String libdir = getApplicationInfo().nativeLibraryDir;
+        final boolean safe = intent != null && intent.getBooleanExtra("safe", false);
+        final String tmp = new File(getFilesDir(), "tmp").getPath();
         new Thread(new Runnable()
         {
             @Override
@@ -40,7 +42,7 @@ public final class SetupService extends Service
                     // game's process does the same (host.c, java_load_library). Without it: a null pointer in the shim.
                     System.load(libdir + "/libSystem.Security.Cryptography.Native.Android.so");
                     System.loadLibrary("porthost");
-                    code = runSetup(ext.getPath(), root, libdir);
+                    code = runSetup(ext.getPath(), root, libdir, tmp, safe);
                 }
                 catch (Throwable problem)
                 {
@@ -52,14 +54,15 @@ public final class SetupService extends Service
                     try
                     {
                         FileOutputStream out = new FileOutputStream(new File(ext, "setup/result.txt"));
-                        out.write(("error\n处理程序没能启动（" + code + "）。").getBytes("UTF-8"));
+                        String hresult = MainActivity.readText(new File(ext, "setup/init-error.txt")).trim();
+                        out.write(("error\n处理程序没能启动（" + code + (hresult.isEmpty() ? "" : "，" + hresult) + "）。").getBytes("UTF-8"));
                         out.close();
                     }
                     catch (IOException ignored)
                     {
                     }
                 }
-                Diagnostics.trail(SetupService.this, "setup process finished: " + code);
+                Diagnostics.trail(SetupService.this, "setup process finished: " + code + (safe ? " (second try)" : ""));
                 stopSelf();
                 // The runtime does not go away by itself; the process has done its job.
                 android.os.Process.killProcess(android.os.Process.myPid());
