@@ -1,6 +1,7 @@
 using System;
 using HarmonyLib;
 using UnityEngine;
+using RimWorld;
 using Verse;
 using Waylith.Graphics;
 
@@ -23,6 +24,13 @@ namespace PortMobile
 	///
 	/// Without the material the icon is the texture, tinted as every other icon (the stuff's colour, or the colour the
 	/// material would have used): what the colour mask paints in a second colour (a bed's blanket) shows in the first.
+	///
+	/// The other interface draws with a material go through GenUI.DrawTextureWithMaterial / DrawTexturePartWithMaterial
+	/// (Graphics.DrawTexture with the material), above all a disabled or low-lit command button: its background and its
+	/// icon are drawn with the grayscale material (TexUI.GrayscaleGUI). On the Xiaomi Pad 7 Ultra (Mali-G925) selecting
+	/// six visitors showed their buttons as flickering grey squares. Those draws become plain textures too, the grayscale
+	/// ones dimmed instead of greyed (the colour the button already has, at 60 %).
+	///
 	/// mobile.txt plainIcons=1 does this on any GPU (to see it on a phone that draws the materials), 0 never.
 	/// </summary>
 	internal static class PlainIcons
@@ -54,6 +62,8 @@ namespace PortMobile
 					postfix: new HarmonyMethod(typeof(PlainIcons), nameof(AfterDefIcon)));
 				harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.GetIconFor), new[] { typeof(Thing), typeof(Vector2), typeof(Rot4?), typeof(bool), typeof(float).MakeByRefType(), typeof(float).MakeByRefType(), typeof(Vector2).MakeByRefType(), typeof(Color).MakeByRefType(), typeof(Material).MakeByRefType() }),
 					postfix: new HarmonyMethod(typeof(PlainIcons), nameof(AfterThingIcon)));
+				harmony.Patch(AccessTools.Method(typeof(GenUI), nameof(GenUI.DrawTextureWithMaterial)), prefix: new HarmonyMethod(typeof(PlainIcons), nameof(InsteadOfMaterialDraw)));
+				harmony.Patch(AccessTools.Method(typeof(GenUI), nameof(GenUI.DrawTexturePartWithMaterial)), prefix: new HarmonyMethod(typeof(PlainIcons), nameof(InsteadOfMaterialPartDraw)));
 				Console.WriteLine("[mobile] icons: drawn as plain textures, without the interface materials (" + gpu + (arm ? ", an ARM GPU" : ", plainIcons=1") + ")");
 			}
 			catch (Exception e)
@@ -72,6 +82,55 @@ namespace PortMobile
 		public static void AfterThingIcon(ref Material material)
 		{
 			material = null;
+		}
+
+		/// <summary>Prefix of GenUI.DrawTextureWithMaterial: with a material, the texture drawn plainly (texCoords as the game's own plain branch takes them).</summary>
+		public static bool InsteadOfMaterialDraw(Rect rect, Texture texture, Material material, Rect texCoords)
+		{
+			if (material == null)
+			{
+				return true;
+			}
+			DrawPlain(rect, texture, material, texCoords);
+			return false;
+		}
+
+		/// <summary>Prefix of GenUI.DrawTexturePartWithMaterial: the same, with the y flip its plain branch does.</summary>
+		public static bool InsteadOfMaterialPartDraw(Rect rect, Texture texture, Material material, Rect texCoords)
+		{
+			if (material == null)
+			{
+				return true;
+			}
+			if (texCoords != default(Rect))
+			{
+				texCoords.y = 1f - texCoords.y - texCoords.height;
+			}
+			DrawPlain(rect, texture, material, texCoords);
+			return false;
+		}
+
+		private static void DrawPlain(Rect rect, Texture texture, Material material, Rect texCoords)
+		{
+			if (texture == null)
+			{
+				return;
+			}
+			Color was = GUI.color;
+			if (material == TexUI.GrayscaleGUI)
+			{
+				// A disabled or low-lit button: dimmed, as it cannot be greyed without the material.
+				GUI.color = new Color(was.r * 0.6f, was.g * 0.6f, was.b * 0.6f, was.a);
+			}
+			if (texCoords == default(Rect))
+			{
+				GUI.DrawTexture(rect, texture);
+			}
+			else
+			{
+				GUI.DrawTextureWithTexCoords(rect, texture, texCoords);
+			}
+			GUI.color = was;
 		}
 	}
 }
