@@ -23,7 +23,7 @@
             android:label="Port17"
             android:exported="true"
             android:launchMode="singleTask"
-            android:screenOrientation="landscape"
+            android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|keyboardHidden|keyboard|screenLayout|uiMode|density">
             <meta-data android:name="android.app.lib_name" android:value="porthost" />
             <intent-filter>
