@@ -303,6 +303,7 @@ namespace PortMobile
 				if (mode != Mode.None)
 				{
 					Trace("touch ends (" + mode + ")");
+					Recorder.TouchEnded(last);
 				}
 				if (mode == Mode.Two && gestureWindow != null)
 				{
@@ -360,6 +361,9 @@ namespace PortMobile
 				{
 					// The press now, the release next frame (above), a click for the game.
 					Trace("quick tap at " + quickTap.pos);
+					Recorder.TouchBegan(quickTap.pos, WindowAt(quickTap.pos)?.GetType().Name);
+					Recorder.TouchMode("quick tap");
+					Recorder.TouchEnded(quickTap.pos);
 					Vector2 at = TapAssist.Adjust(quickTap.pos);
 					Interface.FingerLanded(at);
 					Cursor(at);
@@ -410,6 +414,7 @@ namespace PortMobile
 				last = first.pos;
 				pressAt = TapAssist.Adjust(first.pos);
 				Interface.FingerLanded(pressAt);
+				Recorder.TouchBegan(first.pos, WindowAt(first.start)?.GetType().Name);
 				cursorOffset = Vector2.zero;
 				dragged = false;
 				Cursor(pressAt);
@@ -427,6 +432,7 @@ namespace PortMobile
 						Button(button, true);
 					}
 					Trace("touch begins at " + first.pos + " as the " + (button == Right ? "right" : "middle") + " button");
+					Recorder.TouchMode(button == Right ? "right button" : "middle button");
 					return;
 				}
 				bool inList = Interface.ListTouch && TapAssist.ListAt(pressAt, out listDown, out listAcross, out listX, out listY);
@@ -436,6 +442,7 @@ namespace PortMobile
 					// The finger may be about to scroll the list: the mouse is there, but nothing is pressed yet.
 					mode = Mode.ListPending;
 					Trace("touch begins in a list at " + first.pos + (listDown ? ", scrolls down" : "") + (listAcross ? ", scrolls across" : ""));
+					Recorder.TouchMode("list");
 					return;
 				}
 				Button(Left, true);
@@ -563,6 +570,7 @@ namespace PortMobile
 			if (mode != was)
 			{
 				Trace("touch at " + first.pos + ": " + was + " -> " + mode + " (frame " + framesDown + ", box " + BoxActive + ", tool " + ToolActive + ", window " + (WindowAt(first.start)?.GetType().Name ?? "none") + ")");
+				Recorder.TouchMode(mode.ToString());
 			}
 		}
 
@@ -617,6 +625,7 @@ namespace PortMobile
 					BeginWindowGesture(under, centre);
 				}
 				Trace("two fingers around " + centre + ": " + (under != null ? "for the window " + under.GetType().Name : "for the map"));
+				Recorder.TouchMode("two fingers" + (under != null ? " on " + under.GetType().Name : ""));
 			}
 			else if (gestureWindow != null)
 			{

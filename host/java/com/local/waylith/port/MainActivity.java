@@ -92,6 +92,29 @@ public final class MainActivity extends NativeActivity
         }
     }
 
+    // In the trail (logs/import.txt, in the zip of "导出日志"): when the app was away, and when the system wanted memory
+    // back, to read a report against (the game's own record, logs/record.txt, shows the gap in its frames).
+    @Override
+    protected void onPause()
+    {
+        super.onPause();
+        Diagnostics.trail(this, "the app leaves the screen");
+    }
+
+    @Override
+    protected void onResume()
+    {
+        super.onResume();
+        Diagnostics.trail(this, "the app is on the screen");
+    }
+
+    @Override
+    public void onTrimMemory(int level)
+    {
+        super.onTrimMemory(level);
+        Diagnostics.trail(this, "the system asks for memory back (level " + level + ")");
+    }
+
     private static final int PICK_FILES = 7101, PICK_FOLDER = 7102;
 
     private static final int IDLE = 0, CHOOSING = 1, COPYING = 2, DONE = 3, FAILED = 4, CANCELLED = 5;

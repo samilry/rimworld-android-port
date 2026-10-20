@@ -323,7 +323,11 @@ namespace PortMobile
 				case "marry": return StartMarriage(args);
 				case "tune": return Tune(args);
 				case "worldtarget": return TestWorldTarget();
-				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, pawn, menu, research, spawn, makepawn, heal, kill, save, hash, relation, rituals, marry, tune, ping)");
+				case "mark":
+					// As the key wheel's "记录问题" does.
+					Recorder.Mark();
+					return Answer(w => w.WriteString("mark", "in three frames"));
+				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, pawn, menu, research, spawn, makepawn, heal, kill, save, hash, relation, rituals, marry, tune, worldtarget, mark, ping)");
 			}
 		}
 

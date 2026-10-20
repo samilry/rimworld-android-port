@@ -508,6 +508,31 @@ final class Diagnostics
             putFile(zip, "java-crash.txt", new File(ext, "logs/java-crash.txt"));
             putFile(zip, "setup-init-error.txt", new File(ext, "setup/init-error.txt"));
             putText(zip, "logcat.txt", ownLogcat());
+            // The run's record (PortMobile's Recorder: what the game was doing, every few seconds and at every event) of
+            // this run and the two before, and the newest three moments the player marked with "记录问题" (a screenshot each).
+            for (String file : new String[] { "record.txt", "record-1.txt", "record-2.txt" })
+            {
+                putFile(zip, file, new File(ext, "logs/" + file));
+            }
+            File[] marks = new File(ext, "logs/marks").listFiles();
+            if (marks != null)
+            {
+                Arrays.sort(marks);
+                int taken = 0;
+                for (int i = marks.length - 1; i >= 0 && taken < 3; i--)
+                {
+                    String mark = marks[i].getName();
+                    if (mark.endsWith(".txt"))
+                    {
+                        String stem = mark.substring(0, mark.length() - 4);
+                        putFile(zip, "marks/" + mark, marks[i]);
+                        putBinary(zip, "marks/" + stem + ".png", new File(marks[i].getParentFile(), stem + ".png"));
+                        taken++;
+                    }
+                }
+            }
+            putFile(zip, "mobile.txt", new File(ext, "game/mobile.txt"));
+            putFile(zip, "Prefs.xml", new File(data, "Config/Prefs.xml"));
             File[] crashes = new File(data, "Crashes").listFiles();
             if (crashes != null)
             {
@@ -647,6 +672,31 @@ final class Diagnostics
                 }
             }
             writeMasked(zip, line);
+            zip.closeEntry();
+        }
+        finally
+        {
+            in.close();
+        }
+    }
+
+    /** A file as it is (a screenshot), when it is there. */
+    private static void putBinary(ZipOutputStream zip, String name, File file) throws IOException
+    {
+        if (!file.isFile())
+        {
+            return;
+        }
+        FileInputStream in = new FileInputStream(file);
+        try
+        {
+            zip.putNextEntry(new ZipEntry(name));
+            byte[] buffer = new byte[65536];
+            int n;
+            while ((n = in.read(buffer)) > 0)
+            {
+                zip.write(buffer, 0, n);
+            }
             zip.closeEntry();
         }
         finally

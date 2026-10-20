@@ -28,6 +28,8 @@ namespace PortMobile
 			InlineGuard.Start(harmony);
 			harmony.Patch(AccessTools.Method(typeof(Verse.UIRoot), "UIRootOnGUI"), postfix: new HarmonyMethod(typeof(Entry), nameof(AfterUIRootOnGUI)));
 			Console.WriteLine("[mobile] patched UIRoot.UIRootOnGUI");
+			// First of the rest: what goes wrong while the others start is in the record too.
+			Recorder.Start(harmony);
 			Touch.Start();
 			ModImport.Start(harmony);
 			ModSort.Start(harmony);

@@ -39,12 +39,14 @@ namespace PortMobile
 
 		// The phone's own keys (their names in keyWheelKeys) and the mouse buttons (GLFW's numbers, as Touch injects them).
 		internal const string ShiftName = "@Shift", CtrlName = "@Ctrl", AltName = "@Alt", MouseLeftName = "@MouseLeft", MouseMiddleName = "@MouseMiddle", MouseRightName = "@MouseRight";
-		internal static readonly string[] Specials = { CtrlName, ShiftName, AltName, MouseLeftName, MouseRightName, MouseMiddleName };
+		// Not a switch: a tap records the moment for a report (Recorder.Mark: a screenshot and the game's state).
+		internal const string ReportName = "@Report";
+		internal static readonly string[] Specials = { CtrlName, ShiftName, AltName, MouseLeftName, MouseRightName, MouseMiddleName, ReportName };
 		internal const int MouseLeft = 0, MouseRight = 1, MouseMiddle = 2;
 		// A keyboard key in keyWheelKeys: "@K:" and the modifiers and the key's name joined by "+" (@K:Z, @K:Ctrl+Shift+S).
 		internal const string RawPrefix = "@K:";
 
-		public static readonly string[] Defaults = { "TogglePause", "TimeSpeed_Normal", "TimeSpeed_Fast", "TimeSpeed_Superfast", ShiftName, MouseLeftName, MouseRightName, MouseMiddleName, "Designator_RotateLeft", "Designator_RotateRight", "Command_ColonistDraft", "NextColonist" };
+		public static readonly string[] Defaults = { "TogglePause", "TimeSpeed_Normal", "TimeSpeed_Fast", "TimeSpeed_Superfast", ShiftName, MouseLeftName, MouseRightName, MouseMiddleName, "Designator_RotateLeft", "Designator_RotateRight", "Command_ColonistDraft", "NextColonist", ReportName };
 
 		/// <summary>A key of the keyboard: GLFW's code, the name it is stored by (letters and digits only), what it shows.</summary>
 		internal struct KeyboardKey
@@ -226,6 +228,14 @@ namespace PortMobile
 		/// <summary>A tap on one of the phone's own keys: Ctrl, Shift or Alt on or off; a mouse button on (tapped again: back to the left one).</summary>
 		private static void Toggle(WheelKey key)
 		{
+			if (key.Name == ReportName)
+			{
+				// The ring closes first: the screenshot is of the game.
+				expanded = false;
+				SoundDefOf.Tick_High.PlayOneShotOnCamera();
+				Recorder.Mark();
+				return;
+			}
 			bool on;
 			LatchedKey latched = Latched(key);
 			if (latched != null)
@@ -286,6 +296,7 @@ namespace PortMobile
 					case AltName: return "Alt";
 					case MouseLeftName: return Texts.Chinese ? "左键" : "LMB";
 					case MouseRightName: return Texts.Chinese ? "右键" : "RMB";
+					case ReportName: return Texts.Chinese ? "记录\n问题" : "Report";
 					default: return Texts.Chinese ? "中键" : "MMB";
 				}
 			}
@@ -653,7 +664,7 @@ namespace PortMobile
 			{
 				WheelKey key = Keys[index];
 				label = KeyText(key);
-				bool on = key.IsSwitch ? IsOn(key) : held;
+				bool on = key.IsSwitch && key.Name != ReportName ? IsOn(key) : held;
 				fill = label.Length == 0 ? new Color(0.3f, 0.2f, 0.2f, 0.7f) : on ? new Color(0.85f, 0.65f, 0.2f, 1f) : new Color(0.18f, 0.2f, 0.22f, 0.88f);
 				if (label.Length == 0)
 				{
@@ -871,7 +882,7 @@ namespace PortMobile
 				foreach (string name in KeyWheel.Specials)
 				{
 					WheelKey key = WheelKey.Named(name);
-					yield return new Choice { Category = chinese ? "手机按键（开关）" : "Phone keys (switches)", Text = key.Label + grey(Bound(key, chinese)), Key = key };
+					yield return new Choice { Category = chinese ? "手机按键" : "Phone keys", Text = key.Label + grey(Bound(key, chinese)), Key = key };
 				}
 			}
 			string keyboard = mods == 0 ? (chinese ? "键盘按键" : "Keyboard") : (chinese ? "组合键" : "Combinations");
@@ -914,6 +925,8 @@ namespace PortMobile
 					case KeyWheel.CtrlName:
 					case KeyWheel.AltName:
 						return chinese ? "开关，开着时一直按住" : "switch: held while on";
+					case KeyWheel.ReportName:
+						return chinese ? "出问题时点一下：截图并保存当时的运行数据，随“导出日志”发出" : "a tap saves a screenshot and the game's state for the logs";
 					default:
 						return chinese ? "开关，点屏幕即为此键" : "switch: taps are this button";
 				}
@@ -1010,6 +1023,7 @@ namespace PortMobile
 					case KeyWheel.AltName: return "Alt";
 					case KeyWheel.MouseLeftName: return chinese ? "鼠标左键" : "Left mouse button";
 					case KeyWheel.MouseRightName: return chinese ? "鼠标右键" : "Right mouse button";
+					case KeyWheel.ReportName: return chinese ? "记录问题" : "Record a problem";
 					default: return chinese ? "鼠标中键" : "Middle mouse button";
 				}
 			}
