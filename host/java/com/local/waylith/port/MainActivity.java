@@ -491,6 +491,9 @@ public final class MainActivity extends NativeActivity
     /** What the dialogs and the copying tell the waiting runtime thread: {"picked", root}, {"failed", why}, {"again"}, {"quit"}, {"ok"}. */
     private final LinkedBlockingQueue<String[]> gameEvents = new LinkedBlockingQueue<String[]>();
     private AlertDialog busyDialog;
+    /** The dialog asking for the game while it is shown; and whether a chosen game is being copied (onGamePicked). */
+    private AlertDialog askDialog;
+    private volatile boolean gamePickRunning;
 
     /**
      * Called by the host (host.c, on its runtime thread, before the runtime starts) when this is the tester's APK and
@@ -518,33 +521,43 @@ public final class MainActivity extends NativeActivity
             {
             }
         }
-        String problem = null;
-        while (true)
+        // From here to the end the process is a foreground one: the file chooser, or another app while the game is copied
+        // and set up, would otherwise leave it to be ended in the background on a phone short of memory.
+        ImportService.start(this);
+        try
         {
-            String root = "";
-            if (!importedBefore || problem != null)
+            String problem = null;
+            while (true)
             {
-                root = askForGame(problem);
-                if (root == null)
+                String root = "";
+                if (!importedBefore || problem != null)
                 {
-                    leave();
-                    return false;
+                    root = askForGame(problem);
+                    if (root == null)
+                    {
+                        leave();
+                        return false;
+                    }
                 }
+                String[] result = runSetup(root);
+                if ("ok".equals(result[0]))
+                {
+                    if (result[1].contains("注意"))
+                    {
+                        tell("游戏文件已准备好", result[1]);
+                    }
+                    else
+                    {
+                        toast("游戏文件已准备好，正在启动。" + (result[1].isEmpty() ? "" : "\n" + result[1]));
+                    }
+                    return true;
+                }
+                problem = result[1];
             }
-            String[] result = runSetup(root);
-            if ("ok".equals(result[0]))
-            {
-                if (result[1].contains("注意"))
-                {
-                    tell("游戏文件已准备好", result[1]);
-                }
-                else
-                {
-                    toast("游戏文件已准备好，正在启动。" + (result[1].isEmpty() ? "" : "\n" + result[1]));
-                }
-                return true;
-            }
-            problem = result[1];
+        }
+        finally
+        {
+            ImportService.stop(this);
         }
     }
 
@@ -553,6 +566,21 @@ public final class MainActivity extends NativeActivity
     {
         while (true)
         {
+            if (gamePickRunning)
+            {
+                // The process was ended while the chooser was open and started again by the system to take its answer
+                // (onActivityResult came first): the copying is under way, its result is waited for instead of asking.
+                String[] event = takeGameEvent();
+                if ("picked".equals(event[0]))
+                {
+                    return event[1];
+                }
+                if ("failed".equals(event[0]))
+                {
+                    problem = event[1];
+                }
+                continue;
+            }
             gameEvents.clear();
             final String shownProblem = problem;
             runOnUiThread(new Runnable()
@@ -560,6 +588,11 @@ public final class MainActivity extends NativeActivity
                 @Override
                 public void run()
                 {
+                    if (gamePickRunning)
+                    {
+                        // The chooser's answer arrived meanwhile: no dialog over the copying.
+                        return;
+                    }
                     String text = "这个安装包只包含手机移植部分，不含游戏本体。请导入你自己在 Steam 上购买的 RimWorld 1.7（已购买的 DLC 会一起导入）：\n\n"
                         + "1. 在电脑的 Steam 库里右键 RimWorld → 管理 → 浏览本地文件，打开游戏文件夹；\n"
                         + "2. 把整个文件夹打包成 zip，传到手机上（或者直接把整个文件夹拷到手机上）；\n"
@@ -583,7 +616,7 @@ public final class MainActivity extends NativeActivity
                             showNotices();
                         }
                     }, start, message.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                    AlertDialog dialog = new AlertDialog.Builder(MainActivity.this)
+                    AlertDialog dialog = askDialog = new AlertDialog.Builder(MainActivity.this)
                         .setTitle("导入你自己的 RimWorld")
                         .setMessage(message)
                         .setCancelable(false)
@@ -685,6 +718,12 @@ public final class MainActivity extends NativeActivity
             gameEvents.offer(new String[] { "failed", "手机上的空闲空间不够（需要约 3 GB，现在只有 " + (ext.getUsableSpace() >> 20) + " MB）。" });
             return;
         }
+        gamePickRunning = true;
+        if (askDialog != null && askDialog.isShowing())
+        {
+            // Shown again by a process the system started to take the chooser's answer; it is answered now.
+            askDialog.dismiss();
+        }
         showBusy("正在复制游戏文件…");
         new Thread(new Runnable()
         {
@@ -740,10 +779,12 @@ public final class MainActivity extends NativeActivity
                     if (root == null)
                     {
                         delete(into);
+                        gamePickRunning = false;
                         gameEvents.offer(new String[] { "failed", "所选的文件里没有找到 RimWorld 的游戏文件（应包含 Version.txt、Assembly-CSharp.dll、Data 文件夹等）。请选择 Steam 里 RimWorld 的整个游戏文件夹或它的压缩包。" });
                     }
                     else
                     {
+                        gamePickRunning = false;
                         gameEvents.offer(new String[] { "picked", root.getPath() });
                     }
                 }
@@ -752,6 +793,7 @@ public final class MainActivity extends NativeActivity
                     copying[0] = false;
                     hideBusy();
                     delete(into);
+                    gamePickRunning = false;
                     gameEvents.offer(new String[] { "failed", "复制失败：" + (problem.getMessage() != null ? problem.getMessage() : problem.toString()) });
                 }
             }

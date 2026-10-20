@@ -22,6 +22,8 @@ public final class SetupService extends Service
     @Override
     public int onStartCommand(Intent intent, int flags, int startId)
     {
+        // A foreground service, so that the system keeps this (large) process while the player looks at another app.
+        ImportService.goForeground(this, ImportService.SETUP_ID, "正在处理游戏文件，请稍候");
         final String root = intent != null && intent.getStringExtra("root") != null ? intent.getStringExtra("root") : "";
         final File ext = getExternalFilesDir(null);
         final String libdir = getApplicationInfo().nativeLibraryDir;

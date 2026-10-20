@@ -5,6 +5,9 @@
     android:versionName="0.1">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The tester's APK: the import of the player's game keeps its processes alive as foreground services (ImportService). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x403000" android:required="false" />
     <!-- appCategory/isGame: the system (and the maker's game mode on top of it) schedules and cools a declared game as one. -->
     <application android:allowNativeHeapPointerTagging="false"
@@ -37,6 +40,7 @@
             android:taskAffinity=""
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <!-- The tester's APK: makes the player's own copy of the game ready (setup/PortSetup.dll) in a process of its own. -->
-        <service android:name="com.local.waylith.port.SetupService" android:process=":setup" android:exported="false" />
+        <service android:name="com.local.waylith.port.SetupService" android:process=":setup" android:exported="false" android:foregroundServiceType="dataSync" />
+        <service android:name="com.local.waylith.port.ImportService" android:exported="false" android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

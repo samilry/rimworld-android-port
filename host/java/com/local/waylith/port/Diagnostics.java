@@ -164,8 +164,12 @@ final class Diagnostics
             case ApplicationExitInfo.REASON_CRASH_NATIVE:
             case ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE:
             case ApplicationExitInfo.REASON_INITIALIZATION_FAILURE:
-            case ApplicationExitInfo.REASON_LOW_MEMORY:
                 return true;
+            case ApplicationExitInfo.REASON_LOW_MEMORY:
+                // Out of memory on the screen (or while importing, a foreground service) is a problem; in the background
+                // it is how Android makes room (a tester's phone ended the app in the file chooser again and again, and
+                // every return showed a crash report).
+                return exit.getImportance() <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_PERCEPTIBLE;
             case ApplicationExitInfo.REASON_SIGNALED:
             case ApplicationExitInfo.REASON_OTHER:
                 // Killed while on the screen: not something the player chose. (In the background the system ends apps all the time.)
