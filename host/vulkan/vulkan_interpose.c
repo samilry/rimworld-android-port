@@ -27,6 +27,7 @@
 #include <android/log.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -243,7 +244,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDescriptorPool(VkDevice device,
     return VK_SUCCESS;
 }
 
-static VKAPI_ATTR VkResult VKAPI_CALL hook_AllocateDescriptorSets(VkDevice device, const VkDescriptorSetAllocateInfo* info, VkDescriptorSet* sets)
+static VkResult allocate_sets_unlocked(VkDevice device, const VkDescriptorSetAllocateInfo* info, VkDescriptorSet* sets)
 {
     PoolChain* chain = opt_pools ? find_chain(info->descriptorPool) : NULL;
     if (!chain) return real_AllocateDescriptorSets(device, info, sets);
@@ -297,7 +298,7 @@ done:
     return r;
 }
 
-static VKAPI_ATTR VkResult VKAPI_CALL hook_FreeDescriptorSets(VkDevice device, VkDescriptorPool pool, uint32_t count, const VkDescriptorSet* sets)
+static VkResult free_sets_unlocked(VkDevice device, VkDescriptorPool pool, uint32_t count, const VkDescriptorSet* sets)
 {
     PoolChain* chain = opt_pools ? find_chain(pool) : NULL;
     if (!chain) return real_FreeDescriptorSets(device, pool, count, sets);
@@ -321,7 +322,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_FreeDescriptorSets(VkDevice device, V
     return VK_SUCCESS;
 }
 
-static VKAPI_ATTR VkResult VKAPI_CALL hook_ResetDescriptorPool(VkDevice device, VkDescriptorPool pool, VkDescriptorPoolResetFlags flags)
+static VkResult reset_pool_unlocked(VkDevice device, VkDescriptorPool pool, VkDescriptorPoolResetFlags flags)
 {
     PoolChain* chain = opt_pools ? find_chain(pool) : NULL;
     if (!chain) return real_ResetDescriptorPool(device, pool, flags);
@@ -333,6 +334,68 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_ResetDescriptorPool(VkDevice device, 
     }
     chain->current = 0;
     if (chain->flags & VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT) forget_sets_of(chain);
+    return r;
+}
+
+// ---- one thread at a time in a descriptor pool ----
+// Vulkan leaves it to the program to keep two threads out of one descriptor pool at the same time. The engine's
+// camera baker (portraits, pawn icons; on the game's thread) allocates from the frame resources the render thread is
+// recording with. A driver that does not guard its pools itself may hand both the same set: one icon is then drawn with
+// the other's texture (the suspicion for the icons flickering on Mali). Every allocation, free and reset goes through
+// one lock here; when a thread has to wait for another one that holds the same pool, that is counted and logged.
+static pthread_mutex_t g_descriptorLock = PTHREAD_MUTEX_INITIALIZER;
+static VkDescriptorPool g_descriptorHolder;
+static int g_descriptorHolderTid;
+static long g_samePoolWaits, g_otherPoolWaits;
+
+static void descriptor_lock(VkDescriptorPool pool)
+{
+    if (pthread_mutex_trylock(&g_descriptorLock) != 0)
+    {
+        VkDescriptorPool held = g_descriptorHolder;
+        int heldBy = g_descriptorHolderTid;
+        if (held == pool)
+        {
+            long n = __sync_add_and_fetch(&g_samePoolWaits, 1);
+            if (n <= 10 || n % 1000 == 0) LOGI("vulkan: two threads in descriptor pool %p at once (thread %d waits for %d; %ld times so far)", (void*)pool, gettid(), heldBy, n);
+        }
+        else
+        {
+            __sync_add_and_fetch(&g_otherPoolWaits, 1);
+        }
+        pthread_mutex_lock(&g_descriptorLock);
+    }
+    g_descriptorHolder = pool;
+    g_descriptorHolderTid = gettid();
+}
+
+static void descriptor_unlock(void)
+{
+    g_descriptorHolder = VK_NULL_HANDLE;
+    pthread_mutex_unlock(&g_descriptorLock);
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL hook_AllocateDescriptorSets(VkDevice device, const VkDescriptorSetAllocateInfo* info, VkDescriptorSet* sets)
+{
+    descriptor_lock(info->descriptorPool);
+    VkResult r = allocate_sets_unlocked(device, info, sets);
+    descriptor_unlock();
+    return r;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL hook_FreeDescriptorSets(VkDevice device, VkDescriptorPool pool, uint32_t count, const VkDescriptorSet* sets)
+{
+    descriptor_lock(pool);
+    VkResult r = free_sets_unlocked(device, pool, count, sets);
+    descriptor_unlock();
+    return r;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL hook_ResetDescriptorPool(VkDevice device, VkDescriptorPool pool, VkDescriptorPoolResetFlags flags)
+{
+    descriptor_lock(pool);
+    VkResult r = reset_pool_unlocked(device, pool, flags);
+    descriptor_unlock();
     return r;
 }
 
