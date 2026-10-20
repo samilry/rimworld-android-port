@@ -1081,7 +1081,88 @@ public final class MainActivity extends NativeActivity
         return result;
     }
 
+    /**
+     * One run of SetupService. A setup process an earlier start of the app left running is ended first (a tester's vivo:
+     * the app was swiped away and opened again while setup still ran, the new start reached the old process, whose
+     * runtime was up already: 0x80131022). While it runs the setup process is bound as important to this activity, so
+     * that the system schedules it as the app on the screen: on that vivo a setup process of its own was given the four
+     * slow cores and stood minutes at the game's main assembly (eight seconds on the cores of the screen's app).
+     */
     private String[] runSetupOnce(String root, boolean safe)
+    {
+        endEarlierSetup();
+        android.content.ServiceConnection important = new android.content.ServiceConnection()
+        {
+            @Override
+            public void onServiceConnected(ComponentName name, android.os.IBinder service)
+            {
+            }
+
+            @Override
+            public void onServiceDisconnected(ComponentName name)
+            {
+            }
+        };
+        boolean bound = false;
+        try
+        {
+            // Without BIND_AUTO_CREATE: the connection comes when startService has created it, and a process that ends
+            // itself after its work is not started again for the binding.
+            bound = bindService(new Intent(this, SetupService.class), important, BIND_IMPORTANT);
+        }
+        catch (Throwable problem)
+        {
+            Diagnostics.trail(this, "setup not bound: " + problem);
+        }
+        try
+        {
+            return waitForSetup(root, safe);
+        }
+        finally
+        {
+            if (bound)
+            {
+                try
+                {
+                    unbindService(important);
+                }
+                catch (Throwable ignored)
+                {
+                }
+            }
+        }
+    }
+
+    /** Ends a setup process that is still there (from an earlier start of the app), and waits a little for it to go. */
+    private void endEarlierSetup()
+    {
+        ActivityManager manager = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
+        List<ActivityManager.RunningAppProcessInfo> processes = manager != null ? manager.getRunningAppProcesses() : null;
+        if (processes == null)
+        {
+            return;
+        }
+        for (ActivityManager.RunningAppProcessInfo process : processes)
+        {
+            if (process.processName.endsWith(":setup"))
+            {
+                Diagnostics.trail(this, "a setup process of an earlier start was still running (pid " + process.pid + "): ended");
+                android.os.Process.killProcess(process.pid);
+            }
+        }
+        for (int i = 0; i < 20 && setupRunning(); i++)
+        {
+            try
+            {
+                Thread.sleep(250);
+            }
+            catch (InterruptedException ignored)
+            {
+            }
+        }
+    }
+
+    private String[] waitForSetup(String root, boolean safe)
     {
         String lastStep = "";
         long stepSince = System.currentTimeMillis();
@@ -1121,7 +1202,7 @@ public final class MainActivity extends NativeActivity
             }
             if (!step.isEmpty())
             {
-                updateBusy("正在处理游戏文件：" + step + (stalledNoted ? "\n\n这一步比平常久了很多。如果再过几分钟还没有变化，请长按桌面上的 Port17 图标，选“导出日志”，把日志发给我们。" : ""));
+                updateBusy("正在处理游戏文件：" + step + "\n\n请停留在这个界面，不要切出去或划掉本应用（会中断处理）。" + (stalledNoted ? "\n\n这一步比平常久了很多。如果再过几分钟还没有变化，请长按桌面上的 Port17 图标，选“导出日志”，把日志发给我们。" : ""));
             }
             // The setup process gone without a result (it crashed): given up a few seconds later.
             if (System.currentTimeMillis() - started > 5000 && !setupRunning())

@@ -74,6 +74,14 @@ public final class SetupService extends Service
     @Override
     public IBinder onBind(Intent intent)
     {
-        return null;
+        // MainActivity binds as important while the work runs (the process is then scheduled as the app on the screen).
+        return new android.os.Binder();
+    }
+
+    @Override
+    public void onCreate()
+    {
+        super.onCreate();
+        Diagnostics.recordJavaCrashes(this);
     }
 }

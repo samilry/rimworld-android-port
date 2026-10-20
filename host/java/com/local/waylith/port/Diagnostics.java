@@ -55,9 +55,53 @@ final class Diagnostics
     {
     }
 
+    /**
+     * An exception no Java code caught is written to logs/java-crash.txt (with the import's trail) before the process
+     * ends as it would: the system keeps no trace of a Java crash for us, and some phones (a tester's vivo) let an app
+     * read nothing of logcat.
+     */
+    static void recordJavaCrashes(final Context context)
+    {
+        final Thread.UncaughtExceptionHandler before = Thread.getDefaultUncaughtExceptionHandler();
+        final Context app = context.getApplicationContext() != null ? context.getApplicationContext() : context;
+        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler()
+        {
+            @Override
+            public void uncaughtException(Thread thread, Throwable problem)
+            {
+                try
+                {
+                    java.io.StringWriter text = new java.io.StringWriter();
+                    problem.printStackTrace(new java.io.PrintWriter(text));
+                    File dir = new File(app.getExternalFilesDir(null), "logs");
+                    dir.mkdirs();
+                    FileOutputStream out = new FileOutputStream(new File(dir, "java-crash.txt"), true);
+                    try
+                    {
+                        String stamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date());
+                        out.write((stamp + " [" + android.os.Process.myPid() + "] thread " + thread.getName() + "\n" + text + "\n").getBytes("UTF-8"));
+                    }
+                    finally
+                    {
+                        out.close();
+                    }
+                    trail(app, "Java crash on thread " + thread.getName() + ": " + problem);
+                }
+                catch (Throwable ignored)
+                {
+                }
+                if (before != null)
+                {
+                    before.uncaughtException(thread, problem);
+                }
+            }
+        });
+    }
+
     /** From MainActivity.onCreate: the shortcut, and a report when the previous run ended badly. */
     static void onStart(final Activity activity)
     {
+        recordJavaCrashes(activity);
         addShortcut(activity);
         if (Build.VERSION.SDK_INT < 30)
         {
@@ -449,6 +493,7 @@ final class Diagnostics
                 + "\nsetup/original：" + folderSize(new File(ext, "setup/original")) + "\n");
             putText(zip, "exits.txt", exitHistory(context));
             putFile(zip, "setup-stderr.txt", new File(ext, "logs/setup-stderr.txt"));
+            putFile(zip, "java-crash.txt", new File(ext, "logs/java-crash.txt"));
             putFile(zip, "setup-init-error.txt", new File(ext, "setup/init-error.txt"));
             putText(zip, "logcat.txt", ownLogcat());
             File[] crashes = new File(data, "Crashes").listFiles();
