@@ -69,7 +69,8 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 ///   - Lunar Framework's checksum of the file (name.lfc beside name.dll) recomputed when the file changed;
 ///   - the three things Ludeon's runtime finds for a mod where the stock one does not (its LaxTypeRefResolution,
 ///     LaxMemberSignatures and LaxPrivateFieldNames): a framework type referenced in an assembly that does not have
-///     it (Adaptive Storage's Unsafe "in mscorlib") pointed at the one that does; a call of a framework method that
+///     it (Adaptive Storage's Unsafe "in mscorlib", DefaultInterpolatedStringHandler "in 0Harmony") pointed at the one
+///     that does; a call of a framework method that
 ///     returned nothing on Mono and returns a value here (List<T>.EnsureCapacity) followed by a pop; a framework
 ///     field by its Mono name (Label.label) pointed at the field by this runtime's name (m_label).
 /// A stamp file in the mod's folder records that this was done (and with which version of these rules).
@@ -81,7 +82,7 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 internal static class ModPrep
 {
 	/// <summary>Bumped whenever what is done to an assembly changes; part of the stamp, so prepared mods are done again.</summary>
-	public const int RulesVersion = 9;
+	public const int RulesVersion = 10;
 
 	public const string StampName = ".port17-prepared";
 
@@ -745,6 +746,12 @@ internal static class ModPrep
 	/// everything after it on the map). A framework type that does not resolve where it is referenced is pointed at
 	/// System.Runtime when that forwards it, else at System.Private.CoreLib when that defines it. A type neither has
 	/// (Mono's JitHelpers) stays as it is: it fails on the PC too.
+	/// The same for a System type referenced in another library that turns out not to have it: mods built for 1.6
+	/// against Harmony 2.3 take C# string interpolation's System.Runtime.CompilerServices.DefaultInterpolatedStringHandler
+	/// "from 0Harmony" (Harmony carried it for the old framework), and the game's Harmony 3.0 does not carry it any more:
+	/// Prepatcher and PurePatcher failed to construct ("Could not load type ... from assembly '0Harmony'"), and
+	/// Kingfisher, which needs PurePatcher, threw from every building that was built or removed. Such a reference is
+	/// changed only when its library is found and does not have the type.
 	/// </summary>
 	private static int RetargetMissingFrameworkTypes(ModuleDefinition module, IAssemblyResolver resolver, string label, Action<string> log)
 	{
@@ -753,9 +760,22 @@ internal static class ModPrep
 		bool looked = false;
 		foreach (TypeReference type in module.GetTypeReferences().ToList())
 		{
-			if (type.DeclaringType != null || !(type.Scope is AssemblyNameReference scope) || !IsFrameworkName(scope.Name) || TryResolve(type) != null)
+			if (type.DeclaringType != null || !(type.Scope is AssemblyNameReference scope) || TryResolve(type) != null)
 			{
 				continue;
+			}
+			if (!IsFrameworkName(scope.Name))
+			{
+				// A System type "from" a library (0Harmony and the like): only when that library is there and lacks it.
+				if (!(type.Namespace == "System" || type.Namespace.StartsWith("System.", StringComparison.Ordinal)))
+				{
+					continue;
+				}
+				AssemblyDefinition library = TryResolve(resolver, scope.Name);
+				if (library == null || library.MainModule.GetType(type.FullName) != null || library.MainModule.ExportedTypes.Any(e => e.FullName == type.FullName))
+				{
+					continue;
+				}
 			}
 			if (!looked)
 			{
