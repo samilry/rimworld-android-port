@@ -669,6 +669,8 @@ public final class MainActivity extends NativeActivity
     /** The dialog asking for the game while it is shown; and whether a chosen game is being copied (onGamePicked). */
     private AlertDialog askDialog;
     private volatile boolean gamePickRunning;
+    /** Set by prepareGame while a copy is asked for after "重新导入游戏" (ReimportActivity): the dialog says how to call it off. */
+    private volatile boolean reimporting;
 
     /**
      * Called by the host (host.c, on its runtime thread, before the runtime starts) when this is the tester's APK and
@@ -681,8 +683,11 @@ public final class MainActivity extends NativeActivity
     {
         File ext = getExternalFilesDir(null);
         String[] kept = new File(ext, "setup/original").list();
-        boolean importedBefore = new File(ext, "game/Assets.zip").exists() && kept != null && kept.length > 0;
-        if (!importedBefore && new File(ext, "game/Assembly-CSharp.dll").exists() && new File(ext, "game/Assets.zip").exists() && !new File(ext, "game/port-setup.txt").exists())
+        // "重新导入游戏" (ReimportActivity) put game/port-setup.txt aside: asked for a copy even though one was imported.
+        final File aside = new File(ext, ReimportActivity.ASIDE);
+        boolean reimport = reimporting = aside.exists();
+        boolean importedBefore = !reimport && new File(ext, "game/Assets.zip").exists() && kept != null && kept.length > 0;
+        if (!importedBefore && !reimport && new File(ext, "game/Assembly-CSharp.dll").exists() && new File(ext, "game/Assets.zip").exists() && !new File(ext, "game/port-setup.txt").exists())
         {
             // A game made ready some other way (copied from the PC by host/stage.sh, or by a full APK): kept as it is.
             try
@@ -698,11 +703,13 @@ public final class MainActivity extends NativeActivity
         }
         // From here to the end the process is a foreground one: the file chooser, or another app while the game is copied
         // and set up, would otherwise leave it to be ended in the background on a phone short of memory.
-        Diagnostics.trail(this, "game not ready: " + (importedBefore ? "imported before, prepared again" : "to be imported") + "; " + (ext.getUsableSpace() >> 20) + " MB free");
+        Diagnostics.trail(this, "game not ready: " + (reimport ? "to be imported again" : importedBefore ? "imported before, prepared again" : "to be imported") + "; " + (ext.getUsableSpace() >> 20) + " MB free");
         ImportService.start(this);
         try
         {
             String problem = null;
+            // Whether a copy went to the setup during a re-import: the game folder may have been changed, so it is not put back.
+            boolean attempted = false;
             while (true)
             {
                 String root = "";
@@ -711,15 +718,25 @@ public final class MainActivity extends NativeActivity
                     root = askForGame(problem);
                     if (root == null)
                     {
-                        Diagnostics.trail(this, "the player left");
+                        if (reimport && !attempted && aside.exists() && aside.renameTo(new File(ext, "game/port-setup.txt")))
+                        {
+                            // The re-import is called off before any copy was taken: the game is as it was.
+                            Diagnostics.trail(this, "the player left: re-import called off");
+                        }
+                        else
+                        {
+                            Diagnostics.trail(this, "the player left");
+                        }
                         leave();
                         return false;
                     }
                 }
+                attempted |= !root.isEmpty();
                 String[] result = runSetup(root);
                 Diagnostics.trail(this, "setup: " + result[0] + (result[1].isEmpty() ? "" : " - " + result[1].replace('\n', ' ')));
                 if ("ok".equals(result[0]))
                 {
+                    aside.delete();
                     if (result[1].contains("注意"))
                     {
                         tell("游戏文件已准备好", result[1]);
@@ -777,6 +794,11 @@ public final class MainActivity extends NativeActivity
                         + "2. 把整个文件夹打包成 zip，传到手机上（或者直接把整个文件夹拷到手机上）；\n"
                         + "3. 点下面的按钮选择它。\n\n"
                         + "需要约 3 GB 空闲空间，复制和处理需要一两分钟。";
+                    if (reimporting)
+                    {
+                        text = "重新导入游戏：存档、设置和 mod 都会保留，只替换游戏本体。不想换了就点“退出”，下次打开照常用原来的游戏"
+                            + "（已经开始处理过新文件的话，下次打开仍会请你选择）。\n\n" + text;
+                    }
                     if (shownProblem != null && !shownProblem.isEmpty())
                     {
                         text = "上次没有成功：" + shownProblem + "\n\n" + text;

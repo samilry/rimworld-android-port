@@ -15,7 +15,8 @@ const path = require('path');
 const png = require('./png');
 
 const ADB = process.env.ADB || 'C:/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe';
-const PKG = 'com.local.waylith.port';
+// RW_PACKAGE: another package to drive, e.g. the side-by-side test APK (com.local.waylith.porttest).
+const PKG = process.env.RW_PACKAGE || 'com.local.waylith.port';
 const GAME = '/data/media/0/Android/data/' + PKG + '/files/game';
 const PORT = Number(process.env.RW_AGENT_PORT || 47101);
 

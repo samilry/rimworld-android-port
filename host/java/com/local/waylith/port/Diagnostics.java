@@ -168,7 +168,19 @@ final class Diagnostics
                 .setLongLabel("导出诊断日志")
                 .setIntent(intent)
                 .build();
-            shortcuts.setDynamicShortcuts(Collections.singletonList(info));
+            java.util.List<ShortcutInfo> list = new java.util.ArrayList<ShortcutInfo>();
+            list.add(info);
+            // The tester's APK (it carries the setup): the game can be taken again from another copy (ReimportActivity).
+            File ext = context.getExternalFilesDir(null);
+            if (ext != null && new File(ext, "setup/PortSetup.dll").exists())
+            {
+                list.add(new ShortcutInfo.Builder(context, "reimport-game")
+                    .setShortLabel("重新导入游戏")
+                    .setLongLabel("重新导入游戏（换游戏版本）")
+                    .setIntent(new Intent(Intent.ACTION_VIEW).setClassName(context.getPackageName(), ReimportActivity.class.getName()))
+                    .build());
+            }
+            shortcuts.setDynamicShortcuts(list);
         }
         catch (Throwable t)
         {

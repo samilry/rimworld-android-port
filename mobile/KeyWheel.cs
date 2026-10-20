@@ -744,7 +744,7 @@ namespace PortMobile
 			Widgets.Label(new Rect(left.x, left.y, left.width, 26f), chinese ? "按键盘上的按键（按顺序从圆钮旁往两边排）" : "The wheel's keys (in order, from beside the button outwards)");
 			var listRect = new Rect(left.x, left.y + 28f, left.width, left.height - 28f);
 			float rowH = 38f;
-			var view = new Rect(0f, 0f, listRect.width - 16f, Math.Max(listRect.height, keys.Count * rowH));
+			var view = new Rect(0f, 0f, listRect.width - 16f, Math.Max(listRect.height, keys.Count * rowH + 8f));
 			Widgets.DrawMenuSection(listRect);
 			Widgets.BeginScrollView(listRect, ref chosenScroll, view);
 			bool changed = false;
@@ -795,7 +795,17 @@ namespace PortMobile
 			List<Choice> all = Choices(mods, chinese)
 				.Where(c => c.Key != null && !chosen.Contains(c.Key.Name) && (needle.Length == 0 || c.Text.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 || c.Key.Name.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0))
 				.ToList();
-			var allView = new Rect(0f, 0f, allRect.width - 16f, Math.Max(allRect.height, all.Count * 32f + 240f));
+			// The list's height as it is drawn below: a heading of 30 where the category changes, rows of 32 (with many mods
+			// there are dozens of categories, so an estimate leaves the end out of reach).
+			float allHeight = (mods != 0 ? 30f : 0f) + all.Count * 32f + 8f;
+			for (int i = 0; i < all.Count; i++)
+			{
+				if (i == 0 || all[i].Category != all[i - 1].Category)
+				{
+					allHeight += 30f;
+				}
+			}
+			var allView = new Rect(0f, 0f, allRect.width - 16f, Math.Max(allRect.height, allHeight));
 			Widgets.DrawMenuSection(allRect);
 			Widgets.BeginScrollView(allRect, ref allScroll, allView);
 			float y = 0f;
