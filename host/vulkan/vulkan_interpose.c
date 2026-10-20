@@ -546,10 +546,27 @@ static VkSurfaceKHR g_lastSwapchainSurface, g_staleSurface;
 static struct { VkSwapchainKHR swapchain; VkSurfaceKHR surface; } g_swapchainSurfaces[8];
 static PFN_vkDestroySurfaceKHR real_DestroySurface;
 
+// A swapchain's handle is an address: once a swapchain is destroyed, a new one can come back with the same handle.
+// The entry of a destroyed swapchain is dropped, and a handle already listed is updated, not listed twice; otherwise
+// the lookup below found the old entry with its old surface first, took the swapchain on the dead window for a good
+// one, and the engine went on presenting to a window that was gone: a black screen after switching back to the game
+// (now and then: when a handle came back; seen on a OnePlus, Adreno 825, and reported on an Adreno 830).
 static void remember_swapchain(VkSwapchainKHR swapchain, VkSurfaceKHR surface)
 {
+    for (int i = 0; i < 8; i++) if (g_swapchainSurfaces[i].swapchain == swapchain) { g_swapchainSurfaces[i].surface = surface; return; }
     for (int i = 0; i < 8; i++) if (!g_swapchainSurfaces[i].swapchain) { g_swapchainSurfaces[i].swapchain = swapchain; g_swapchainSurfaces[i].surface = surface; return; }
-    g_swapchainSurfaces[0].swapchain = swapchain; g_swapchainSurfaces[0].surface = surface;
+    static int next;
+    g_swapchainSurfaces[next].swapchain = swapchain;
+    g_swapchainSurfaces[next].surface = surface;
+    next = (next + 1) % 8;
+}
+
+static PFN_vkDestroySwapchainKHR real_DestroySwapchain;
+
+static VKAPI_ATTR void VKAPI_CALL hook_DestroySwapchain(VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks* alloc)
+{
+    for (int i = 0; i < 8; i++) if (swapchain && g_swapchainSurfaces[i].swapchain == swapchain) { g_swapchainSurfaces[i].swapchain = VK_NULL_HANDLE; g_swapchainSurfaces[i].surface = VK_NULL_HANDLE; }
+    real_DestroySwapchain(device, swapchain, alloc);
 }
 
 static int swapchain_is_stale(VkSwapchainKHR swapchain)
@@ -993,6 +1010,8 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice pd, con
 }
 
 // The aliases below share the typedef names: map them for the HOOK macro.
+#define real_DestroySwapchainKHR real_DestroySwapchain
+#define hook_DestroySwapchainKHR hook_DestroySwapchain
 #define real_CreateSwapchainKHR real_CreateSwapchain
 #define hook_CreateSwapchainKHR hook_CreateSwapchain
 #define real_AcquireNextImageKHR real_AcquireNextImage
@@ -1005,6 +1024,7 @@ static PFN_vkVoidFunction device_hook(const char* name, PFN_vkVoidFunction real)
 {
 #define HOOK(n) if (strcmp(name, "vk" #n) == 0) { real_##n = (PFN_vk##n)real; return (PFN_vkVoidFunction)hook_##n; }
     HOOK(CreateSwapchainKHR)
+    HOOK(DestroySwapchainKHR)
     HOOK(AcquireNextImageKHR)
     HOOK(QueuePresentKHR)
     HOOK(CmdBeginRenderPass)
