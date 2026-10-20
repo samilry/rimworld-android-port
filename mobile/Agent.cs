@@ -59,6 +59,7 @@ namespace PortMobile
 			{
 				checkCountdown = 60;
 				CheckSwitch();
+				RunCommandFile();
 			}
 			while (queue.TryDequeue(out Request request))
 			{
@@ -71,6 +72,38 @@ namespace PortMobile
 					request.Answer = Failure(e.GetType().Name + ": " + e.Message);
 				}
 				request.Done.Set();
+			}
+		}
+
+		/// <summary>
+		/// While the agent is on: a file agentcmd.txt next to the game, "command {json args}", is run once and deleted, the
+		/// answer logged. For a command no MCP tool sends (the connection takes one client, the MCP server's).
+		/// </summary>
+		private static void RunCommandFile()
+		{
+			if (listener == null)
+			{
+				return;
+			}
+			try
+			{
+				string file = Path.Combine(AppContext.BaseDirectory, "agentcmd.txt");
+				if (!File.Exists(file))
+				{
+					return;
+				}
+				string line = File.ReadAllText(file).Trim();
+				File.Delete(file);
+				int space = line.IndexOf(' ');
+				string cmd = space > 0 ? line.Substring(0, space) : line;
+				using (JsonDocument args = JsonDocument.Parse(space > 0 ? line.Substring(space + 1) : "{}"))
+				{
+					Console.WriteLine("[mobile] agent: command file " + cmd + ": " + Run(cmd, args.RootElement.Clone()));
+				}
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] agent: command file failed: " + e.Message);
 			}
 		}
 
@@ -289,6 +322,7 @@ namespace PortMobile
 				case "rituals": return Rituals();
 				case "marry": return StartMarriage(args);
 				case "tune": return Tune(args);
+				case "worldtarget": return TestWorldTarget();
 				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, pawn, menu, research, spawn, makepawn, heal, kill, save, hash, relation, rituals, marry, tune, ping)");
 			}
 		}
@@ -418,7 +452,7 @@ namespace PortMobile
 			TapAssist.Snapshot(controls, texts, windows);
 			string contains = Str(args, "contains");
 			string which = Str(args, "window");
-			// "top": the topmost window that is more than a small overlay (the Shift button, a message, a tooltip).
+			// "top": the topmost window that is more than a small overlay (the key wheel, a message, a tooltip).
 			int topWindow = windows.Count - 1;
 			while (topWindow > 0 && (windows[topWindow].x1 - windows[topWindow].x0) * (windows[topWindow].y1 - windows[topWindow].y0) < 300f * 300f)
 			{
@@ -1284,6 +1318,22 @@ namespace PortMobile
 		}
 
 		/// <summary>The rituals of the colony's primary ideoligion: label, def, and what they take place at.</summary>
+		/// <summary>TEST ONLY: shows the world and picks a tile there as a shuttle does (the choice is only logged).</summary>
+		private static string TestWorldTarget()
+		{
+			if (!Playing)
+			{
+				return Failure("no map is shown");
+			}
+			CameraJumper.TryShowWorld();
+			Find.WorldTargeter.BeginTargeting(target =>
+			{
+				Console.WriteLine("[mobile] agent: world target chosen: " + target);
+				return true;
+			}, true, closeWorldTabWhenFinished: true);
+			return Answer(w => w.WriteString("targeting", "world"));
+		}
+
 		private static string Rituals()
 		{
 			Ideo ideo = Faction.OfPlayer?.ideos?.PrimaryIdeo;

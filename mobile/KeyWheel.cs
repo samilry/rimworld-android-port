@@ -13,11 +13,15 @@ namespace PortMobile
 	/// A wheel of keys for a finger: a round button ("按键") at the edge of the screen, shown while a game is played. A
 	/// tap opens a ring of round keys around it (turned towards the middle of the screen, a second ring where one is not
 	/// enough), another tap closes it. Each key is one of the game's key bindings (Options → Controls: pause, the speeds,
-	/// rotating, drafting, the main tabs, the camera, and what mods add): while the finger holds it, the engine sees the
-	/// key bound to it held down (a real key event through the Android GLFW, as for the Shift button), so the game and
-	/// mods do on it what they do on a PC keyboard. The last key opens the setup: keys added from the full list, taken
-	/// out, moved; the defaults back; the button back to its place. The button is moved by dragging it.
-	/// mobile.txt: keyWheel=0 leaves it out (Options → Interface has the switch); keyWheelKeys=defName,defName,...;
+	/// rotating, drafting, the main tabs, the camera, and what mods add), shown by the key it is bound to: while the
+	/// finger holds it, the engine sees that key held down (a real key event through the Android GLFW), so the game and
+	/// mods do on it what they do on a PC keyboard. Four keys of the phone's own (the user's, 2026-10-20) switch on with a
+	/// tap and stay on until tapped again: Shift (ShiftKey: the left Shift held down), and the mouse buttons left, middle
+	/// and right (one of the three is on: which button a finger on the screen is, see Touch; the wheel itself is always
+	/// tapped with the left). While the ring is closed the button shows what is on. The last key opens the setup: keys
+	/// added from the full list, taken out, moved; the defaults back; the button back to its place. The button is moved by
+	/// dragging it.
+	/// mobile.txt: keyWheel=0 leaves it out (Options → Interface has the switch); keyWheelKeys=defName,@Shift,...;
 	/// keyWheelAt=X,Y (the button's centre, interface units).
 	/// </summary>
 	internal static class KeyWheel
@@ -29,13 +33,20 @@ namespace PortMobile
 		private const float HubSize = 54f, SlotSize = 64f, Spacing = 8f;
 		private const int SetupSlot = -3, NoTouch = -2, HubTouch = -1;
 
-		public static readonly string[] Defaults = { "TogglePause", "TimeSpeed_Normal", "TimeSpeed_Fast", "TimeSpeed_Superfast", "Designator_RotateLeft", "Designator_RotateRight", "Command_ColonistDraft", "NextColonist" };
+		// The phone's own keys (their names in keyWheelKeys) and the mouse buttons (GLFW's numbers, as Touch injects them).
+		internal const string ShiftName = "@Shift", MouseLeftName = "@MouseLeft", MouseMiddleName = "@MouseMiddle", MouseRightName = "@MouseRight";
+		internal static readonly string[] Specials = { ShiftName, MouseLeftName, MouseRightName, MouseMiddleName };
+		internal const int MouseLeft = 0, MouseRight = 1, MouseMiddle = 2;
+
+		public static readonly string[] Defaults = { "TogglePause", "TimeSpeed_Normal", "TimeSpeed_Fast", "TimeSpeed_Superfast", ShiftName, MouseLeftName, MouseRightName, MouseMiddleName, "Designator_RotateLeft", "Designator_RotateRight", "Command_ColonistDraft", "NextColonist" };
 
 		private static bool enabled, expanded;
 		private static Vector2 hubCenter = new Vector2(-1f, -1f);
 		private static List<string> names = new List<string>();
-		private static List<KeyBindingDef> keys;
+		private static List<WheelKey> keys;
 		private static readonly List<Vector2> slotCenters = new List<Vector2>();
+		private static int drawnFrame = -100;
+		private static int mouseButton = MouseLeft;
 
 		private static int touching = NoTouch;
 		private static Vector2 touchStart, grabOffset;
@@ -50,6 +61,16 @@ namespace PortMobile
 			enabled = Settings.Get("keyWheel", true);
 			string list = Settings.Get("keyWheelKeys", null);
 			names = list != null ? list.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim()).ToList() : Defaults.ToList();
+			if (list != null && Settings.Get("keyWheelVersion", 1) < 2 && !names.Any(n => n.StartsWith("@")))
+			{
+				// Keys chosen before the wheel had keys of its own (the Shift button was apart then): those go in, once.
+				names.InsertRange(Math.Min(4, names.Count), Specials);
+				Settings.Set("keyWheelKeys", string.Join(",", names));
+			}
+			if (Settings.Get("keyWheelVersion", 1) < 2)
+			{
+				Settings.Set("keyWheelVersion", "2");
+			}
 			string at = Settings.Get("keyWheelAt", null);
 			if (at != null)
 			{
@@ -65,23 +86,83 @@ namespace PortMobile
 
 		// ---- the keys ----
 
-		internal static List<KeyBindingDef> Keys
+		internal static List<WheelKey> Keys
 		{
 			get
 			{
 				if (keys == null)
 				{
-					keys = names.Select(n => DefDatabase<KeyBindingDef>.GetNamedSilentFail(n)).Where(d => d != null).ToList();
+					keys = names.Select(WheelKey.Named).Where(k => k != null).ToList();
 				}
 				return keys;
 			}
 		}
 
-		internal static void SetKeys(List<KeyBindingDef> defs)
+		internal static void SetKeys(List<WheelKey> wheelKeys)
 		{
-			keys = defs.ToList();
-			names = keys.Select(d => d.defName).ToList();
+			keys = wheelKeys.ToList();
+			names = keys.Select(k => k.Name).ToList();
 			Settings.Set("keyWheelKeys", string.Join(",", names));
+		}
+
+		/// <summary>Which mouse button a finger on the screen at this point (window pixels) is: the one switched on in the wheel, except on the wheel itself.</summary>
+		internal static int TapButton(Vector2 pixels)
+		{
+			if (mouseButton == MouseLeft || !enabled || Current.ProgramState != ProgramState.Playing || Time.frameCount - drawnFrame > 3)
+			{
+				return MouseLeft;
+			}
+			return OnWheel(pixels / Prefs.UIScale) ? MouseLeft : mouseButton;
+		}
+
+		private static bool OnWheel(Vector2 ui)
+		{
+			if ((ui - hubCenter).magnitude <= HubSize / 2f + 4f)
+			{
+				return true;
+			}
+			if (expanded)
+			{
+				foreach (Vector2 c in slotCenters)
+				{
+					if ((ui - c).magnitude <= SlotSize / 2f + 2f)
+					{
+						return true;
+					}
+				}
+			}
+			return false;
+		}
+
+		private static bool IsOn(WheelKey key)
+		{
+			switch (key.Name)
+			{
+				case ShiftName: return ShiftKey.On;
+				case MouseLeftName: return mouseButton == MouseLeft;
+				case MouseRightName: return mouseButton == MouseRight;
+				case MouseMiddleName: return mouseButton == MouseMiddle;
+				default: return false;
+			}
+		}
+
+		/// <summary>A tap on one of the phone's own keys: Shift on or off; a mouse button on (tapped again: back to the left one).</summary>
+		private static void Toggle(WheelKey key)
+		{
+			bool on;
+			if (key.Name == ShiftName)
+			{
+				on = !ShiftKey.On;
+				ShiftKey.Set(on);
+			}
+			else
+			{
+				int button = key.Name == MouseRightName ? MouseRight : key.Name == MouseMiddleName ? MouseMiddle : MouseLeft;
+				mouseButton = mouseButton == button ? MouseLeft : button;
+				on = mouseButton == button;
+				Console.WriteLine("[mobile] key wheel: a tap is the " + (mouseButton == MouseRight ? "right" : mouseButton == MouseMiddle ? "middle" : "left") + " mouse button");
+			}
+			(on ? SoundDefOf.Checkbox_TurnedOn : SoundDefOf.Checkbox_TurnedOff).PlayOneShotOnCamera();
 		}
 
 		internal static void SetEnabled(bool value)
@@ -107,8 +188,25 @@ namespace PortMobile
 
 		private static Vector2 DefaultCenter()
 		{
-			// The left edge, under the Shift button (which sits 38 % down).
+			// The left edge, a little below the middle.
 			return new Vector2(14f + HubSize / 2f, Mathf.Round(UI.screenHeight * 0.55f));
+		}
+
+		/// <summary>What a key shows on the wheel: the key it is bound to ("" when none), or the phone key's name.</summary>
+		internal static string KeyText(WheelKey key)
+		{
+			if (key.Def == null)
+			{
+				switch (key.Name)
+				{
+					case ShiftName: return "Shift";
+					case MouseLeftName: return Texts.Chinese ? "左键" : "LMB";
+					case MouseRightName: return Texts.Chinese ? "右键" : "RMB";
+					default: return Texts.Chinese ? "中键" : "MMB";
+				}
+			}
+			KeyCode bound = BoundKey(key.Def);
+			return bound == KeyCode.None ? "" : bound.ToStringReadable();
 		}
 
 		/// <summary>The key a binding answers to now (the player's first choice, else the second); None when it has none a finger can give.</summary>
@@ -209,6 +307,10 @@ namespace PortMobile
 		/// <summary>Once a frame: the finger that holds a key or drags the button followed; everything let go when no game is played.</summary>
 		public static void Update()
 		{
+			if (mouseButton != MouseLeft && (!enabled || Current.ProgramState != ProgramState.Playing))
+			{
+				mouseButton = MouseLeft;
+			}
 			if (touching == NoTouch)
 			{
 				if (heldGlfwKey >= 0)
@@ -281,10 +383,11 @@ namespace PortMobile
 				hubCenter = DefaultCenter();
 			}
 			hubCenter = Clamp(hubCenter, HubSize / 2f);
+			drawnFrame = Time.frameCount;
 			if (expanded)
 			{
 				// One window for each key: the gaps between them stay the map's.
-				List<KeyBindingDef> defs = Keys;
+				List<WheelKey> defs = Keys;
 				Layout(defs.Count + 1);
 				for (int i = 0; i < slotCenters.Count; i++)
 				{
@@ -386,8 +489,21 @@ namespace PortMobile
 		{
 			var rect = new Rect(0f, 0f, HubSize, HubSize);
 			bool held = touching == HubTouch;
-			Color fill = expanded ? new Color(0.35f, 0.45f, 0.6f, held ? 1f : 0.95f) : new Color(0.25f, 0.27f, 0.3f, held ? 0.95f : 0.75f);
-			DrawRound(rect, fill, expanded ? (Texts.Chinese ? "收起" : "Close") : (Texts.Chinese ? "按键" : "Keys"), GameFont.Small);
+			// Closed, it says what is switched on: Shift, a mouse button other than the left.
+			string status = "";
+			if (!expanded)
+			{
+				if (ShiftKey.On)
+				{
+					status = "Shift";
+				}
+				if (mouseButton != MouseLeft)
+				{
+					status += (status.Length > 0 ? "\n" : "") + KeyText(WheelKey.Named(mouseButton == MouseRight ? MouseRightName : MouseMiddleName));
+				}
+			}
+			Color fill = expanded ? new Color(0.35f, 0.45f, 0.6f, held ? 1f : 0.95f) : status.Length > 0 ? new Color(0.85f, 0.65f, 0.2f, held ? 1f : 0.95f) : new Color(0.25f, 0.27f, 0.3f, held ? 0.95f : 0.75f);
+			DrawRound(rect, fill, expanded ? (Texts.Chinese ? "收起" : "Close") : status.Length > 0 ? status : (Texts.Chinese ? "按键" : "Keys"), status.Length > 0 ? GameFont.Tiny : GameFont.Small);
 			if (Event.current.type == EventType.MouseDown && Event.current.button == 0 && Mouse.IsOver(rect))
 			{
 				touching = HubTouch;
@@ -411,18 +527,30 @@ namespace PortMobile
 			}
 			else
 			{
-				KeyBindingDef def = Keys[index];
-				label = def.LabelCap;
-				bool usable = BoundKey(def) != KeyCode.None;
-				fill = !usable ? new Color(0.3f, 0.2f, 0.2f, 0.7f) : held ? new Color(0.85f, 0.65f, 0.2f, 1f) : new Color(0.18f, 0.2f, 0.22f, 0.88f);
+				WheelKey key = Keys[index];
+				label = KeyText(key);
+				bool on = key.Def == null ? IsOn(key) : held;
+				fill = label.Length == 0 ? new Color(0.3f, 0.2f, 0.2f, 0.7f) : on ? new Color(0.85f, 0.65f, 0.2f, 1f) : new Color(0.18f, 0.2f, 0.22f, 0.88f);
+				if (label.Length == 0)
+				{
+					label = "—";
+				}
 			}
-			DrawRound(rect, fill, label, GameFont.Tiny);
+			DrawRound(rect, fill, label, label.Length <= 5 ? GameFont.Small : GameFont.Tiny);
 			if (Event.current.type == EventType.MouseDown && Event.current.button == 0 && Mouse.IsOver(rect))
 			{
 				touching = index;
 				if (index >= 0)
 				{
-					HoldKey(Keys[index]);
+					WheelKey key = Keys[index];
+					if (key.Def != null)
+					{
+						HoldKey(key.Def);
+					}
+					else
+					{
+						Toggle(key);
+					}
 				}
 				Event.current.Use();
 			}
@@ -434,8 +562,8 @@ namespace PortMobile
 		{
 			bool check = enabled;
 			listing.CheckboxLabeled(Texts.Chinese ? "显示自定义按键盘" : "Show the key wheel", ref check, Texts.Chinese
-				? "游戏中屏幕边上的圆形“按键”按钮：点一下展开一圈按键，每个按键等于键盘上的一个快捷键（按住就是按住那个键），再点一下收起；拖动可以移动位置。展开后最后一个按键“设置”可以增删按键。"
-				: "The round \"Keys\" button at the edge of the screen in a game: a tap opens a ring of keys, each one a keyboard shortcut of the game (holding it holds the key); another tap closes it; drag it to move it. The last key, \"Setup\", adds and removes keys.", 30f, 0.6f);
+				? "游戏中屏幕边上的圆形“按键”按钮：点一下展开一圈按键，每个按键上写着它对应的键盘按键（按住就是按住那个键），再点一下收起；拖动可以移动位置。Shift 和鼠标左键、中键、右键是开关，点一下打开、再点一下关闭：开着右键时，在屏幕上点一下就是鼠标右键点击。展开后最后一个按键“设置”可以增删按键。"
+				: "The round \"Keys\" button at the edge of the screen in a game: a tap opens a ring of keys, each showing the keyboard key it stands for (holding it holds the key); another tap closes it; drag it to move it. Shift and the left, middle and right mouse buttons are switches, on with a tap and off with another: with the right one on, a tap on the screen is a right click. The last key, \"Setup\", adds and removes keys.", 30f, 0.6f);
 			SetEnabled(check);
 		}
 	}
@@ -469,7 +597,7 @@ namespace PortMobile
 			var right = new Rect(inRect.x + half + 16f, top, half, bottom - top);
 
 			// The wheel's keys.
-			List<KeyBindingDef> keys = KeyWheel.Keys.ToList();
+			List<WheelKey> keys = KeyWheel.Keys.ToList();
 			Widgets.Label(new Rect(left.x, left.y, left.width, 26f), chinese ? "按键盘上的按键（按顺序从圆钮旁往两边排）" : "The wheel's keys (in order, from beside the button outwards)");
 			var listRect = new Rect(left.x, left.y + 28f, left.width, left.height - 28f);
 			float rowH = 38f;
@@ -484,20 +612,18 @@ namespace PortMobile
 				{
 					Widgets.DrawLightHighlight(row);
 				}
-				KeyCode bound = KeyWheel.BoundKey(keys[i]);
-				string keyText = bound == KeyCode.None ? (chinese ? "未绑定" : "unbound") : bound.ToStringReadable();
-				Widgets.Label(new Rect(row.x + 6f, row.y, row.width - 140f, rowH), keys[i].LabelCap + "  <color=#999999>" + keyText + "</color>");
+				Widgets.Label(new Rect(row.x + 6f, row.y, row.width - 140f, rowH), keys[i].Label + "  <color=#999999>" + Bound(keys[i], chinese) + "</color>");
 				float x = row.xMax - 132f;
 				if (i > 0 && Widgets.ButtonText(new Rect(x, row.y + 4f, 40f, rowH - 8f), "↑"))
 				{
-					KeyBindingDef d = keys[i];
+					WheelKey d = keys[i];
 					keys[i] = keys[i - 1];
 					keys[i - 1] = d;
 					changed = true;
 				}
 				if (i < keys.Count - 1 && Widgets.ButtonText(new Rect(x + 44f, row.y + 4f, 40f, rowH - 8f), "↓"))
 				{
-					KeyBindingDef d = keys[i];
+					WheelKey d = keys[i];
 					keys[i] = keys[i + 1];
 					keys[i + 1] = d;
 					changed = true;
@@ -511,35 +637,37 @@ namespace PortMobile
 			}
 			Widgets.EndScrollView();
 
-			// All of the game's key bindings, by category.
+			// The phone's own keys, then all of the game's key bindings, by category.
 			Widgets.Label(new Rect(right.x, right.y, 120f, 26f), chinese ? "点一项添加：" : "Tap one to add:");
 			search = Widgets.TextField(new Rect(right.x + 124f, right.y, right.width - 124f, 26f), search);
 			var allRect = new Rect(right.x, right.y + 28f, right.width, right.height - 28f);
 			string needle = search.Trim();
-			List<KeyBindingDef> all = DefDatabase<KeyBindingDef>.AllDefsListForReading
-				.Where(d => !keys.Contains(d) && (needle.Length == 0 || d.LabelCap.ToString().IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 || d.defName.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0))
-				.OrderBy(d => d.category != null ? d.category.index : 0).ToList();
+			var chosen = new HashSet<string>(keys.Select(k => k.Name));
+			List<WheelKey> all = KeyWheel.Specials.Select(WheelKey.Named)
+				.Concat(DefDatabase<KeyBindingDef>.AllDefsListForReading.OrderBy(d => d.category != null ? d.category.index : 0).Select(d => new WheelKey(d.defName, d)))
+				.Where(k => !chosen.Contains(k.Name) && (needle.Length == 0 || k.Label.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 || k.Name.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0))
+				.ToList();
 			var allView = new Rect(0f, 0f, allRect.width - 16f, Math.Max(allRect.height, all.Count * 32f + 200f));
 			Widgets.DrawMenuSection(allRect);
 			Widgets.BeginScrollView(allRect, ref allScroll, allView);
 			float y = 0f;
-			KeyBindingCategoryDef lastCategory = null;
-			foreach (KeyBindingDef def in all)
+			string lastCategory = null;
+			foreach (WheelKey key in all)
 			{
-				if (def.category != lastCategory)
+				string category = key.Def == null ? (chinese ? "手机按键（开关）" : "Phone keys (switches)") : key.Def.category != null ? key.Def.category.LabelCap.ToString() : "";
+				if (category != lastCategory)
 				{
-					lastCategory = def.category;
+					lastCategory = category;
 					GUI.color = new Color(1f, 0.85f, 0.5f);
-					Widgets.Label(new Rect(6f, y + 4f, allView.width, 26f), def.category != null ? def.category.LabelCap.ToString() : "");
+					Widgets.Label(new Rect(6f, y + 4f, allView.width, 26f), category);
 					GUI.color = Color.white;
 					y += 30f;
 				}
 				var row = new Rect(0f, y, allView.width, 32f);
-				KeyCode bound = KeyWheel.BoundKey(def);
-				Widgets.Label(new Rect(row.x + 14f, row.y + 3f, row.width - 20f, 28f), def.LabelCap + "  <color=#999999>" + (bound == KeyCode.None ? (chinese ? "未绑定" : "unbound") : bound.ToStringReadable()) + "</color>");
+				Widgets.Label(new Rect(row.x + 14f, row.y + 3f, row.width - 20f, 28f), key.Label + "  <color=#999999>" + Bound(key, chinese) + "</color>");
 				if (Widgets.ButtonInvisible(row))
 				{
-					keys.Add(def);
+					keys.Add(key);
 					changed = true;
 				}
 				y += 32f;
@@ -555,7 +683,7 @@ namespace PortMobile
 			float bw = 160f;
 			if (Widgets.ButtonText(new Rect(inRect.x, inRect.yMax - 38f, bw, 36f), chinese ? "恢复默认按键" : "Default keys"))
 			{
-				KeyWheel.SetKeys(KeyWheel.Defaults.Select(n => DefDatabase<KeyBindingDef>.GetNamedSilentFail(n)).Where(d => d != null).ToList());
+				KeyWheel.SetKeys(KeyWheel.Defaults.Select(WheelKey.Named).Where(k => k != null).ToList());
 			}
 			if (Widgets.ButtonText(new Rect(inRect.x + bw + 10f, inRect.yMax - 38f, bw, 36f), chinese ? "圆钮放回原处" : "Button back"))
 			{
@@ -564,6 +692,60 @@ namespace PortMobile
 			if (Widgets.ButtonText(new Rect(inRect.xMax - bw, inRect.yMax - 38f, bw, 36f), chinese ? "完成" : "Done"))
 			{
 				Close();
+			}
+		}
+
+		/// <summary>The grey text after a key's name: the key it is bound to, or what one of the phone's own does.</summary>
+		private static string Bound(WheelKey key, bool chinese)
+		{
+			if (key.Def == null)
+			{
+				return key.Name == KeyWheel.ShiftName ? (chinese ? "开关，开着时一直按住" : "switch: held while on") : (chinese ? "开关，点屏幕即为此键" : "switch: taps are this button");
+			}
+			string text = KeyWheel.KeyText(key);
+			return text.Length == 0 ? (chinese ? "未绑定" : "unbound") : text;
+		}
+	}
+
+	/// <summary>A key of the wheel: one of the game's key bindings, or one of the phone's own (Def null; KeyWheel.Specials).</summary>
+	internal sealed class WheelKey
+	{
+		public readonly string Name;
+		public readonly KeyBindingDef Def;
+
+		public WheelKey(string name, KeyBindingDef def)
+		{
+			Name = name;
+			Def = def;
+		}
+
+		/// <summary>The key of that name (a def's name or one of KeyWheel.Specials); null when there is none (a mod's key, the mod gone).</summary>
+		public static WheelKey Named(string name)
+		{
+			if (KeyWheel.Specials.Contains(name))
+			{
+				return new WheelKey(name, null);
+			}
+			KeyBindingDef def = DefDatabase<KeyBindingDef>.GetNamedSilentFail(name);
+			return def != null ? new WheelKey(name, def) : null;
+		}
+
+		public string Label
+		{
+			get
+			{
+				if (Def != null)
+				{
+					return Def.LabelCap;
+				}
+				bool chinese = Texts.Chinese;
+				switch (Name)
+				{
+					case KeyWheel.ShiftName: return "Shift";
+					case KeyWheel.MouseLeftName: return chinese ? "鼠标左键" : "Left mouse button";
+					case KeyWheel.MouseRightName: return chinese ? "鼠标右键" : "Right mouse button";
+					default: return chinese ? "鼠标中键" : "Middle mouse button";
+				}
 			}
 		}
 	}

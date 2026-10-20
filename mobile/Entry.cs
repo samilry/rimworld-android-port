@@ -40,6 +40,7 @@ namespace PortMobile
 			WorldLabels.Start(harmony);
 			ResearchTree.Start(harmony);
 			Squad.Start(harmony);
+			DoubleTap.Start(harmony);
 			Counters.Start(harmony);
 			MemTrim.Start(harmony);
 			BakeDepth.Start(harmony);
@@ -86,7 +87,6 @@ namespace PortMobile
 
 		public static void AfterUIRootOnGUI()
 		{
-			ShiftKey.OnGui();
 			KeyWheel.OnGui();
 			if (!menuTimed && Verse.Current.ProgramState == Verse.ProgramState.Entry && !Verse.LongEventHandler.AnyEventNowOrWaiting)
 			{

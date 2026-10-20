@@ -103,6 +103,7 @@ namespace PortMobile
 			harmony.Patch(AccessTools.Method(typeof(MapInterface), nameof(MapInterface.HandleMapClicks)), prefix: new HarmonyMethod(typeof(MapTools), nameof(BeforeMapTools)), postfix: new HarmonyMethod(typeof(MapTools), nameof(AfterMapTools)));
 			harmony.Patch(AccessTools.Method(typeof(WorldTargeter), nameof(WorldTargeter.ProcessInputEvents)), prefix: new HarmonyMethod(typeof(MapTools), nameof(BeforeWorldTargeter)), postfix: new HarmonyMethod(typeof(MapTools), nameof(AfterMapTools)));
 			Placement.Start(harmony);
+			WorldConfirm.Start(harmony);
 			DragConfirm.Start(harmony);
 		}
 
@@ -223,10 +224,99 @@ namespace PortMobile
 				deferred = deferredOnWorld = false;
 				if (!deferredCancelled && current.type == EventType.MouseUp && __instance.IsTargeting)
 				{
+					if (WorldConfirm.FirstTap(__instance))
+					{
+						current.Use();
+						return;
+					}
 					current.type = EventType.MouseDown;
 					converted = true;
 				}
 			}
+		}
+	}
+
+	/// <summary>
+	/// A target on the world is chosen by two taps on it (testers, 2026-10-20: a tap on the globe sent a shuttle off at
+	/// once, an empty tile included). The first tap marks it (the marker stays on it, a message says to tap again); a
+	/// second tap on the same tile or world object is the choice, a tap elsewhere marks that instead. With a mouse (no
+	/// touch) the game's own single click. mobile.txt: worldConfirm=0 leaves it out.
+	/// </summary>
+	internal static class WorldConfirm
+	{
+		private static readonly bool On = Settings.Get("worldConfirm", true);
+		private static readonly AccessTools.FieldRef<WorldTargeter, Func<GlobalTargetInfo, bool>> CanSelect = AccessTools.FieldRefAccess<WorldTargeter, Func<GlobalTargetInfo, bool>>("canSelectTarget");
+		private static readonly Func<WorldTargeter, GlobalTargetInfo> UnderMouse = AccessTools.MethodDelegate<Func<WorldTargeter, GlobalTargetInfo>>(AccessTools.Method(typeof(WorldTargeter), "CurrentTargetUnderMouse"));
+		private static readonly AccessTools.FieldRef<WorldTargeter, Func<GlobalTargetInfo, bool>> Action = AccessTools.FieldRefAccess<WorldTargeter, Func<GlobalTargetInfo, bool>>("action");
+		private static GlobalTargetInfo marked = GlobalTargetInfo.Invalid;
+		// The targeting the mark belongs to (a new one, begun without a stop the patches saw, starts unmarked).
+		private static Func<GlobalTargetInfo, bool> markedFor;
+
+		/// <summary>A tap (lifted) while the world targeter is on: true when it only marked the target (the event is not the targeter's).</summary>
+		public static bool FirstTap(WorldTargeter targeter)
+		{
+			if (!On)
+			{
+				return false;
+			}
+			GlobalTargetInfo target = UnderMouse(targeter);
+			Func<GlobalTargetInfo, bool> canSelect = CanSelect(targeter);
+			if (!target.IsValid || (canSelect != null && !canSelect(target)))
+			{
+				// Not a target: the targeter does with the tap what it does (nothing, or says why not).
+				return false;
+			}
+			if (marked.IsValid && marked == target && markedFor == Action(targeter))
+			{
+				Clear();
+				return false;
+			}
+			marked = target;
+			markedFor = Action(targeter);
+			SoundDefOf.Tick_Low.PlayOneShotOnCamera();
+			Messages.Message(Texts.Chinese ? "再点一次同一个地方确认目标（点别处换目标，返回键取消）" : "Tap the same place again to confirm the target (elsewhere to change it, Back to cancel)", MessageTypeDefOf.SilentInput, false);
+			return true;
+		}
+
+		public static void Start(Harmony harmony)
+		{
+			if (!On)
+			{
+				return;
+			}
+			try
+			{
+				var clear = new HarmonyMethod(typeof(WorldConfirm), nameof(Clear));
+				harmony.Patch(AccessTools.Method(typeof(WorldTargeter), nameof(WorldTargeter.BeginTargeting)), postfix: clear);
+				harmony.Patch(AccessTools.Method(typeof(WorldTargeter), nameof(WorldTargeter.StopTargeting)), postfix: clear);
+				harmony.Patch(AccessTools.Method(typeof(WorldTargeter), nameof(WorldTargeter.TargeterUpdate)), postfix: new HarmonyMethod(typeof(WorldConfirm), nameof(DrawMarked)));
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] world confirm: not patched: " + e.Message);
+			}
+		}
+
+		public static void Clear()
+		{
+			marked = GlobalTargetInfo.Invalid;
+			markedFor = null;
+		}
+
+		/// <summary>Postfix of WorldTargeter.TargeterUpdate: the marked target keeps its marker wherever the finger goes.</summary>
+		public static void DrawMarked(WorldTargeter __instance)
+		{
+			if (!marked.IsValid || !__instance.IsTargeting || markedFor != Action(__instance))
+			{
+				return;
+			}
+			if (marked.HasWorldObject && marked.WorldObject.Destroyed)
+			{
+				marked = GlobalTargetInfo.Invalid;
+				return;
+			}
+			Vector3 pos = marked.HasWorldObject ? marked.WorldObject.DrawPos : Find.WorldGrid.GetTileCenter(marked.Tile);
+			WorldRendererUtility.DrawQuadTangentialToPlanet(pos, 0.8f * Find.WorldGrid.AverageTileSize, 0.05f, WorldMaterials.CurTargetingMat);
 		}
 	}
 

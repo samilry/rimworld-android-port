@@ -23,14 +23,25 @@ namespace PortMobile
 	/// Two orders tapped quickly one after the other would make the game see a double click on the second press, and a
 	/// double click selects every object like the one under the mouse on the screen (the squad would be gone): while a
 	/// squad is selected, a press on the map counts as a single click.
+	///
+	/// Off since 2026-10-20 (testers: a tap on the ground to clear the selection sent the squad there; the hold is the
+	/// right click as without a squad, and the key wheel's right mouse button gives taps that order). mobile.txt:
+	/// squadTaps=1 brings it back.
 	/// </summary>
 	internal static class Squad
 	{
 		// How far from the finger (in cells) a pawn still counts as tapped.
 		private const float PawnRadius = 0.6f;
 
+		private static bool enabled;
+
 		public static void Start(Harmony harmony)
 		{
+			enabled = Settings.Get("squadTaps", 0) != 0;
+			if (!enabled)
+			{
+				return;
+			}
 			try
 			{
 				harmony.Patch(AccessTools.Method(typeof(Selector), "HandleMapClicks"), prefix: new HarmonyMethod(typeof(Squad), nameof(SingleClicks)));
@@ -47,7 +58,7 @@ namespace PortMobile
 		{
 			get
 			{
-				if (Current.ProgramState != ProgramState.Playing || Find.CurrentMap == null || WorldRendererUtility.WorldSelected)
+				if (!enabled || Current.ProgramState != ProgramState.Playing || Find.CurrentMap == null || WorldRendererUtility.WorldSelected)
 				{
 					return false;
 				}

@@ -19,9 +19,11 @@ namespace PortMobile
 	///   drag           moves the camera (the ground follows the finger)
 	///   hold           with something selected: a right click (orders); otherwise the selection box starts and
 	///                  moving the finger then selects an area
-	///   with a drafted squad selected (Squad): a tap is the order (a right click) or, on one of the colony's own,
-	///                  adds it to the selection or takes it out; a hold is the left button (select, or a box)
+	///   (with mobile.txt squadTaps=1 and a drafted squad selected, Squad: a tap is the order, a right click, or, on one
+	///                  of the colony's own, adds it to the selection or takes it out; a hold is the left button)
 	///   two fingers    pinch to zoom around the fingers, drag to move
+	/// anywhere but on the key wheel, while its right or middle mouse button is switched on (KeyWheel)
+	///   one finger     that button, pressed from landing to lifting (a tap is a right or a middle click)
 	/// on the interface
 	///   tap, drag      the left button, as a mouse
 	///   in a list      (a scroll view with more in it than it shows) a tap clicks when the finger lifts; a drag
@@ -74,6 +76,7 @@ namespace PortMobile
 			ListHeld,  // it rested there: tooltips; a drag from here drags what the finger is on
 			ListScroll, // it dragged along the list: the list follows, nothing is pressed at all
 			Two,       // two fingers: zoom and pan (for the map) or wheel and middle drag (for a window)
+			Mouse,     // the key wheel's right or middle button is on: the finger is that button until it lifts, nothing else
 			Finished   // nothing more to recognise in this touch; wait for all fingers to lift
 		}
 
@@ -94,6 +97,10 @@ namespace PortMobile
 		// What the engine believes about the mouse buttons (injected), and what still has to be injected next frame.
 		private static bool leftDown, rightDown, middleDown;
 		private static int releaseRightNextFrame;
+		// The key wheel's middle button waits a frame after the mouse went to the finger: pressed in the frame the mouse
+		// jumped there, the game drags the camera by the jump (a middle drag moves the map).
+		private static int pendingPress = -1;
+		private static bool pressedThisFrame;
 		private static float pinchDistance;
 		private static Vector2 pinchCentre;
 		private static Window gestureWindow;
@@ -136,7 +143,6 @@ namespace PortMobile
 			steady = Settings.Get("tapSteady", 1) != 0;
 			TapAssist.Start(harmony, density);
 			TouchSizes.Start(harmony);
-			ShiftKey.Start();
 			KeyWheel.Start();
 			BarInset.Start(harmony);
 			MouseDecorations.Start(harmony);
@@ -227,6 +233,25 @@ namespace PortMobile
 			glfwAndroidInjectCursor(pixels.x, pixels.y);
 		}
 
+		/// <summary>
+		/// The engine says it is Linux, and on Linux the game moves the map by the middle button whenever it is held, by
+		/// how far the mouse went since the game last measured it, which can be from before the mouse jumped to the finger.
+		/// Before the key wheel's middle button goes down the game's measure starts from where the mouse is now.
+		/// </summary>
+		private static void ForgetMouseTravel()
+		{
+			try
+			{
+				AccessTools.Field(typeof(UnityGUIBugsFixer), "lastFrameMousePosition").SetValue(null, UI.MousePositionOnUIInverted);
+				AccessTools.Field(typeof(UnityGUIBugsFixer), "frameDeltaComputedFrame").SetValue(null, Time.frameCount);
+				AccessTools.Field(typeof(UnityGUIBugsFixer), "currentEventDelta").SetValue(null, Vector2.zero);
+			}
+			catch (Exception e)
+			{
+				Trace("mouse travel not reset: " + e.Message);
+			}
+		}
+
 		private static void Button(int button, bool down)
 		{
 			glfwAndroidInjectButton(button, down ? Press : Release, 0);
@@ -255,6 +280,13 @@ namespace PortMobile
 			if (releaseRightNextFrame > 0 && --releaseRightNextFrame == 0 && rightDown)
 			{
 				Button(Right, false);
+			}
+			pressedThisFrame = pendingPress >= 0;
+			if (pressedThisFrame)
+			{
+				ForgetMouseTravel();
+				Button(pendingPress, true);
+				pendingPress = -1;
 			}
 			Agent.Update();
 			bool replayed = Replay.Feed();
@@ -298,7 +330,16 @@ namespace PortMobile
 				}
 				// The last finger has lifted: the release reaches the game where the finger was.
 				if (leftDown) Button(Left, false);
-				if (middleDown) Button(Middle, false);
+				if (pendingPress >= 0)
+				{
+					// Lifted before the key wheel's middle button went down: it goes down now, and up next frame.
+					ForgetMouseTravel();
+					Button(pendingPress, true);
+					pendingPress = -1;
+					pressedThisFrame = true;
+				}
+				if (middleDown && !pressedThisFrame) Button(Middle, false);
+				if (rightDown && mode == Mode.Mouse) Button(Right, false);
 				if (squadTap && !Squad.TapJoins())
 				{
 					// A right click where the finger was: the squad's order.
@@ -322,7 +363,19 @@ namespace PortMobile
 					Vector2 at = TapAssist.Adjust(quickTap.pos);
 					Interface.FingerLanded(at);
 					Cursor(at);
-					Button(Left, true);
+					int button = KeyWheel.TapButton(at);
+					if (button == Middle)
+					{
+						pendingPress = Middle;
+					}
+					else
+					{
+						Button(button, true);
+					}
+					if (button == Right)
+					{
+						releaseRightNextFrame = 2;
+					}
 					quickTap = null;
 				}
 				return;
@@ -360,6 +413,22 @@ namespace PortMobile
 				cursorOffset = Vector2.zero;
 				dragged = false;
 				Cursor(pressAt);
+				int button = KeyWheel.TapButton(pressAt);
+				if (button != Left)
+				{
+					// The key wheel's right or middle mouse button: pressed now, let go when the finger lifts.
+					mode = Mode.Mouse;
+					if (button == Middle)
+					{
+						pendingPress = Middle;
+					}
+					else
+					{
+						Button(button, true);
+					}
+					Trace("touch begins at " + first.pos + " as the " + (button == Right ? "right" : "middle") + " button");
+					return;
+				}
 				bool inList = Interface.ListTouch && TapAssist.ListAt(pressAt, out listDown, out listAcross, out listX, out listY);
 				caughtList = Interface.StopCoasting(inList ? listX : float.NaN, inList ? listY : float.NaN);
 				if (inList)
@@ -606,6 +675,10 @@ namespace PortMobile
 			GUIUtility.hotControl = 0;
 			Interface.StopWindowDrag();
 			if (leftDown) Button(Left, false);
+			// The key wheel's buttons (a press from a hold waits for its own release).
+			pendingPress = -1;
+			if (rightDown && releaseRightNextFrame == 0) Button(Right, false);
+			if (middleDown) Button(Middle, false);
 		}
 
 		private static void KeepBoxOff()
