@@ -157,6 +157,11 @@ final class Diagnostics
 
     private static boolean abnormal(ApplicationExitInfo exit)
     {
+        if (exit.getDescription() != null && exit.getDescription().startsWith("exit_self"))
+        {
+            // The app ended itself (Process.killProcess: the player left the import, quit the game, restarted it).
+            return false;
+        }
         switch (exit.getReason())
         {
             case ApplicationExitInfo.REASON_ANR:
@@ -176,6 +181,90 @@ final class Diagnostics
                 return exit.getImportance() <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE;
             default:
                 return false;
+        }
+    }
+
+    /**
+     * A line in logs/import.txt: what the start and the import of the player's game did (MainActivity, SetupService),
+     * which otherwise only logcat sees. Goes into every log export.
+     */
+    static synchronized void trail(Context context, String text)
+    {
+        try
+        {
+            File dir = new File(context.getExternalFilesDir(null), "logs");
+            dir.mkdirs();
+            File file = new File(dir, "import.txt");
+            if (file.length() > (256 << 10))
+            {
+                file.renameTo(new File(dir, "import-prev.txt"));
+            }
+            FileOutputStream out = new FileOutputStream(file, true);
+            try
+            {
+                String stamp = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.US).format(new Date());
+                out.write((stamp + " [" + android.os.Process.myPid() + "] " + text + "\n").getBytes("UTF-8"));
+            }
+            finally
+            {
+                out.close();
+            }
+        }
+        catch (Throwable ignored)
+        {
+        }
+        Log.i(TAG, text);
+    }
+
+    /** Every exit the system remembers, of all the app's processes (newest first). */
+    private static String exitHistory(Context context)
+    {
+        if (Build.VERSION.SDK_INT < 30)
+        {
+            return "（安卓 11 以下没有退出记录）";
+        }
+        StringBuilder text = new StringBuilder();
+        try
+        {
+            for (ApplicationExitInfo exit : context.getSystemService(ActivityManager.class).getHistoricalProcessExitReasons(context.getPackageName(), 0, 32))
+            {
+                text.append(exit.getProcessName()).append("  ").append(describe(exit)).append('\n');
+            }
+        }
+        catch (Throwable t)
+        {
+            text.append("读不了：").append(t).append('\n');
+        }
+        return text.toString();
+    }
+
+    /** How many files and megabytes a folder holds (all the way down). */
+    private static String folderSize(File dir)
+    {
+        if (!dir.exists())
+        {
+            return "（无）";
+        }
+        long[] sum = new long[2];
+        sizeOf(dir, sum, 0);
+        return sum[0] + " 个文件，" + (sum[1] >> 20) + " MB";
+    }
+
+    private static void sizeOf(File file, long[] sum, int depth)
+    {
+        File[] children = file.listFiles();
+        if (children == null)
+        {
+            sum[0]++;
+            sum[1] += file.length();
+            return;
+        }
+        if (depth < 24)
+        {
+            for (File child : children)
+            {
+                sizeOf(child, sum, depth + 1);
+            }
         }
     }
 
@@ -306,6 +395,14 @@ final class Diagnostics
             }
             putFile(zip, "stderr.txt", new File(ext, "logs/stderr.txt"));
             putFile(zip, "ModsConfig.xml", new File(data, "Config/ModsConfig.xml"));
+            // The import of the player's game (the tester's APK): what was done, what setup said, what is on the phone.
+            putFile(zip, "import.txt", new File(ext, "logs/import.txt"));
+            putFile(zip, "import-prev.txt", new File(ext, "logs/import-prev.txt"));
+            putFile(zip, "setup-result.txt", new File(ext, "setup/result.txt"));
+            putFile(zip, "setup-progress.txt", new File(ext, "setup/progress.txt"));
+            putText(zip, "files.txt", "import：" + folderSize(new File(ext, "import")) + "\ngame：" + folderSize(new File(ext, "game"))
+                + "\nsetup/original：" + folderSize(new File(ext, "setup/original")) + "\n");
+            putText(zip, "exits.txt", exitHistory(context));
             File[] crashes = new File(data, "Crashes").listFiles();
             if (crashes != null)
             {

@@ -59,7 +59,7 @@ public final class SetupService extends Service
                     {
                     }
                 }
-                Log.i("port17", "setup finished: " + code);
+                Diagnostics.trail(SetupService.this, "setup process finished: " + code);
                 stopSelf();
                 // The runtime does not go away by itself; the process has done its job.
                 android.os.Process.killProcess(android.os.Process.myPid());

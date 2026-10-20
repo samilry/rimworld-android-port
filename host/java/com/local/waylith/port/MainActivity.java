@@ -79,6 +79,7 @@ public final class MainActivity extends NativeActivity
         hideSystemBars();
         // A report in Download/Port17 when the last run ended badly, and the "导出日志" shortcut on the icon.
         Diagnostics.onStart(this);
+        Diagnostics.trail(this, "started" + (savedInstanceState != null ? " again by the system (the process had been ended)" : ""));
     }
 
     @Override
@@ -523,6 +524,7 @@ public final class MainActivity extends NativeActivity
         }
         // From here to the end the process is a foreground one: the file chooser, or another app while the game is copied
         // and set up, would otherwise leave it to be ended in the background on a phone short of memory.
+        Diagnostics.trail(this, "game not ready: " + (importedBefore ? "imported before, prepared again" : "to be imported") + "; " + (ext.getUsableSpace() >> 20) + " MB free");
         ImportService.start(this);
         try
         {
@@ -535,11 +537,13 @@ public final class MainActivity extends NativeActivity
                     root = askForGame(problem);
                     if (root == null)
                     {
+                        Diagnostics.trail(this, "the player left");
                         leave();
                         return false;
                     }
                 }
                 String[] result = runSetup(root);
+                Diagnostics.trail(this, "setup: " + result[0] + (result[1].isEmpty() ? "" : " - " + result[1].replace('\n', ' ')));
                 if ("ok".equals(result[0]))
                 {
                     if (result[1].contains("注意"))
@@ -582,6 +586,7 @@ public final class MainActivity extends NativeActivity
                 continue;
             }
             gameEvents.clear();
+            Diagnostics.trail(this, "asking for the game" + (problem != null ? " (last time: " + problem.replace('\n', ' ') + ")" : ""));
             final String shownProblem = problem;
             runOnUiThread(new Runnable()
             {
@@ -695,6 +700,7 @@ public final class MainActivity extends NativeActivity
                 intent.addCategory(Intent.CATEGORY_OPENABLE);
                 intent.setType("*/*");
             }
+            Diagnostics.trail(this, "chooser opened for a " + (folder ? "folder" : "zip"));
             startActivityForResult(intent, folder ? PICK_GAME_FOLDER : PICK_GAME_ZIP);
         }
         catch (Throwable problem)
@@ -709,12 +715,15 @@ public final class MainActivity extends NativeActivity
         final Uri uri = result == RESULT_OK && data != null ? data.getData() : null;
         if (uri == null)
         {
+            Diagnostics.trail(this, "chooser closed without a choice (result " + result + ")");
             gameEvents.offer(new String[] { "again" });
             return;
         }
+        Diagnostics.trail(this, "chosen " + (request == PICK_GAME_FOLDER ? "folder " : "file ") + uri);
         final File ext = getExternalFilesDir(null);
         if (ext.getUsableSpace() < (3L << 30))
         {
+            Diagnostics.trail(this, "not enough space: " + (ext.getUsableSpace() >> 20) + " MB");
             gameEvents.offer(new String[] { "failed", "手机上的空闲空间不够（需要约 3 GB，现在只有 " + (ext.getUsableSpace() >> 20) + " MB）。" });
             return;
         }
@@ -776,6 +785,7 @@ public final class MainActivity extends NativeActivity
                     copying[0] = false;
                     File root = findGame(into, 4);
                     hideBusy();
+                    Diagnostics.trail(MainActivity.this, "copied " + pickCount.get() + " files, " + (pickBytes.get() >> 20) + " MB; the game " + (root != null ? "at " + root : "not found in: " + outline(into, 3)));
                     if (root == null)
                     {
                         delete(into);
@@ -792,12 +802,29 @@ public final class MainActivity extends NativeActivity
                 {
                     copying[0] = false;
                     hideBusy();
+                    Diagnostics.trail(MainActivity.this, "copy failed after " + pickCount.get() + " files, " + (pickBytes.get() >> 20) + " MB: " + problem);
                     delete(into);
                     gamePickRunning = false;
                     gameEvents.offer(new String[] { "failed", "复制失败：" + (problem.getMessage() != null ? problem.getMessage() : problem.toString()) });
                 }
             }
         }, "PortGameImport").start();
+    }
+
+    /** What a copied folder holds, a few levels down and a few names a level, for the import's trail. */
+    private static String outline(File dir, int depth)
+    {
+        File[] children = dir.listFiles();
+        if (children == null)
+        {
+            return dir.getName();
+        }
+        StringBuilder text = new StringBuilder(dir.getName()).append("/{");
+        for (int i = 0; i < children.length && i < 12; i++)
+        {
+            text.append(i > 0 ? ", " : "").append(depth > 1 && children[i].isDirectory() ? outline(children[i], depth - 1) : children[i].getName());
+        }
+        return text.append(children.length > 12 ? ", … " + children.length + " in all}" : "}").toString();
     }
 
     /** The folder below dir (or dir itself) that holds the game: Version.txt and Assembly-CSharp.dll side by side. */
@@ -834,6 +861,7 @@ public final class MainActivity extends NativeActivity
         resultFile.delete();
         progressFile.delete();
         showBusy(root.isEmpty() ? "正在按新版本重新处理游戏文件…" : "正在处理游戏文件…");
+        Diagnostics.trail(this, "setup starts" + (root.isEmpty() ? " (the kept assemblies again)" : " on " + root));
         startService(new Intent(this, SetupService.class).putExtra("root", root));
         long started = System.currentTimeMillis();
         long goneSince = 0;
@@ -860,6 +888,7 @@ public final class MainActivity extends NativeActivity
                 }
                 else if (System.currentTimeMillis() - goneSince > 3000 && !resultFile.exists())
                 {
+                    Diagnostics.trail(this, "the setup process is gone without a result (last step: " + readText(progressFile) + ")");
                     hideBusy();
                     return new String[] { "error", "处理程序意外退出了。" };
                 }
