@@ -87,6 +87,7 @@ namespace PortMobile
 		public static void AfterUIRootOnGUI()
 		{
 			ShiftKey.OnGui();
+			KeyWheel.OnGui();
 			if (!menuTimed && Verse.Current.ProgramState == Verse.ProgramState.Entry && !Verse.LongEventHandler.AnyEventNowOrWaiting)
 			{
 				// Once: how long the start took, for comparing builds and settings.

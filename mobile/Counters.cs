@@ -105,6 +105,8 @@ namespace PortMobile
 					Settings.Set("showCounters", on ? "1" : "0");
 					Show(on);
 				}
+				// The key wheel's switch, in the same place.
+				KeyWheel.OptionRow(listing);
 			}
 			catch (Exception e)
 			{

@@ -137,6 +137,7 @@ namespace PortMobile
 			TapAssist.Start(harmony, density);
 			TouchSizes.Start(harmony);
 			ShiftKey.Start();
+			KeyWheel.Start();
 			BarInset.Start(harmony);
 			MouseDecorations.Start(harmony);
 			DiagFloatMenu.Start(harmony);
@@ -259,6 +260,7 @@ namespace PortMobile
 			bool replayed = Replay.Feed();
 			TouchSizes.BeforeInterface();
 			ShiftKey.Update();
+			KeyWheel.Update();
 			UiScale.Update();
 			Interface.Update();
 			MapTools.Update();
