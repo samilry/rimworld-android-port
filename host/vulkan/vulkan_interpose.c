@@ -85,6 +85,7 @@ static int opt_identity = 1;
 static int opt_coherentOnly = 1;
 static int opt_flush = 0;
 static int opt_logFrames = 5;
+static int opt_barriers = -1; // "barriers=1": a full barrier opens every command buffer; "barriers=0": never; default: on ARM Mali
 static int opt_noDebugUtils; // "debugutils=0": VK_EXT_debug_utils is hidden from the engine (to try the stand-ins below on a driver that has it)
 
 static long g_presents, g_acquires, g_presentFailures, g_acquireFailures;
@@ -455,6 +456,7 @@ static void read_options(void)
         else if (strcmp(tok, "memlog") == 0) opt_memlog = v;
         else if (strcmp(tok, "pools") == 0) opt_pools = v;
         else if (strcmp(tok, "debugutils") == 0) opt_noDebugUtils = !v;
+        else if (strcmp(tok, "barriers") == 0) opt_barriers = v;
     }
 }
 
@@ -926,6 +928,40 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateInstance(const VkInstanceCreate
     return r;
 }
 
+// ---- Mali: a full barrier at the start of every primary command buffer ----
+// The engine renders pawns and other things into shared atlas textures (CameraTextureBaker, its own command buffer
+// and submission, waited for with a fence) and the interface samples those atlases in the frame's command buffers,
+// with no barrier between the two submissions. Adreno gets away with it; on Mali (a tablet with the Xring O1 /
+// Immortalis-G925) the icons of pawns and animals in lists showed other sprites or nothing, different ones every frame:
+// the frame read stale or half-written atlas contents. A memory barrier from all earlier commands to all later ones
+// at the start of each primary command buffer orders every submission after the ones before it and makes their
+// writes visible. vulkan.txt: barriers=1 always, barriers=0 never.
+static int g_barriers;
+static long g_barriersAdded;
+static PFN_vkBeginCommandBuffer real_BeginCommandBuffer;
+static PFN_vkCmdPipelineBarrier g_cmdPipelineBarrier;
+
+static VKAPI_ATTR VkResult VKAPI_CALL hook_BeginCommandBuffer(VkCommandBuffer cb, const VkCommandBufferBeginInfo* info)
+{
+    VkResult r = real_BeginCommandBuffer(cb, info);
+    // (The engine asks for vkGetDeviceProcAddr only after it made the device: the barrier function is taken when the
+    // engine looks it up, see device_hook, or here.)
+    if (g_barriers && !g_cmdPipelineBarrier && g_gdpa && g_device) g_cmdPipelineBarrier = (PFN_vkCmdPipelineBarrier)g_gdpa(g_device, "vkCmdPipelineBarrier");
+    // Primary command buffers only: a secondary one continuing a render pass cannot take a barrier like this.
+    if (r == VK_SUCCESS && g_barriers && g_cmdPipelineBarrier && info && !info->pInheritanceInfo && !(info->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT))
+    {
+        VkMemoryBarrier barrier;
+        memset(&barrier, 0, sizeof barrier);
+        barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        g_cmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, NULL, 0, NULL);
+        long n = __sync_add_and_fetch(&g_barriersAdded, 1);
+        if (n == 1 || n % 10000 == 0) LOGI("vulkan: %ld command buffers opened with a full barrier", n);
+    }
+    return r;
+}
+
 static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice pd, const VkDeviceCreateInfo* info, const VkAllocationCallbacks* alloc, VkDevice* out)
 {
     VkResult r = real_CreateDevice(pd, info, alloc, out);
@@ -936,7 +972,15 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice pd, con
         {
             real_FlushMappedMemoryRanges = (PFN_vkFlushMappedMemoryRanges)g_gdpa(g_device, "vkFlushMappedMemoryRanges");
             real_InvalidateMappedMemoryRanges = (PFN_vkInvalidateMappedMemoryRanges)g_gdpa(g_device, "vkInvalidateMappedMemoryRanges");
+            g_cmdPipelineBarrier = (PFN_vkCmdPipelineBarrier)g_gdpa(g_device, "vkCmdPipelineBarrier");
         }
+        VkPhysicalDeviceProperties props;
+        memset(&props, 0, sizeof props);
+        PFN_vkGetPhysicalDeviceProperties getProps = (PFN_vkGetPhysicalDeviceProperties)g_gipa(g_instance, "vkGetPhysicalDeviceProperties");
+        if (getProps) getProps(pd, &props);
+        g_barriers = opt_barriers >= 0 ? opt_barriers : props.vendorID == 0x13B5;
+        LOGI("vulkan: GPU \"%s\" (vendor 0x%x): %s", props.deviceName, props.vendorID,
+             g_barriers ? "every command buffer opens with a full barrier" : "command buffers as the engine records them");
     }
     char ext[2048] = "";
     for (uint32_t i = 0; i < info->enabledExtensionCount && strlen(ext) < 1900; i++)
@@ -989,8 +1033,10 @@ static PFN_vkVoidFunction device_hook(const char* name, PFN_vkVoidFunction real)
     HOOK(UnmapMemory)
     HOOK(QueueSubmit)
     HOOK(QueueSubmit2)
+    HOOK(BeginCommandBuffer)
     HOOK(WaitForFences)
 #undef HOOK
+    if (strcmp(name, "vkCmdPipelineBarrier") == 0) g_cmdPipelineBarrier = (PFN_vkCmdPipelineBarrier)real;
     if (strcmp(name, "vkCmdBeginRenderPass2KHR") == 0) { real_CmdBeginRenderPass2 = (PFN_vkCmdBeginRenderPass2)real; return (PFN_vkVoidFunction)hook_CmdBeginRenderPass2; }
     if (strcmp(name, "vkCmdBeginRenderingKHR") == 0) { real_CmdBeginRendering = (PFN_vkCmdBeginRendering)real; return (PFN_vkVoidFunction)hook_CmdBeginRendering; }
     if (strcmp(name, "vkQueueSubmit2KHR") == 0) { real_QueueSubmit2 = (PFN_vkQueueSubmit2)real; return (PFN_vkVoidFunction)hook_QueueSubmit2; }
