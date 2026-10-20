@@ -14,6 +14,9 @@ namespace PortMobile
 	/// just fits the screen height). The game's options dialog can still change it: the new value is kept and
 	/// written back. Nothing rescales by itself while playing (the user wants the interface to hold still);
 	/// a window that does not fit is drawn smaller on its own (WindowFit).
+	/// No limits (the user's choice, 2026-10-20, after testers still could not change it): every scale of the list is
+	/// taken whatever the screen, from 0.5 up; the game's own "keep / revert" confirmation is the safety net (not kept
+	/// within its countdown, the old scale comes back).
 	/// </summary>
 	internal static class UiScale
 	{
@@ -32,7 +35,7 @@ namespace PortMobile
 						string[] parts = line.Split('=');
 						if (parts.Length == 2 && parts[0].Trim() == "uiScale" && float.TryParse(parts[1].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float value))
 						{
-							preferred = Mathf.Clamp(value, 1f, 4f);
+							preferred = Mathf.Clamp(value, MinScale, MaxScale);
 						}
 					}
 				}
@@ -56,6 +59,7 @@ namespace PortMobile
 			{
 				harmony.Patch(safe, prefix: new HarmonyMethod(typeof(UiScale), nameof(FitsWithWindowFit)));
 			}
+			harmony.Patch(AccessTools.Method(typeof(ResolutionUtility), nameof(ResolutionUtility.Update)), prefix: new HarmonyMethod(typeof(UiScale), nameof(WithoutScaleReset)));
 			harmony.Patch(AccessTools.Method(typeof(Window), nameof(Window.WindowOnGUI)), prefix: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.Before)), finalizer: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.After)));
 			try
 			{
@@ -72,10 +76,16 @@ namespace PortMobile
 		/// <summary>The phone's default scale.</summary>
 		private const float PhoneDefault = 1.85f;
 
+		/// <summary>Only against nonsense (0, a typo in mobile.txt): the scale itself is the player's.</summary>
+		private const float MinScale = 0.5f, MaxScale = 5f;
+
+		/// <summary>Steps between the game's choices (0.75, 1, 1.25, 1.5, 1.75, 2, 2.5...), for a screen they all miss.</summary>
+		private static readonly float[] FinerSteps = { 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.1f, 1.2f, 1.3f, 1.4f, 1.6f, 1.7f, 1.8f, 1.9f, 2.1f, 2.2f, 2.25f, 2.3f, 2.4f, 2.75f };
+
 		/// <summary>
-		/// The phone's default (1.85) and the scale in use appear among the choices of the options dialog, whatever was
-		/// chosen since (the game's list is 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5...): once a smaller scale was chosen, 1.85 was no
-		/// longer in the list (it was put in only while it was the scale in use).
+		/// The choices of the options dialog: the game's, the finer steps above, the phone's default (1.85) and the scale in
+		/// use, whatever was chosen since (once a smaller scale was chosen, 1.85 was no longer in the list: it was put in
+		/// only while it was the scale in use).
 		/// </summary>
 		private static void OfferInOptions()
 		{
@@ -87,7 +97,8 @@ namespace PortMobile
 					return;
 				}
 				var list = new System.Collections.Generic.List<float>(scales);
-				foreach (float extra in new[] { PhoneDefault, preferred })
+				var extras = new System.Collections.Generic.List<float>(FinerSteps) { PhoneDefault, preferred };
+				foreach (float extra in extras)
 				{
 					if (!list.Exists(s => Mathf.Abs(s - extra) < 0.001f))
 					{
@@ -105,14 +116,58 @@ namespace PortMobile
 
 		/// <summary>
 		/// Prefix of ResolutionUtility.UIScaleSafeWithResolution, which the options dialog asks before it takes a scale: the
-		/// game wants 1024 x 768 units left on the screen, at most 1.66 on a phone 1272 pixels high, so a player who chose a
-		/// smaller scale could not go back to 1.85 ("screen resolution too small"). Here a window that does not fit is drawn
-		/// smaller on its own (WindowFit), so a scale is taken while 800 x 480 units are left (up to 2.65 on this phone).
+		/// game wants 1024 x 768 units left on the screen, at most 1.66 on a phone 1272 pixels high (1.4 on one 1080 high),
+		/// so a player who chose a smaller scale could not go back ("screen resolution too small"). Every scale is taken:
+		/// a window that does not fit is drawn smaller on its own (WindowFit), and a scale the player cannot work with is
+		/// not kept in the game's confirmation.
 		/// </summary>
 		public static bool FitsWithWindowFit(float scale, int w, int h, ref bool __result)
 		{
-			float s = scale * ResolutionUtility.DpiScale;
-			__result = s > 0f && w / s >= 800f && h / s >= 480f;
+			__result = scale > 0f;
+			return false;
+		}
+
+		/// <summary>
+		/// Prefix of ResolutionUtility.Update, in place of it: the same, without "Resolution too small (WxH), resetting UI
+		/// scale": every 30 frames, when the scale leaves less than 1024 units across and 768 down, the game puts back its
+		/// recommended scale (1.3 on this phone at 3x; at 1.75 already on a phone 1600 x 720) — taken here for the player's
+		/// choice and saved, so such a phone could never keep a larger scale.
+		/// </summary>
+		public static bool WithoutScaleReset()
+		{
+			if (RealTime.frameCount % 30 != 0 || LongEventHandler.AnyEventNowOrWaiting)
+			{
+				return false;
+			}
+			bool changed = false;
+			if (Screen.fullScreenMode != Prefs.FullScreenMode)
+			{
+				Prefs.FullScreenMode = Screen.fullScreenMode;
+				if (Screen.fullScreen)
+				{
+					Resolution native = ResolutionUtility.NativeResolution;
+					Prefs.ScreenWidth = native.width;
+					Prefs.ScreenHeight = native.height;
+				}
+				changed = true;
+			}
+			if (!Screen.fullScreen)
+			{
+				if (Screen.windowWidth != Prefs.ScreenWidth)
+				{
+					Prefs.ScreenWidth = Screen.windowWidth;
+					changed = true;
+				}
+				if (Screen.windowHeight != Prefs.ScreenHeight)
+				{
+					Prefs.ScreenHeight = Screen.windowHeight;
+					changed = true;
+				}
+			}
+			if (changed)
+			{
+				Prefs.Save();
+			}
 			return false;
 		}
 
@@ -133,7 +188,7 @@ namespace PortMobile
 			if (lastSet > 0f && Mathf.Abs(current - lastSet) > 0.001f)
 			{
 				// Someone else set it: the player, in the options dialog.
-				preferred = Mathf.Clamp(current, 1f, 4f);
+				preferred = Mathf.Clamp(current, MinScale, MaxScale);
 				Save();
 			}
 			if (Mathf.Abs(preferred - current) > 0.004f)

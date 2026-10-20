@@ -238,6 +238,23 @@ final class Diagnostics
         return text.toString();
     }
 
+    /**
+     * The app is about to end its own process (a restart after the mod list changed, the player leaving the import):
+     * the exit that follows is not reported. Android 16 and older describe such an exit as "exit_self_..."; a tester's
+     * Honor on Android 17 gave no description, and every restart after a change of mods came back as a crash report.
+     */
+    static void noteSelfExit(Context context)
+    {
+        context.getSharedPreferences("diagnostics", Context.MODE_PRIVATE).edit().putLong("selfExitAt", System.currentTimeMillis()).commit();
+    }
+
+    /** Whether an exit is the one the app announced (noteSelfExit): within a few seconds after it. */
+    private static boolean announced(ApplicationExitInfo exit, long selfExitAt)
+    {
+        long after = exit.getTimestamp() - selfExitAt;
+        return selfExitAt > 0 && after >= -1000 && after <= 15000;
+    }
+
     /** How many files and megabytes a folder holds (all the way down). */
     private static String folderSize(File dir)
     {
@@ -284,6 +301,7 @@ final class Diagnostics
         List<ApplicationExitInfo> exits = manager.getHistoricalProcessExitReasons(context.getPackageName(), 0, 16);
         SharedPreferences prefs = context.getSharedPreferences("diagnostics", Context.MODE_PRIVATE);
         long seen = prefs.getLong("seenExit", 0);
+        long selfExitAt = prefs.getLong("selfExitAt", 0);
         if (seen == 0)
         {
             // First start of this APK: exits of the last day still count (a crash of the APK this one replaced).
@@ -300,7 +318,7 @@ final class Diagnostics
             }
             history.append(describe(exit)).append('\n');
             newestTime = Math.max(newestTime, exit.getTimestamp());
-            if (exit.getTimestamp() > seen && abnormal(exit) && (newest == null || exit.getTimestamp() > newest.getTimestamp()))
+            if (exit.getTimestamp() > seen && abnormal(exit) && !announced(exit, selfExitAt) && (newest == null || exit.getTimestamp() > newest.getTimestamp()))
             {
                 newest = exit;
             }

@@ -36,6 +36,8 @@ namespace PortMobile
 		// The phone's own keys (their names in keyWheelKeys) and the mouse buttons (GLFW's numbers, as Touch injects them).
 		internal const string ShiftName = "@Shift", MouseLeftName = "@MouseLeft", MouseMiddleName = "@MouseMiddle", MouseRightName = "@MouseRight";
 		internal static readonly string[] Specials = { ShiftName, MouseLeftName, MouseRightName, MouseMiddleName };
+		// The number keys 0 to 9 themselves (the user's, 2026-10-20), whatever is bound to them: held while the finger holds them.
+		internal static readonly string[] Digits = Enumerable.Range(0, 10).Select(n => "@Key" + n).ToArray();
 		internal const int MouseLeft = 0, MouseRight = 1, MouseMiddle = 2;
 
 		public static readonly string[] Defaults = { "TogglePause", "TimeSpeed_Normal", "TimeSpeed_Fast", "TimeSpeed_Superfast", ShiftName, MouseLeftName, MouseRightName, MouseMiddleName, "Designator_RotateLeft", "Designator_RotateRight", "Command_ColonistDraft", "NextColonist" };
@@ -195,6 +197,10 @@ namespace PortMobile
 		/// <summary>What a key shows on the wheel: the key it is bound to ("" when none), or the phone key's name.</summary>
 		internal static string KeyText(WheelKey key)
 		{
+			if (key.Digit >= 0)
+			{
+				return key.Digit.ToString();
+			}
 			if (key.Def == null)
 			{
 				switch (key.Name)
@@ -289,6 +295,12 @@ namespace PortMobile
 				Messages.Message(Texts.Chinese ? "“" + def.LabelCap + "”没有绑定可以用的键盘按键（在 选项 → 控制 里给它绑一个）。" : "\"" + def.LabelCap + "\" has no keyboard key bound to it (bind one in Options → Controls).", MessageTypeDefOf.RejectInput, false);
 				return;
 			}
+			HoldGlfwKey(glfw);
+		}
+
+		private static void HoldGlfwKey(int glfw)
+		{
+			ReleaseKey();
 			glfwAndroidInjectKey(glfw, Press, 0);
 			heldGlfwKey = glfw;
 		}
@@ -529,7 +541,7 @@ namespace PortMobile
 			{
 				WheelKey key = Keys[index];
 				label = KeyText(key);
-				bool on = key.Def == null ? IsOn(key) : held;
+				bool on = key.Def == null && key.Digit < 0 ? IsOn(key) : held;
 				fill = label.Length == 0 ? new Color(0.3f, 0.2f, 0.2f, 0.7f) : on ? new Color(0.85f, 0.65f, 0.2f, 1f) : new Color(0.18f, 0.2f, 0.22f, 0.88f);
 				if (label.Length == 0)
 				{
@@ -546,6 +558,10 @@ namespace PortMobile
 					if (key.Def != null)
 					{
 						HoldKey(key.Def);
+					}
+					else if (key.Digit >= 0)
+					{
+						HoldGlfwKey(48 + key.Digit); // GLFW_KEY_0 ... GLFW_KEY_9
 					}
 					else
 					{
@@ -643,7 +659,7 @@ namespace PortMobile
 			var allRect = new Rect(right.x, right.y + 28f, right.width, right.height - 28f);
 			string needle = search.Trim();
 			var chosen = new HashSet<string>(keys.Select(k => k.Name));
-			List<WheelKey> all = KeyWheel.Specials.Select(WheelKey.Named)
+			List<WheelKey> all = KeyWheel.Specials.Concat(KeyWheel.Digits).Select(WheelKey.Named)
 				.Concat(DefDatabase<KeyBindingDef>.AllDefsListForReading.OrderBy(d => d.category != null ? d.category.index : 0).Select(d => new WheelKey(d.defName, d)))
 				.Where(k => !chosen.Contains(k.Name) && (needle.Length == 0 || k.Label.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 || k.Name.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0))
 				.ToList();
@@ -654,7 +670,7 @@ namespace PortMobile
 			string lastCategory = null;
 			foreach (WheelKey key in all)
 			{
-				string category = key.Def == null ? (chinese ? "手机按键（开关）" : "Phone keys (switches)") : key.Def.category != null ? key.Def.category.LabelCap.ToString() : "";
+				string category = key.Digit >= 0 ? (chinese ? "数字键" : "Number keys") : key.Def == null ? (chinese ? "手机按键（开关）" : "Phone keys (switches)") : key.Def.category != null ? key.Def.category.LabelCap.ToString() : "";
 				if (category != lastCategory)
 				{
 					lastCategory = category;
@@ -698,6 +714,10 @@ namespace PortMobile
 		/// <summary>The grey text after a key's name: the key it is bound to, or what one of the phone's own does.</summary>
 		private static string Bound(WheelKey key, bool chinese)
 		{
+			if (key.Digit >= 0)
+			{
+				return chinese ? "按住就是按住键盘上的 " + key.Digit : "held: the key " + key.Digit + " held";
+			}
 			if (key.Def == null)
 			{
 				return key.Name == KeyWheel.ShiftName ? (chinese ? "开关，开着时一直按住" : "switch: held while on") : (chinese ? "开关，点屏幕即为此键" : "switch: taps are this button");
@@ -719,16 +739,19 @@ namespace PortMobile
 			Def = def;
 		}
 
-		/// <summary>The key of that name (a def's name or one of KeyWheel.Specials); null when there is none (a mod's key, the mod gone).</summary>
+		/// <summary>The key of that name (a def's name, one of KeyWheel.Specials or Digits); null when there is none (a mod's key, the mod gone).</summary>
 		public static WheelKey Named(string name)
 		{
-			if (KeyWheel.Specials.Contains(name))
+			if (KeyWheel.Specials.Contains(name) || KeyWheel.Digits.Contains(name))
 			{
 				return new WheelKey(name, null);
 			}
 			KeyBindingDef def = DefDatabase<KeyBindingDef>.GetNamedSilentFail(name);
 			return def != null ? new WheelKey(name, def) : null;
 		}
+
+		/// <summary>0 to 9 for a number key of KeyWheel.Digits, else -1.</summary>
+		public int Digit => Def == null && Name.Length == 5 && Name.StartsWith("@Key", StringComparison.Ordinal) && char.IsDigit(Name[4]) ? Name[4] - '0' : -1;
 
 		public string Label
 		{
@@ -739,6 +762,10 @@ namespace PortMobile
 					return Def.LabelCap;
 				}
 				bool chinese = Texts.Chinese;
+				if (Digit >= 0)
+				{
+					return (chinese ? "数字键 " : "Number key ") + Digit;
+				}
 				switch (Name)
 				{
 					case KeyWheel.ShiftName: return "Shift";

@@ -1122,6 +1122,7 @@ public final class MainActivity extends NativeActivity
             @Override
             public void run()
             {
+                Diagnostics.noteSelfExit(MainActivity.this);
                 finishAndRemoveTask();
                 android.os.Process.killProcess(android.os.Process.myPid());
             }
@@ -1144,6 +1145,7 @@ public final class MainActivity extends NativeActivity
             {
                 Intent launch = getPackageManager().getLaunchIntentForPackage(getPackageName());
                 ComponentName component = launch != null && launch.getComponent() != null ? launch.getComponent() : new ComponentName(MainActivity.this, MainActivity.class);
+                Diagnostics.noteSelfExit(MainActivity.this);
                 startActivity(Intent.makeRestartActivityTask(component));
                 android.os.Process.killProcess(android.os.Process.myPid());
             }

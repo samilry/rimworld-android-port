@@ -82,7 +82,7 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 internal static class ModPrep
 {
 	/// <summary>Bumped whenever what is done to an assembly changes; part of the stamp, so prepared mods are done again.</summary>
-	public const int RulesVersion = 10;
+	public const int RulesVersion = 11;
 
 	public const string StampName = ".port17-prepared";
 
@@ -379,9 +379,69 @@ internal static class ModPrep
 			}
 		}
 		edits += DropAttributesOfMissingTypes(module, label, log);
+		edits += TreatAndroidAsLinux(module, label, log);
 		edits += AdaptChangedSignatures(module, label, log);
 		edits += BridgeChangedOverrides(module, label, log);
 		return edits + PrepareEmbeddedAssemblies(module, resolver, label, result, log);
+	}
+
+	/// <summary>
+	/// The runtime says "Android", not "Linux": RuntimeInformation.IsOSPlatform(OSPlatform.Linux) and
+	/// OperatingSystem.IsLinux() are false on the phone. The game's own checks are rewritten (patch/Patch.cs:
+	/// PortPlatform); a mod's were not, and a mod that picks its files by them found none (Nice Health Tab, a tester's
+	/// phone 2026-10-20: "Unable to open archive file: .../Materials/Bundles//outline", the platform's folder left
+	/// empty, and its shaders, the health tab and Vehicle Framework's materials after it all failed). Here they are
+	/// rewritten in the mod as well, without a reference to the port: IsOSPlatform(p) becomes p == OSPlatform.Linux,
+	/// IsLinux() true.
+	/// </summary>
+	private static int TreatAndroidAsLinux(ModuleDefinition module, string label, Action<string> log)
+	{
+		int edits = 0;
+		foreach (TypeDefinition type in module.GetTypes())
+		{
+			foreach (MethodDefinition method in type.Methods)
+			{
+				if (!method.HasBody)
+				{
+					continue;
+				}
+				Mono.Cecil.Cil.MethodBody body = method.Body;
+				for (int i = 0; i < body.Instructions.Count; i++)
+				{
+					Instruction instruction = body.Instructions[i];
+					if (instruction.OpCode != OpCodes.Call || !(instruction.Operand is MethodReference called) || called.DeclaringType == null)
+					{
+						continue;
+					}
+					string declaring = called.DeclaringType.FullName;
+					if (declaring == "System.Runtime.InteropServices.RuntimeInformation" && called.Name == "IsOSPlatform" && called.Parameters.Count == 1 && !called.HasThis)
+					{
+						// Stack: the platform asked about. The call (a branch may lead to it) becomes OSPlatform.Linux, then ==.
+						TypeReference platform = called.Parameters[0].ParameterType;
+						var linux = new MethodReference("get_Linux", platform, platform) { HasThis = false };
+						var equals = new MethodReference("op_Equality", called.ReturnType, platform) { HasThis = false };
+						equals.Parameters.Add(new ParameterDefinition(platform));
+						equals.Parameters.Add(new ParameterDefinition(platform));
+						instruction.Operand = linux;
+						WidenBranches(body);
+						body.Instructions.Insert(i + 1, Instruction.Create(OpCodes.Call, equals));
+						i++;
+						edits++;
+					}
+					else if (declaring == "System.OperatingSystem" && called.Name == "IsLinux" && called.Parameters.Count == 0)
+					{
+						instruction.OpCode = OpCodes.Ldc_I4_1;
+						instruction.Operand = null;
+						edits++;
+					}
+				}
+			}
+		}
+		if (edits > 0)
+		{
+			log(label + ": " + edits + " platform checks answer Linux for Android");
+		}
+		return edits;
 	}
 
 	/// <summary>
