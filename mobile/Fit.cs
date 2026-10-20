@@ -51,6 +51,11 @@ namespace PortMobile
 			{
 				harmony.Patch(resolve, prefix: new HarmonyMethod(typeof(UiScale), nameof(Uncapped)));
 			}
+			MethodInfo safe = AccessTools.Method(typeof(ResolutionUtility), "UIScaleSafeWithResolution");
+			if (safe != null)
+			{
+				harmony.Patch(safe, prefix: new HarmonyMethod(typeof(UiScale), nameof(FitsWithWindowFit)));
+			}
 			harmony.Patch(AccessTools.Method(typeof(Window), nameof(Window.WindowOnGUI)), prefix: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.Before)), finalizer: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.After)));
 			try
 			{
@@ -64,23 +69,51 @@ namespace PortMobile
 			Console.WriteLine("[mobile] UI scale " + preferred.ToString("F2") + " (" + Screen.width + "x" + Screen.height + " -> " + Mathf.RoundToInt(Screen.width / preferred) + "x" + Mathf.RoundToInt(Screen.height / preferred) + ")");
 		}
 
-		/// <summary>The phone's scale appears among the choices of the options dialog (the game's list stops at 1.75, 2, 2.5...).</summary>
+		/// <summary>The phone's default scale.</summary>
+		private const float PhoneDefault = 1.85f;
+
+		/// <summary>
+		/// The phone's default (1.85) and the scale in use appear among the choices of the options dialog, whatever was
+		/// chosen since (the game's list is 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5...): once a smaller scale was chosen, 1.85 was no
+		/// longer in the list (it was put in only while it was the scale in use).
+		/// </summary>
 		private static void OfferInOptions()
 		{
 			try
 			{
 				float[] scales = Dialog_Options.UIScales;
-				if (scales == null || scales.Length < 2 || Array.Exists(scales, s => Mathf.Abs(s - preferred) < 0.001f))
+				if (scales == null || scales.Length < 2)
 				{
 					return;
 				}
-				scales[scales.Length - 1] = preferred;
-				Array.Sort(scales);
+				var list = new System.Collections.Generic.List<float>(scales);
+				foreach (float extra in new[] { PhoneDefault, preferred })
+				{
+					if (!list.Exists(s => Mathf.Abs(s - extra) < 0.001f))
+					{
+						list.Add(extra);
+					}
+				}
+				list.Sort();
+				Dialog_Options.UIScales = list.ToArray();
 			}
 			catch (Exception e)
 			{
 				Console.WriteLine("[mobile] could not add the phone's UI scale to the options: " + e.Message);
 			}
+		}
+
+		/// <summary>
+		/// Prefix of ResolutionUtility.UIScaleSafeWithResolution, which the options dialog asks before it takes a scale: the
+		/// game wants 1024 x 768 units left on the screen, at most 1.66 on a phone 1272 pixels high, so a player who chose a
+		/// smaller scale could not go back to 1.85 ("screen resolution too small"). Here a window that does not fit is drawn
+		/// smaller on its own (WindowFit), so a scale is taken while 800 x 480 units are left (up to 2.65 on this phone).
+		/// </summary>
+		public static bool FitsWithWindowFit(float scale, int w, int h, ref bool __result)
+		{
+			float s = scale * ResolutionUtility.DpiScale;
+			__result = s > 0f && w / s >= 800f && h / s >= 480f;
+			return false;
 		}
 
 		/// <summary>
