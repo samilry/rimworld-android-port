@@ -43,6 +43,8 @@ if [ "$VVL" = 1 ]; then cp build/native/vvl/libVkLayer_khronos_validation.so "$L
 for f in libcoreclr.so libclrjit.so libSystem.Native.so libSystem.Globalization.Native.so libSystem.IO.Compression.Native.so libSystem.Security.Cryptography.Native.Android.so; do
   cp "dotnet-android-coreclr/runtimes/android-arm64/native/$f" "$LIB/"
 done
+# A refused sched_setaffinity must not fail the runtime's threads (HyperOS: 0x8007054F at coreclr_initialize).
+node host/patch-coreclr.js "$LIB/libcoreclr.so"
 ls -la "$LIB" | awk 'NR>3 {print $5"\t"$9}'
 
 # The Java side: our Boot class plus the runtime's crypto helper classes, in one classes.dex.

@@ -9,8 +9,12 @@
 // PAYLOAD=1 also carries runtime/ and game/, unpacked on its first start (java_unpack_payload).
 //
 // Everything the runtime and the game print to stdout/stderr goes to logcat under the tag "port17".
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <android/log.h>
 #include <dirent.h>
+#include <sched.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
@@ -332,6 +336,51 @@ static int java_prepare_game(struct android_app* app)
     return ready ? 1 : 0;
 }
 
+// What the runtime's PAL does first on every thread it starts (CPalThread::ThreadEntry): the process's CPU affinity
+// (sched_getaffinity of the main thread) set on the new thread (sched_setaffinity(0, ...)). Its failure failed
+// coreclr_initialize on a tester's HyperOS phone (0x8007054F; host/patch-coreclr.js now lets the runtime go on): done
+// here once on a thread of our own, the result in the log and stderr, to see what such a phone refuses.
+static void* probe_affinity_thread(void* arg)
+{
+    int* result = (int*)arg;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    result[0] = sched_getaffinity(getpid(), sizeof set, &set) == 0 ? 0 : errno;
+    result[2] = CPU_COUNT(&set);
+    result[3] = 0;
+    for (int c = 0; c < 32; c++)
+    {
+        if (CPU_ISSET(c, &set)) result[3] |= 1 << c;
+    }
+    cpu_set_t own;
+    CPU_ZERO(&own);
+    sched_getaffinity(0, sizeof own, &own);
+    result[4] = 0;
+    for (int c = 0; c < 32; c++)
+    {
+        if (CPU_ISSET(c, &own)) result[4] |= 1 << c;
+    }
+    result[1] = result[0] != 0 ? -1 : (sched_setaffinity(0, sizeof set, &set) == 0 ? 0 : errno);
+    return NULL;
+}
+
+static void probe_affinity(const char* who)
+{
+    int result[5] = { 0 };
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, probe_affinity_thread, result) != 0)
+    {
+        return;
+    }
+    pthread_join(thread, NULL);
+    char text[256];
+    snprintf(text, sizeof text, "%s: affinity of the process 0x%x (%d CPUs, get %s), a new thread's 0x%x; setting it on the thread: %s",
+        who, result[3], result[2], result[0] == 0 ? "ok" : strerror(result[0]), result[4],
+        result[1] == 0 ? "ok" : result[1] < 0 ? "not tried" : strerror(result[1]));
+    LOGI("%s", text);
+    fprintf(stderr, "%s\n", text);
+}
+
 // SetupService.runSetup(ext, root, libdir), in the setup process: the runtime with the framework and setup/ only, running
 // setup/PortSetup.dll (setup/Setup.cs) on the imported game folder (root, "" to prepare the kept assemblies again).
 // Returns its exit code, or a negative number when the runtime did not start (-2: coreclr_initialize failed, its
@@ -393,6 +442,7 @@ JNIEXPORT jint JNICALL Java_com_local_waylith_port_SetupService_runSetup(JNIEnv*
     {
         void* host = NULL;
         unsigned int domain = 0;
+        probe_affinity("setup");
         int rc = init(entry, "port17-setup", (int)(sizeof keys / sizeof keys[0]), keys, values, &host, &domain);
         if (rc < 0)
         {
@@ -605,6 +655,7 @@ static void* run_runtime(void* arg)
     snprintf(exePath, sizeof exePath, "%s/RimWorld.dll", game);
     void* host = NULL;
     unsigned int domain = 0;
+    probe_affinity("game");
     int rc = init(exePath, "port17", propertyCount, allKeys, allValues, &host, &domain);
     if (rc < 0)
     {
