@@ -291,7 +291,7 @@ namespace PortMobile
 			Agent.Update();
 			bool replayed = Replay.Feed();
 			TouchSizes.BeforeInterface();
-			ShiftKey.Update();
+			LatchedKey.UpdateAll();
 			KeyWheel.Update();
 			UiScale.Update();
 			Interface.Update();

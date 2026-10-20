@@ -12,16 +12,20 @@ namespace PortMobile
 	/// <summary>
 	/// A wheel of keys for a finger: a round button ("按键") at the edge of the screen, shown while a game is played. A
 	/// tap opens a ring of round keys around it (turned towards the middle of the screen, a second ring where one is not
-	/// enough), another tap closes it. Each key is one of the game's key bindings (Options → Controls: pause, the speeds,
-	/// rotating, drafting, the main tabs, the camera, and what mods add), shown by the key it is bound to: while the
-	/// finger holds it, the engine sees that key held down (a real key event through the Android GLFW), so the game and
-	/// mods do on it what they do on a PC keyboard. Four keys of the phone's own (the user's, 2026-10-20) switch on with a
-	/// tap and stay on until tapped again: Shift (ShiftKey: the left Shift held down), and the mouse buttons left, middle
-	/// and right (one of the three is on: which button a finger on the screen is, see Touch; the wheel itself is always
-	/// tapped with the left). While the ring is closed the button shows what is on. The last key opens the setup: keys
-	/// added from the full list, taken out, moved; the defaults back; the button back to its place. The button is moved by
-	/// dragging it.
-	/// mobile.txt: keyWheel=0 leaves it out (Options → Interface has the switch); keyWheelKeys=defName,@Shift,...;
+	/// enough), another tap closes it. A key is one of:
+	///   the game's key bindings (Options → Controls: pause, the speeds, rotating, drafting, the main tabs, the camera,
+	///   and what mods add), shown by the key bound to it;
+	///   any key of a PC keyboard, or a combination of one with Ctrl, Shift and Alt (Ctrl+Z), shown by its name (the
+	///   user's, 2026-10-20: "all keyboard keys, and some are combinations");
+	/// while the finger holds it, the engine sees that key (with the combination's modifiers first) held down, as real
+	/// key events through the Android GLFW, so the game and mods do on it what they do on a PC keyboard.
+	/// Six keys of the phone's own switch on with a tap and stay on until tapped again: Ctrl, Shift and Alt (LatchedKey:
+	/// the key held down meanwhile, so that taps on the screen and the other keys come with it), and the mouse buttons
+	/// left, middle and right (one of the three is on: which button a finger on the screen is, see Touch; the wheel itself
+	/// is always tapped with the left). While the ring is closed the button shows what is on. The last key opens the
+	/// setup: keys added from the full list (with Ctrl / Shift / Alt ticked: as combinations), taken out, moved; the
+	/// defaults back; the button back to its place. The button is moved by dragging it.
+	/// mobile.txt: keyWheel=0 leaves it out (Options → Interface has the switch); keyWheelKeys=defName,@Shift,@K:Ctrl+Z,...;
 	/// keyWheelAt=X,Y (the button's centre, interface units).
 	/// </summary>
 	internal static class KeyWheel
@@ -34,13 +38,66 @@ namespace PortMobile
 		private const int SetupSlot = -3, NoTouch = -2, HubTouch = -1;
 
 		// The phone's own keys (their names in keyWheelKeys) and the mouse buttons (GLFW's numbers, as Touch injects them).
-		internal const string ShiftName = "@Shift", MouseLeftName = "@MouseLeft", MouseMiddleName = "@MouseMiddle", MouseRightName = "@MouseRight";
-		internal static readonly string[] Specials = { ShiftName, MouseLeftName, MouseRightName, MouseMiddleName };
-		// The number keys 0 to 9 themselves (the user's, 2026-10-20), whatever is bound to them: held while the finger holds them.
-		internal static readonly string[] Digits = Enumerable.Range(0, 10).Select(n => "@Key" + n).ToArray();
+		internal const string ShiftName = "@Shift", CtrlName = "@Ctrl", AltName = "@Alt", MouseLeftName = "@MouseLeft", MouseMiddleName = "@MouseMiddle", MouseRightName = "@MouseRight";
+		internal static readonly string[] Specials = { CtrlName, ShiftName, AltName, MouseLeftName, MouseRightName, MouseMiddleName };
 		internal const int MouseLeft = 0, MouseRight = 1, MouseMiddle = 2;
+		// A keyboard key in keyWheelKeys: "@K:" and the modifiers and the key's name joined by "+" (@K:Z, @K:Ctrl+Shift+S).
+		internal const string RawPrefix = "@K:";
 
 		public static readonly string[] Defaults = { "TogglePause", "TimeSpeed_Normal", "TimeSpeed_Fast", "TimeSpeed_Superfast", ShiftName, MouseLeftName, MouseRightName, MouseMiddleName, "Designator_RotateLeft", "Designator_RotateRight", "Command_ColonistDraft", "NextColonist" };
+
+		/// <summary>A key of the keyboard: GLFW's code, the name it is stored by (letters and digits only), what it shows.</summary>
+		internal struct KeyboardKey
+		{
+			public int Code;
+			public string Name, Shown;
+		}
+
+		/// <summary>Every key of a PC keyboard that the Android GLFW can give the engine (the modifiers are LatchedKey).</summary>
+		internal static readonly KeyboardKey[] Keyboard = BuildKeyboard();
+
+		private static KeyboardKey[] BuildKeyboard()
+		{
+			var list = new List<KeyboardKey>();
+			void Add(int code, string name, string shown = null) => list.Add(new KeyboardKey { Code = code, Name = name, Shown = shown ?? name });
+			for (char c = 'A'; c <= 'Z'; c++) Add(c, c.ToString());
+			for (char c = '0'; c <= '9'; c++) Add(c, c.ToString());
+			for (int f = 1; f <= 12; f++) Add(289 + f, "F" + f);
+			Add(32, "Space");
+			Add(257, "Enter");
+			Add(256, "Esc");
+			Add(258, "Tab");
+			Add(259, "Backspace");
+			Add(260, "Insert");
+			Add(261, "Delete");
+			Add(268, "Home");
+			Add(269, "End");
+			Add(266, "PageUp");
+			Add(267, "PageDown");
+			Add(265, "Up", "↑");
+			Add(264, "Down", "↓");
+			Add(263, "Left", "←");
+			Add(262, "Right", "→");
+			Add(96, "BackQuote", "`");
+			Add(45, "Minus", "-");
+			Add(61, "Equals", "=");
+			Add(91, "LeftBracket", "[");
+			Add(93, "RightBracket", "]");
+			Add(92, "Backslash", "\\");
+			Add(59, "Semicolon", ";");
+			Add(39, "Quote", "'");
+			Add(44, "Comma", ",");
+			Add(46, "Period", ".");
+			Add(47, "Slash", "/");
+			for (int k = 0; k <= 9; k++) Add(320 + k, "Kp" + k);
+			Add(330, "KpPeriod", "Kp.");
+			Add(331, "KpDivide", "Kp/");
+			Add(332, "KpMultiply", "Kp*");
+			Add(333, "KpMinus", "Kp-");
+			Add(334, "KpPlus", "Kp+");
+			Add(335, "KpEnter");
+			return list.ToArray();
+		}
 
 		private static bool enabled, expanded;
 		private static Vector2 hubCenter = new Vector2(-1f, -1f);
@@ -53,7 +110,10 @@ namespace PortMobile
 		private static int touching = NoTouch;
 		private static Vector2 touchStart, grabOffset;
 		private static bool dragged;
-		private static int heldGlfwKey = -1;
+		// The GLFW keys held for the key the finger is on, in the order they went down.
+		private static readonly List<int> held = new List<int>();
+		private static int heldFrame;
+		private static bool traced;
 		private static Texture2D disc;
 
 		public static bool Enabled => enabled;
@@ -66,7 +126,7 @@ namespace PortMobile
 			if (list != null && Settings.Get("keyWheelVersion", 1) < 2 && !names.Any(n => n.StartsWith("@")))
 			{
 				// Keys chosen before the wheel had keys of its own (the Shift button was apart then): those go in, once.
-				names.InsertRange(Math.Min(4, names.Count), Specials);
+				names.InsertRange(Math.Min(4, names.Count), new[] { ShiftName, MouseLeftName, MouseRightName, MouseMiddleName });
 				Settings.Set("keyWheelKeys", string.Join(",", names));
 			}
 			if (Settings.Get("keyWheelVersion", 1) < 2)
@@ -136,11 +196,26 @@ namespace PortMobile
 			return false;
 		}
 
-		private static bool IsOn(WheelKey key)
+		private static LatchedKey Latched(WheelKey key)
 		{
 			switch (key.Name)
 			{
-				case ShiftName: return ShiftKey.On;
+				case ShiftName: return LatchedKey.Shift;
+				case CtrlName: return LatchedKey.Ctrl;
+				case AltName: return LatchedKey.Alt;
+				default: return null;
+			}
+		}
+
+		private static bool IsOn(WheelKey key)
+		{
+			LatchedKey latched = Latched(key);
+			if (latched != null)
+			{
+				return latched.On;
+			}
+			switch (key.Name)
+			{
 				case MouseLeftName: return mouseButton == MouseLeft;
 				case MouseRightName: return mouseButton == MouseRight;
 				case MouseMiddleName: return mouseButton == MouseMiddle;
@@ -148,14 +223,15 @@ namespace PortMobile
 			}
 		}
 
-		/// <summary>A tap on one of the phone's own keys: Shift on or off; a mouse button on (tapped again: back to the left one).</summary>
+		/// <summary>A tap on one of the phone's own keys: Ctrl, Shift or Alt on or off; a mouse button on (tapped again: back to the left one).</summary>
 		private static void Toggle(WheelKey key)
 		{
 			bool on;
-			if (key.Name == ShiftName)
+			LatchedKey latched = Latched(key);
+			if (latched != null)
 			{
-				on = !ShiftKey.On;
-				ShiftKey.Set(on);
+				on = !latched.On;
+				latched.Set(on);
 			}
 			else
 			{
@@ -194,18 +270,20 @@ namespace PortMobile
 			return new Vector2(14f + HubSize / 2f, Mathf.Round(UI.screenHeight * 0.55f));
 		}
 
-		/// <summary>What a key shows on the wheel: the key it is bound to ("" when none), or the phone key's name.</summary>
+		/// <summary>What a key shows on the wheel: the key it is bound to ("" when none), the keyboard key or combination, or the phone key's name.</summary>
 		internal static string KeyText(WheelKey key)
 		{
-			if (key.Digit >= 0)
+			if (key.IsRaw)
 			{
-				return key.Digit.ToString();
+				return key.RawShown;
 			}
 			if (key.Def == null)
 			{
 				switch (key.Name)
 				{
 					case ShiftName: return "Shift";
+					case CtrlName: return "Ctrl";
+					case AltName: return "Alt";
 					case MouseLeftName: return Texts.Chinese ? "左键" : "LMB";
 					case MouseRightName: return Texts.Chinese ? "右键" : "RMB";
 					default: return Texts.Chinese ? "中键" : "MMB";
@@ -213,6 +291,20 @@ namespace PortMobile
 			}
 			KeyCode bound = BoundKey(key.Def);
 			return bound == KeyCode.None ? "" : bound.ToStringReadable();
+		}
+
+		/// <summary>The modifiers' names in GLFW's mods, in the order they are written and pressed (Ctrl+Shift+Alt+).</summary>
+		internal static string ModifierText(int mods)
+		{
+			string text = "";
+			foreach (LatchedKey modifier in LatchedKey.All)
+			{
+				if ((mods & modifier.Mod) != 0)
+				{
+					text += modifier.Name + "+";
+				}
+			}
+			return text;
 		}
 
 		/// <summary>The key a binding answers to now (the player's first choice, else the second); None when it has none a finger can give.</summary>
@@ -295,23 +387,40 @@ namespace PortMobile
 				Messages.Message(Texts.Chinese ? "“" + def.LabelCap + "”没有绑定可以用的键盘按键（在 选项 → 控制 里给它绑一个）。" : "\"" + def.LabelCap + "\" has no keyboard key bound to it (bind one in Options → Controls).", MessageTypeDefOf.RejectInput, false);
 				return;
 			}
-			HoldGlfwKey(glfw);
+			HoldCombination(0, glfw);
 		}
 
-		private static void HoldGlfwKey(int glfw)
+		/// <summary>
+		/// A key and its modifiers down: the modifiers first (Ctrl, Shift, Alt; those switched on in the wheel are down
+		/// already), then the key, as fingers on a keyboard do; the engine reads the modifiers from the keys it sees held.
+		/// </summary>
+		private static void HoldCombination(int mods, int key)
 		{
 			ReleaseKey();
-			glfwAndroidInjectKey(glfw, Press, 0);
-			heldGlfwKey = glfw;
+			int down = LatchedKey.Mods;
+			foreach (LatchedKey modifier in LatchedKey.All)
+			{
+				if ((mods & modifier.Mod) != 0 && (down & modifier.Mod) == 0)
+				{
+					glfwAndroidInjectKey(modifier.Glfw, Press, down);
+					held.Add(modifier.Glfw);
+					down |= modifier.Mod;
+				}
+			}
+			glfwAndroidInjectKey(key, Press, down);
+			held.Add(key);
+			heldFrame = Time.frameCount;
+			traced = false;
 		}
 
+		/// <summary>The keys of the last key up again, the other way round.</summary>
 		private static void ReleaseKey()
 		{
-			if (heldGlfwKey >= 0)
+			for (int i = held.Count - 1; i >= 0; i--)
 			{
-				glfwAndroidInjectKey(heldGlfwKey, Release, 0);
-				heldGlfwKey = -1;
+				glfwAndroidInjectKey(held[i], Release, 0);
 			}
+			held.Clear();
 		}
 
 		// ---- every frame ----
@@ -325,7 +434,7 @@ namespace PortMobile
 			}
 			if (touching == NoTouch)
 			{
-				if (heldGlfwKey >= 0)
+				if (held.Count > 0)
 				{
 					ReleaseKey();
 				}
@@ -347,6 +456,12 @@ namespace PortMobile
 			}
 			if (down && Current.ProgramState == ProgramState.Playing)
 			{
+				if (Touch.Verbose && held.Count > 0 && !traced && Time.frameCount > heldFrame + 2)
+				{
+					// What the engine sees of a key held from the wheel (touch-verbose.txt).
+					traced = true;
+					Console.WriteLine("[mobile] key wheel holds " + string.Join(",", held) + ": the engine sees Ctrl " + Input.GetKey(KeyCode.LeftControl) + ", Shift " + Input.GetKey(KeyCode.LeftShift) + ", Alt " + Input.GetKey(KeyCode.LeftAlt) + ", any key " + Input.anyKey);
+				}
 				return;
 			}
 			// The finger lifted.
@@ -501,14 +616,11 @@ namespace PortMobile
 		{
 			var rect = new Rect(0f, 0f, HubSize, HubSize);
 			bool held = touching == HubTouch;
-			// Closed, it says what is switched on: Shift, a mouse button other than the left.
+			// Closed, it says what is switched on: Ctrl, Shift, Alt, a mouse button other than the left.
 			string status = "";
 			if (!expanded)
 			{
-				if (ShiftKey.On)
-				{
-					status = "Shift";
-				}
+				status = ModifierText(LatchedKey.Mods).TrimEnd('+');
 				if (mouseButton != MouseLeft)
 				{
 					status += (status.Length > 0 ? "\n" : "") + KeyText(WheelKey.Named(mouseButton == MouseRight ? MouseRightName : MouseMiddleName));
@@ -541,11 +653,17 @@ namespace PortMobile
 			{
 				WheelKey key = Keys[index];
 				label = KeyText(key);
-				bool on = key.Def == null && key.Digit < 0 ? IsOn(key) : held;
+				bool on = key.IsSwitch ? IsOn(key) : held;
 				fill = label.Length == 0 ? new Color(0.3f, 0.2f, 0.2f, 0.7f) : on ? new Color(0.85f, 0.65f, 0.2f, 1f) : new Color(0.18f, 0.2f, 0.22f, 0.88f);
 				if (label.Length == 0)
 				{
 					label = "—";
+				}
+				else if (key.IsRaw && key.RawMods != 0)
+				{
+					// A combination a line a key: "Ctrl", "Shift", "A" (written in one line it wraps anywhere in the round key).
+					string modifiers = ModifierText(key.RawMods);
+					label = modifiers.TrimEnd('+').Replace("+", "\n") + "\n" + key.RawShown.Substring(modifiers.Length);
 				}
 			}
 			DrawRound(rect, fill, label, label.Length <= 5 ? GameFont.Small : GameFont.Tiny);
@@ -559,9 +677,9 @@ namespace PortMobile
 					{
 						HoldKey(key.Def);
 					}
-					else if (key.Digit >= 0)
+					else if (key.IsRaw)
 					{
-						HoldGlfwKey(48 + key.Digit); // GLFW_KEY_0 ... GLFW_KEY_9
+						HoldCombination(key.RawMods, key.RawKey);
 					}
 					else
 					{
@@ -578,17 +696,19 @@ namespace PortMobile
 		{
 			bool check = enabled;
 			listing.CheckboxLabeled(Texts.Chinese ? "显示自定义按键盘" : "Show the key wheel", ref check, Texts.Chinese
-				? "游戏中屏幕边上的圆形“按键”按钮：点一下展开一圈按键，每个按键上写着它对应的键盘按键（按住就是按住那个键），再点一下收起；拖动可以移动位置。Shift 和鼠标左键、中键、右键是开关，点一下打开、再点一下关闭：开着右键时，在屏幕上点一下就是鼠标右键点击。展开后最后一个按键“设置”可以增删按键。"
-				: "The round \"Keys\" button at the edge of the screen in a game: a tap opens a ring of keys, each showing the keyboard key it stands for (holding it holds the key); another tap closes it; drag it to move it. Shift and the left, middle and right mouse buttons are switches, on with a tap and off with another: with the right one on, a tap on the screen is a right click. The last key, \"Setup\", adds and removes keys.", 30f, 0.6f);
+				? "游戏中屏幕边上的圆形“按键”按钮：点一下展开一圈按键，每个按键上写着它对应的键盘按键或组合键（按住就是按住那个键），再点一下收起；拖动可以移动位置。Ctrl、Shift、Alt 和鼠标左键、中键、右键是开关，点一下打开、再点一下关闭：开着 Ctrl 时，点屏幕和按别的键都带着 Ctrl；开着右键时，在屏幕上点一下就是鼠标右键点击。展开后最后一个按键“设置”可以从游戏快捷键和键盘全部按键里增删按键，勾选 Ctrl / Shift / Alt 可以添加组合键。"
+				: "The round \"Keys\" button at the edge of the screen in a game: a tap opens a ring of keys, each showing the keyboard key or combination it stands for (holding it holds the key); another tap closes it; drag it to move it. Ctrl, Shift, Alt and the left, middle and right mouse buttons are switches, on with a tap and off with another: with Ctrl on, taps on the screen and the other keys come with Ctrl; with the right button on, a tap on the screen is a right click. The last key, \"Setup\", adds and removes keys from the game's key bindings and the whole keyboard; with Ctrl / Shift / Alt ticked it adds combinations.", 30f, 0.6f);
 			SetEnabled(check);
 		}
 	}
 
-	/// <summary>The setup of the key wheel: its keys (moved, taken out), the game's key bindings to add from, the defaults, the button's place.</summary>
+	/// <summary>The setup of the key wheel: its keys (moved, taken out), the keys to add from, the defaults, the button's place.</summary>
 	internal sealed class Dialog_KeyWheel : Window
 	{
 		private Vector2 chosenScroll, allScroll;
 		private string search = "";
+		// Ticked: what is added from the list is a combination with these (GLFW's mods).
+		private bool withCtrl, withShift, withAlt;
 
 		public Dialog_KeyWheel()
 		{
@@ -600,6 +720,13 @@ namespace PortMobile
 		}
 
 		public override Vector2 InitialSize => new Vector2(900f, 620f);
+
+		/// <summary>A row of the list to add from: its heading, what it says, the key it adds (null: nothing to add).</summary>
+		private struct Choice
+		{
+			public string Category, Text;
+			public WheelKey Key;
+		}
 
 		public override void DoWindowContents(Rect inRect)
 		{
@@ -653,37 +780,48 @@ namespace PortMobile
 			}
 			Widgets.EndScrollView();
 
-			// The phone's own keys, then all of the game's key bindings, by category.
+			// What can be added: the phone's own keys, the keyboard, the game's key bindings by category.
 			Widgets.Label(new Rect(right.x, right.y, 120f, 26f), chinese ? "点一项添加：" : "Tap one to add:");
 			search = Widgets.TextField(new Rect(right.x + 124f, right.y, right.width - 124f, 26f), search);
-			var allRect = new Rect(right.x, right.y + 28f, right.width, right.height - 28f);
+			var comboRow = new Rect(right.x, right.y + 30f, right.width, 28f);
+			Widgets.Label(new Rect(comboRow.x, comboRow.y, 60f, 28f), chinese ? "组合：" : "With:");
+			Widgets.CheckboxLabeled(new Rect(comboRow.x + 60f, comboRow.y, 90f, 28f), "Ctrl", ref withCtrl);
+			Widgets.CheckboxLabeled(new Rect(comboRow.x + 160f, comboRow.y, 90f, 28f), "Shift", ref withShift);
+			Widgets.CheckboxLabeled(new Rect(comboRow.x + 260f, comboRow.y, 90f, 28f), "Alt", ref withAlt);
+			int mods = (withCtrl ? LatchedKey.Ctrl.Mod : 0) | (withShift ? LatchedKey.Shift.Mod : 0) | (withAlt ? LatchedKey.Alt.Mod : 0);
+			var allRect = new Rect(right.x, comboRow.yMax + 2f, right.width, right.yMax - comboRow.yMax - 2f);
 			string needle = search.Trim();
 			var chosen = new HashSet<string>(keys.Select(k => k.Name));
-			List<WheelKey> all = KeyWheel.Specials.Concat(KeyWheel.Digits).Select(WheelKey.Named)
-				.Concat(DefDatabase<KeyBindingDef>.AllDefsListForReading.OrderBy(d => d.category != null ? d.category.index : 0).Select(d => new WheelKey(d.defName, d)))
-				.Where(k => !chosen.Contains(k.Name) && (needle.Length == 0 || k.Label.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 || k.Name.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0))
+			List<Choice> all = Choices(mods, chinese)
+				.Where(c => c.Key != null && !chosen.Contains(c.Key.Name) && (needle.Length == 0 || c.Text.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 || c.Key.Name.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0))
 				.ToList();
-			var allView = new Rect(0f, 0f, allRect.width - 16f, Math.Max(allRect.height, all.Count * 32f + 200f));
+			var allView = new Rect(0f, 0f, allRect.width - 16f, Math.Max(allRect.height, all.Count * 32f + 240f));
 			Widgets.DrawMenuSection(allRect);
 			Widgets.BeginScrollView(allRect, ref allScroll, allView);
 			float y = 0f;
-			string lastCategory = null;
-			foreach (WheelKey key in all)
+			if (mods != 0)
 			{
-				string category = key.Digit >= 0 ? (chinese ? "数字键" : "Number keys") : key.Def == null ? (chinese ? "手机按键（开关）" : "Phone keys (switches)") : key.Def.category != null ? key.Def.category.LabelCap.ToString() : "";
-				if (category != lastCategory)
+				GUI.color = new Color(0.7f, 0.85f, 1f);
+				Widgets.Label(new Rect(6f, y + 4f, allView.width - 12f, 26f), chinese ? "现在点下面的按键会添加组合键（" + KeyWheel.ModifierText(mods) + "…）" : "A tap below adds a combination (" + KeyWheel.ModifierText(mods) + "...)");
+				GUI.color = Color.white;
+				y += 30f;
+			}
+			string lastCategory = null;
+			foreach (Choice choice in all)
+			{
+				if (choice.Category != lastCategory)
 				{
-					lastCategory = category;
+					lastCategory = choice.Category;
 					GUI.color = new Color(1f, 0.85f, 0.5f);
-					Widgets.Label(new Rect(6f, y + 4f, allView.width, 26f), category);
+					Widgets.Label(new Rect(6f, y + 4f, allView.width, 26f), choice.Category);
 					GUI.color = Color.white;
 					y += 30f;
 				}
 				var row = new Rect(0f, y, allView.width, 32f);
-				Widgets.Label(new Rect(row.x + 14f, row.y + 3f, row.width - 20f, 28f), key.Label + "  <color=#999999>" + Bound(key, chinese) + "</color>");
+				Widgets.Label(new Rect(row.x + 14f, row.y + 3f, row.width - 20f, 28f), choice.Text);
 				if (Widgets.ButtonInvisible(row))
 				{
-					keys.Add(key);
+					keys.Add(choice.Key);
 					changed = true;
 				}
 				y += 32f;
@@ -711,27 +849,80 @@ namespace PortMobile
 			}
 		}
 
+		/// <summary>
+		/// Every key that can be added. With modifiers ticked: no switches, the keyboard keys as combinations, and a key
+		/// binding as the combination of its key bound now (it is the key that is stored, not the binding).
+		/// </summary>
+		private static IEnumerable<Choice> Choices(int mods, bool chinese)
+		{
+			string grey(string s) => "  <color=#999999>" + s + "</color>";
+			if (mods == 0)
+			{
+				foreach (string name in KeyWheel.Specials)
+				{
+					WheelKey key = WheelKey.Named(name);
+					yield return new Choice { Category = chinese ? "手机按键（开关）" : "Phone keys (switches)", Text = key.Label + grey(Bound(key, chinese)), Key = key };
+				}
+			}
+			string keyboard = mods == 0 ? (chinese ? "键盘按键" : "Keyboard") : (chinese ? "组合键" : "Combinations");
+			for (int i = 0; i < KeyWheel.Keyboard.Length; i++)
+			{
+				WheelKey key = WheelKey.Raw(mods, KeyWheel.Keyboard[i]);
+				yield return new Choice { Category = keyboard, Text = key.RawShown, Key = key };
+			}
+			foreach (KeyBindingDef def in DefDatabase<KeyBindingDef>.AllDefsListForReading.OrderBy(d => d.category != null ? d.category.index : 0))
+			{
+				string category = def.category != null ? def.category.LabelCap.ToString() : "";
+				if (mods == 0)
+				{
+					var key = new WheelKey(def.defName, def);
+					yield return new Choice { Category = category, Text = def.LabelCap + grey(Bound(key, chinese)), Key = key };
+					continue;
+				}
+				int code = KeyWheel.GlfwKey(KeyWheel.BoundKey(def));
+				int index = Array.FindIndex(KeyWheel.Keyboard, k => k.Code == code);
+				if (index >= 0)
+				{
+					WheelKey key = WheelKey.Raw(mods, KeyWheel.Keyboard[index]);
+					yield return new Choice { Category = category, Text = def.LabelCap + grey(key.RawShown), Key = key };
+				}
+			}
+		}
+
 		/// <summary>The grey text after a key's name: the key it is bound to, or what one of the phone's own does.</summary>
 		private static string Bound(WheelKey key, bool chinese)
 		{
-			if (key.Digit >= 0)
+			if (key.IsRaw)
 			{
-				return chinese ? "按住就是按住键盘上的 " + key.Digit : "held: the key " + key.Digit + " held";
+				return chinese ? "按住就是按住 " + key.RawShown : "held: " + key.RawShown + " held";
 			}
 			if (key.Def == null)
 			{
-				return key.Name == KeyWheel.ShiftName ? (chinese ? "开关，开着时一直按住" : "switch: held while on") : (chinese ? "开关，点屏幕即为此键" : "switch: taps are this button");
+				switch (key.Name)
+				{
+					case KeyWheel.ShiftName:
+					case KeyWheel.CtrlName:
+					case KeyWheel.AltName:
+						return chinese ? "开关，开着时一直按住" : "switch: held while on";
+					default:
+						return chinese ? "开关，点屏幕即为此键" : "switch: taps are this button";
+				}
 			}
 			string text = KeyWheel.KeyText(key);
 			return text.Length == 0 ? (chinese ? "未绑定" : "unbound") : text;
 		}
 	}
 
-	/// <summary>A key of the wheel: one of the game's key bindings, or one of the phone's own (Def null; KeyWheel.Specials).</summary>
+	/// <summary>
+	/// A key of the wheel: one of the game's key bindings (Def), a keyboard key with its modifiers (RawKey, RawMods), or
+	/// one of the phone's own switches (KeyWheel.Specials).
+	/// </summary>
 	internal sealed class WheelKey
 	{
 		public readonly string Name;
 		public readonly KeyBindingDef Def;
+		public readonly int RawKey = -1, RawMods;
+		public readonly string RawShown;
 
 		public WheelKey(string name, KeyBindingDef def)
 		{
@@ -739,19 +930,55 @@ namespace PortMobile
 			Def = def;
 		}
 
-		/// <summary>The key of that name (a def's name, one of KeyWheel.Specials or Digits); null when there is none (a mod's key, the mod gone).</summary>
+		private WheelKey(string name, int mods, KeyWheel.KeyboardKey key)
+		{
+			Name = name;
+			RawKey = key.Code;
+			RawMods = mods;
+			RawShown = KeyWheel.ModifierText(mods) + key.Shown;
+		}
+
+		public bool IsRaw => RawKey >= 0;
+
+		public bool IsSwitch => Def == null && !IsRaw;
+
+		/// <summary>A keyboard key with these modifiers (GLFW's mods).</summary>
+		public static WheelKey Raw(int mods, KeyWheel.KeyboardKey key)
+		{
+			return new WheelKey(KeyWheel.RawPrefix + KeyWheel.ModifierText(mods) + key.Name, mods, key);
+		}
+
+		/// <summary>The key of that name (a def's name, one of KeyWheel.Specials, "@K:..."); null when there is none (a mod's key, the mod gone).</summary>
 		public static WheelKey Named(string name)
 		{
-			if (KeyWheel.Specials.Contains(name) || KeyWheel.Digits.Contains(name))
+			if (KeyWheel.Specials.Contains(name))
 			{
 				return new WheelKey(name, null);
+			}
+			if (name.Length == 5 && name.StartsWith("@Key", StringComparison.Ordinal) && char.IsDigit(name[4]))
+			{
+				// The number keys as the first build that had them stored them.
+				return Raw(0, KeyWheel.Keyboard.First(k => k.Name == name.Substring(4)));
+			}
+			if (name.StartsWith(KeyWheel.RawPrefix, StringComparison.Ordinal))
+			{
+				string[] parts = name.Substring(KeyWheel.RawPrefix.Length).Split('+');
+				int mods = 0;
+				for (int i = 0; i < parts.Length - 1; i++)
+				{
+					LatchedKey modifier = LatchedKey.All.FirstOrDefault(m => string.Equals(m.Name, parts[i], StringComparison.OrdinalIgnoreCase));
+					if (modifier == null)
+					{
+						return null;
+					}
+					mods |= modifier.Mod;
+				}
+				int index = Array.FindIndex(KeyWheel.Keyboard, k => string.Equals(k.Name, parts[parts.Length - 1], StringComparison.OrdinalIgnoreCase));
+				return index >= 0 ? Raw(mods, KeyWheel.Keyboard[index]) : null;
 			}
 			KeyBindingDef def = DefDatabase<KeyBindingDef>.GetNamedSilentFail(name);
 			return def != null ? new WheelKey(name, def) : null;
 		}
-
-		/// <summary>0 to 9 for a number key of KeyWheel.Digits, else -1.</summary>
-		public int Digit => Def == null && Name.Length == 5 && Name.StartsWith("@Key", StringComparison.Ordinal) && char.IsDigit(Name[4]) ? Name[4] - '0' : -1;
 
 		public string Label
 		{
@@ -762,13 +989,15 @@ namespace PortMobile
 					return Def.LabelCap;
 				}
 				bool chinese = Texts.Chinese;
-				if (Digit >= 0)
+				if (IsRaw)
 				{
-					return (chinese ? "数字键 " : "Number key ") + Digit;
+					return (RawMods != 0 ? (chinese ? "组合键 " : "Combination ") : (chinese ? "键盘 " : "Key ")) + RawShown;
 				}
 				switch (Name)
 				{
 					case KeyWheel.ShiftName: return "Shift";
+					case KeyWheel.CtrlName: return "Ctrl";
+					case KeyWheel.AltName: return "Alt";
 					case KeyWheel.MouseLeftName: return chinese ? "鼠标左键" : "Left mouse button";
 					case KeyWheel.MouseRightName: return chinese ? "鼠标右键" : "Right mouse button";
 					default: return chinese ? "鼠标中键" : "Middle mouse button";
