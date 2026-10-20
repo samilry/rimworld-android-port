@@ -1083,6 +1083,9 @@ public final class MainActivity extends NativeActivity
 
     private String[] runSetupOnce(String root, boolean safe)
     {
+        String lastStep = "";
+        long stepSince = System.currentTimeMillis();
+        boolean stalledNoted = false;
         File ext = getExternalFilesDir(null);
         File resultFile = new File(ext, "setup/result.txt");
         File progressFile = new File(ext, "setup/progress.txt");
@@ -1103,9 +1106,22 @@ public final class MainActivity extends NativeActivity
             {
             }
             String step = readText(progressFile);
+            if (!step.equals(lastStep))
+            {
+                lastStep = step;
+                stepSince = System.currentTimeMillis();
+                stalledNoted = false;
+            }
+            else if (!stalledNoted && System.currentTimeMillis() - stepSince > 120000)
+            {
+                // A step that does not move (a tester's vivo stood for minutes at the game's assemblies): in the trail, and the
+                // player told what to do.
+                stalledNoted = true;
+                Diagnostics.trail(this, "setup stands at \"" + step + "\" for two minutes");
+            }
             if (!step.isEmpty())
             {
-                updateBusy("正在处理游戏文件：" + step);
+                updateBusy("正在处理游戏文件：" + step + (stalledNoted ? "\n\n这一步比平常久了很多。如果再过几分钟还没有变化，请长按桌面上的 Port17 图标，选“导出日志”，把日志发给我们。" : ""));
             }
             // The setup process gone without a result (it crashed): given up a few seconds later.
             if (System.currentTimeMillis() - started > 5000 && !setupRunning())

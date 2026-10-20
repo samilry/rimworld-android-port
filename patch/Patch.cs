@@ -99,6 +99,9 @@ internal static class Patch
 		["/system/build.prop"] = "/system/build.prop.treated-as-linux",
 	};
 
+	/// <summary>Called as the rewriting of the game's assemblies takes the next one: its name, its place, how many.</summary>
+	internal static Action<string, int, int> FileStarted;
+
 	internal static int Main(string[] args)
 	{
 		if (args[0] == "--members")
@@ -138,13 +141,17 @@ internal static class Patch
 		}
 		var reader = new ReaderParameters { AssemblyResolver = resolver, ReadingMode = ReadingMode.Immediate, InMemory = true };
 		int filesChanged = 0;
-		foreach (string file in Directory.GetFiles(folder, "*.dll").OrderBy(f => f))
+		string[] files = Directory.GetFiles(folder, "*.dll").OrderBy(f => f).ToArray();
+		for (int index = 0; index < files.Length; index++)
 		{
+			string file = files[index];
 			string name = Path.GetFileName(file);
 			if (name == "PortHooks.dll")
 			{
 				continue;
 			}
+			// The phone's setup shows this (setup/Setup.cs): on a phone where it stalled, which assembly it stalled on.
+			FileStarted?.Invoke(name, index + 1, files.Length);
 			AssemblyDefinition assembly;
 			try
 			{

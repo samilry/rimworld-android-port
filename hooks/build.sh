@@ -17,4 +17,7 @@ mkdir -p build
   echo "hooks/StartupHook.cs hooks/PortDiag.cs hooks/WaylithClr.cs hooks/ModPrepHost.cs hooks/HarmonyCompat.cs hooks/Textures.cs hooks/PortLog.cs patch/ModPrep.cs"
 } > build/hooks.rsp
 dotnet /d/Harness/rimworld/tools/roslyn/pkg/tasks/netcore/bincore/csc.dll @build/hooks.rsp
+# Into the game folder too, as mobile/build.sh does: the APKs take it from there (the tester APKs of 2026-10-20
+# 14:45 to 16:45 carried the 12:13 build, without mod rules v11, because only build/PortHooks.dll was made).
+cp build/PortHooks.dll build/game/
 ls -la build/PortHooks.dll | awk '{print "PortHooks.dll", $5, "bytes"}'

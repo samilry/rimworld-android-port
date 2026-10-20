@@ -337,9 +337,17 @@ final class Diagnostics
             }
             history.append(describe(exit)).append('\n');
             newestTime = Math.max(newestTime, exit.getTimestamp());
-            if (exit.getTimestamp() > seen && abnormal(exit) && !announced(exit, selfExitAt) && (newest == null || exit.getTimestamp() > newest.getTimestamp()))
+            if (exit.getTimestamp() > seen && abnormal(exit) && !announced(exit, selfExitAt))
             {
-                newest = exit;
+                // A native crash and the Java crash it brings can be recorded in the same second (a tester's Xiaomi): the
+                // native one is reported, its tombstone is where the crash is.
+                boolean sameTime = newest != null && Math.abs(exit.getTimestamp() - newest.getTimestamp()) < 3000;
+                boolean nativeOne = exit.getReason() == ApplicationExitInfo.REASON_CRASH_NATIVE;
+                if (newest == null
+                    || (sameTime ? nativeOne && newest.getReason() != ApplicationExitInfo.REASON_CRASH_NATIVE : exit.getTimestamp() > newest.getTimestamp()))
+                {
+                    newest = exit;
+                }
             }
         }
         prefs.edit().putLong("seenExit", Math.max(newestTime, 1)).apply();

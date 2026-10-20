@@ -171,8 +171,11 @@ namespace PortSetup
 				File.Copy(file, copy, true);
 				MarkArm64(copy);
 			}
-			// The rewrites look up the port's PortPlatform in PortHooks.dll, which is in game/.
+			// The rewrites look up the port's PortPlatform in PortHooks.dll, which is in game/. Each assembly is shown as it
+			// is taken (a tester's vivo stood at this step for minutes: which one it was is the first thing to know).
+			Patch.FileStarted = (name, n, count) => Progress("改写游戏程序集（" + n + "/" + count + "）：" + name);
 			int code = Patch.Main(new[] { stage, runtime, game });
+			Patch.FileStarted = null;
 			if (code != 0)
 			{
 				throw new Exception("the rewrites ended with " + code);
