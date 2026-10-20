@@ -449,19 +449,55 @@ public final class MainActivity extends NativeActivity
     }
 
     /**
-     * The same as unpack, read through the archive's central directory (java.util.zip.ZipFile on the chosen file's
-     * descriptor) rather than its local headers one after another: an archive a stream reader finds nothing in.
+     * The same as unpack, read through the archive's central directory (java.util.zip.ZipFile) rather than its local
+     * headers one after another: an archive a stream reader finds nothing in. ZipFile wants a file: the chosen one's
+     * descriptor by /proc/self/fd (refused on a tester's Xiaomi: EACCES), else a copy next to the import folder.
      */
-    private void unpackByDirectory(Uri uri, File into) throws IOException
+    private void unpackByDirectory(Uri uri, File into, File importDir) throws IOException
     {
         android.os.ParcelFileDescriptor descriptor = getContentResolver().openFileDescriptor(uri, "r");
         if (descriptor == null)
         {
             throw new IOException("cannot open " + uri);
         }
+        File copy = new File(importDir.getParentFile(), "import-archive.tmp");
         try
         {
-            java.util.zip.ZipFile zip = new java.util.zip.ZipFile(new File("/proc/self/fd/" + descriptor.getFd()), java.util.zip.ZipFile.OPEN_READ, ZipNames.RAW);
+            java.util.zip.ZipFile zip;
+            try
+            {
+                zip = new java.util.zip.ZipFile(new File("/proc/self/fd/" + descriptor.getFd()), java.util.zip.ZipFile.OPEN_READ, ZipNames.RAW);
+            }
+            catch (IOException refused)
+            {
+                Diagnostics.trail(this, "by its descriptor: " + refused.getMessage() + "; copying the archive first");
+                InputStream in = getContentResolver().openInputStream(uri);
+                if (in == null)
+                {
+                    throw new IOException("cannot open " + uri);
+                }
+                try
+                {
+                    OutputStream out = new FileOutputStream(copy);
+                    try
+                    {
+                        byte[] buffer = new byte[1 << 20];
+                        for (int n; (n = in.read(buffer)) > 0; )
+                        {
+                            out.write(buffer, 0, n);
+                        }
+                    }
+                    finally
+                    {
+                        out.close();
+                    }
+                }
+                finally
+                {
+                    in.close();
+                }
+                zip = new java.util.zip.ZipFile(copy, java.util.zip.ZipFile.OPEN_READ, ZipNames.RAW);
+            }
             try
             {
                 into.mkdirs();
@@ -505,7 +541,40 @@ public final class MainActivity extends NativeActivity
         finally
         {
             descriptor.close();
+            copy.delete();
         }
+    }
+
+    /** What a chosen file is when its first bytes say it is another kind of archive or a program, else null. */
+    private String otherArchive(Uri uri)
+    {
+        byte[] head = new byte[6];
+        int n = 0;
+        try
+        {
+            InputStream in = getContentResolver().openInputStream(uri);
+            if (in != null)
+            {
+                n = in.read(head);
+                in.close();
+            }
+        }
+        catch (IOException ignored)
+        {
+        }
+        if (n >= 2 && head[0] == 'M' && head[1] == 'Z')
+        {
+            return "一个 Windows 程序（.exe，多半是自解压包）";
+        }
+        if (n >= 4 && head[0] == 'R' && head[1] == 'a' && head[2] == 'r' && head[3] == '!')
+        {
+            return "一个 RAR 压缩包";
+        }
+        if (n >= 6 && head[0] == '7' && head[1] == 'z' && (head[2] & 0xff) == 0xbc && (head[3] & 0xff) == 0xaf)
+        {
+            return "一个 7z 压缩包";
+        }
+        return null;
     }
 
     /** The size of a chosen file and its first bytes, for telling what it is. */
@@ -892,10 +961,17 @@ public final class MainActivity extends NativeActivity
                             // Not one entry where a stream reader looks for them (a tester's "RimWorld1.zip"): read again by
                             // the archive's directory at its end, as Windows and 7-Zip do.
                             String what = describeFile(uri);
+                            String other = otherArchive(uri);
+                            if (other != null)
+                            {
+                                // What the file really is (a tester's "RimWorld1.zip" was a Windows program, 815 MB).
+                                Diagnostics.trail(MainActivity.this, name + " is not a zip (" + what + ")");
+                                throw new IOException("选的“" + name + "”其实是" + other + "，只是扩展名改成了 zip，手机上打不开。请在电脑上把它解开，得到游戏文件夹以后，再把文件夹打包成 zip 传到手机上（" + what + "）");
+                            }
                             Diagnostics.trail(MainActivity.this, "nothing read from " + name + " as a stream (" + what + "): by its directory");
                             try
                             {
-                                unpackByDirectory(uri, folder);
+                                unpackByDirectory(uri, folder, into);
                             }
                             catch (IOException again)
                             {
