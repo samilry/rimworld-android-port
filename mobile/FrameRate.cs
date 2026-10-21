@@ -140,16 +140,18 @@ namespace PortMobile
 		}
 
 		/// <summary>
-		/// Prefix of EngineApplication.ThrottleToTargetFrameRate, in its place unless the margin is set to 0: sleeps until
-		/// the margin before the frame's end (again if a signal ended the sleep early: the collector suspends threads
-		/// with one), then reads the clock until the end.
+		/// Prefix of EngineApplication.ThrottleToTargetFrameRate, in its place unless the margin is set to 0: first, as the
+		/// engine does since 1.7.4985, waits until the render thread has at most one frame queued (the game does not run
+		/// ahead of what is shown); then sleeps until the margin before the frame's end (again if a signal ended the sleep
+		/// early: the collector suspends threads with one), then reads the clock until the end.
 		/// </summary>
-		private static bool WaitForFrameEnd(float frameStartElapsed, System.Diagnostics.Stopwatch ____stopwatch)
+		private static bool WaitForFrameEnd(float frameStartElapsed, System.Diagnostics.Stopwatch ____stopwatch, Waylith.EngineApplication __instance)
 		{
 			if (spinMicros <= 0)
 			{
 				return true;
 			}
+			WaitForRenderBacklog(__instance);
 			int target = Waylith.EngineWindow.TargetFrameRate;
 			if (target <= 0)
 			{
@@ -184,6 +186,27 @@ namespace PortMobile
 			spinSum += now - spinFrom;
 			waits++;
 			return false;
+		}
+
+		// The engine's render thread and its WaitForBacklogAtMost (1.7.4985 and later; none before: nothing to wait for)
+		private static readonly FieldInfo RenderThreadField = AccessTools.Field(typeof(Waylith.EngineApplication), "_renderThread");
+		private static object renderThread;
+		private static Action<int> waitForBacklog;
+
+		private static void WaitForRenderBacklog(Waylith.EngineApplication app)
+		{
+			object current = RenderThreadField?.GetValue(app);
+			if (current == null)
+			{
+				return;
+			}
+			if (current != renderThread)
+			{
+				renderThread = current;
+				MethodInfo wait = AccessTools.Method(current.GetType(), "WaitForBacklogAtMost", new[] { typeof(int) });
+				waitForBacklog = wait == null ? null : (Action<int>)wait.CreateDelegate(typeof(Action<int>), current);
+			}
+			waitForBacklog?.Invoke(1);
 		}
 
 		/// <summary>For the measuring report, since the last call: "wait=300 (sleeps late 85/410 us, clock loop 0.21 ms a frame)".</summary>
