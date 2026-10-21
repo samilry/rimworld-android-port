@@ -380,7 +380,7 @@ internal static class Patch
 	/// </summary>
 	private static int PatchModAssemblies(string root)
 	{
-		using (InMemoryResolver resolver = ModPrep.NewResolver(new[] { "build/game", "dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0" }))
+		using (InMemoryResolver resolver = ModPrep.NewResolver(new[] { "build/game", "build/runtime", "dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0" }))
 		{
 			Console.WriteLine(ModPrep.PrepareFolder(root, resolver, Console.WriteLine));
 		}
@@ -495,12 +495,177 @@ internal static class Patch
 		gh.Emit(OpCodes.Call, mono);
 		gh.Emit(OpCodes.Ret);
 
+		AddLudeonMembers(module);
+
 		// Written as plain IL for arm64 (the ReadyToRun code is gone; crossgen2 wants IL-only input).
 		module.Attributes = (module.Attributes & ~ModuleAttributes.ILLibrary) | ModuleAttributes.ILOnly;
 		module.Architecture = TargetArchitecture.ARM64;
 		module.Write(output);
 		Console.WriteLine("String.GetHashCode() -> GetMonoHashCode(): " + output);
 		return 0;
+	}
+
+	/// <summary>
+	/// The public members Ludeon's System.Private.CoreLib (1.7.4984) has and the runtime pack's has not, found by comparing
+	/// the two (every public type and member, and all that is marked [Experimental("WAYLITHCLR_SPECIFIC")]); the rest
+	/// of the difference is Windows interop and WaylithClr.* (hooks/WaylithClr.cs stands in for those):
+	///   - X86Base.ReadTimeStampCounter(), which the engine's profiler clock calls when the CPU has an invariant TSC (an
+	///     x86 one only). The JIT needs it to exist to compile FrameProfiler.BeginFrame, where it is inlined: without
+	///     it, opening the frame profiler (Dubs Performance Analyzer, the game's dev window) threw MissingMethodException
+	///     every frame and the game ended (a tester's HONOR). Here it throws PlatformNotSupportedException, as every
+	///     X86Base method does on arm64; it is never reached (ProfilerClock uses it only when X86Base.IsSupported).
+	///   - AppDomain.DefineDynamicAssembly(name, access[, attributes]) and AssemblyBuilder.DefineDynamicModule(name,
+	///     fileName), the .NET Framework calls old mods and libraries make, as Ludeon's: the access made Run, or
+	///     RunAndCollect when it asks for collection.
+	///   - JitHelpers.UnsafeEnumCast / UnsafeEnumCastLong (Mono's, which mods reach through a publicizer: Adaptive
+	///     Storage's Fishery compares enum keys with them): an enum's (or integer's) bits as int / long. Ludeon's keeps the
+	///     type code of T in a static class; this asks for it each call (the same result).
+	/// </summary>
+	private static void AddLudeonMembers(ModuleDefinition module)
+	{
+		TypeSystem ts = module.TypeSystem;
+		TypeDefinition notSupported = module.GetType("System.PlatformNotSupportedException");
+		MethodReference notSupportedCtor = notSupported.Methods.Single(m => m.IsConstructor && !m.IsStatic && m.Parameters.Count == 0);
+
+		// X86Base.ReadTimeStampCounter(): (uint, uint)
+		TypeDefinition x86 = module.GetType("System.Runtime.Intrinsics.X86.X86Base");
+		var pair = new GenericInstanceType(module.GetType("System.ValueTuple`2"));
+		pair.GenericArguments.Add(ts.UInt32);
+		pair.GenericArguments.Add(ts.UInt32);
+		var tsc = new MethodDefinition("ReadTimeStampCounter", MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig, pair);
+		tsc.Body.GetILProcessor().Emit(OpCodes.Newobj, notSupportedCtor);
+		tsc.Body.GetILProcessor().Emit(OpCodes.Throw);
+		x86.Methods.Add(tsc);
+
+		// AppDomain.DefineDynamicAssembly
+		TypeDefinition appDomain = module.GetType("System.AppDomain");
+		TypeDefinition builder = module.GetType("System.Reflection.Emit.AssemblyBuilder");
+		TypeDefinition access = module.GetType("System.Reflection.Emit.AssemblyBuilderAccess");
+		MethodDefinition define2 = builder.Methods.Single(m => m.Name == "DefineDynamicAssembly" && m.IsStatic && m.Parameters.Count == 2);
+		MethodDefinition define3 = builder.Methods.Single(m => m.Name == "DefineDynamicAssembly" && m.IsStatic && m.Parameters.Count == 3);
+		// private static AssemblyBuilderAccess WaylithNormalizeAccess(AssemblyBuilderAccess access)
+		//   => access == Run || access == RunAndCollect ? access : (access & 8) == 0 ? Run : RunAndCollect;
+		var normalize = new MethodDefinition("WaylithNormalizeAccess", MethodAttributes.Private | MethodAttributes.Static | MethodAttributes.HideBySig, access);
+		normalize.Parameters.Add(new ParameterDefinition("access", ParameterAttributes.None, access));
+		ILProcessor n = normalize.Body.GetILProcessor();
+		Instruction keep = Instruction.Create(OpCodes.Ldarg_0);
+		Instruction collect = Instruction.Create(OpCodes.Ldc_I4, 9);
+		n.Emit(OpCodes.Ldarg_0);
+		n.Emit(OpCodes.Ldc_I4_1);
+		n.Emit(OpCodes.Beq, keep);
+		n.Emit(OpCodes.Ldarg_0);
+		n.Emit(OpCodes.Ldc_I4, 9);
+		n.Emit(OpCodes.Beq, keep);
+		n.Emit(OpCodes.Ldarg_0);
+		n.Emit(OpCodes.Ldc_I4_8);
+		n.Emit(OpCodes.And);
+		n.Emit(OpCodes.Brtrue, collect);
+		n.Emit(OpCodes.Ldc_I4_1);
+		n.Emit(OpCodes.Ret);
+		n.Append(collect);
+		n.Emit(OpCodes.Ret);
+		n.Append(keep);
+		n.Emit(OpCodes.Ret);
+		appDomain.Methods.Add(normalize);
+		foreach (MethodDefinition target in new[] { define2, define3 })
+		{
+			var define = new MethodDefinition("DefineDynamicAssembly", MethodAttributes.Public | MethodAttributes.HideBySig, builder);
+			foreach (ParameterDefinition p in target.Parameters)
+			{
+				define.Parameters.Add(new ParameterDefinition(p.Name, ParameterAttributes.None, p.ParameterType));
+			}
+			ILProcessor d = define.Body.GetILProcessor();
+			d.Emit(OpCodes.Ldarg_1);
+			d.Emit(OpCodes.Ldarg_2);
+			d.Emit(OpCodes.Call, normalize);
+			if (target.Parameters.Count == 3)
+			{
+				d.Emit(OpCodes.Ldarg_3);
+			}
+			d.Emit(OpCodes.Call, target);
+			d.Emit(OpCodes.Ret);
+			appDomain.Methods.Add(define);
+		}
+
+		// AssemblyBuilder.DefineDynamicModule(string name, string fileName) => DefineDynamicModule(name)
+		MethodDefinition defineModule = builder.Methods.Single(m => m.Name == "DefineDynamicModule" && !m.IsStatic && m.Parameters.Count == 1);
+		var defineModule2 = new MethodDefinition("DefineDynamicModule", MethodAttributes.Public | MethodAttributes.HideBySig, defineModule.ReturnType);
+		defineModule2.Parameters.Add(new ParameterDefinition("name", ParameterAttributes.None, ts.String));
+		defineModule2.Parameters.Add(new ParameterDefinition("fileName", ParameterAttributes.None, ts.String));
+		ILProcessor dm = defineModule2.Body.GetILProcessor();
+		dm.Emit(OpCodes.Ldarg_0);
+		dm.Emit(OpCodes.Ldarg_1);
+		dm.Emit(OpCodes.Call, defineModule);
+		dm.Emit(OpCodes.Ret);
+		builder.Methods.Add(defineModule2);
+
+		// public static class System.Runtime.CompilerServices.JitHelpers
+		var jitHelpers = new TypeDefinition("System.Runtime.CompilerServices", "JitHelpers",
+			TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed | TypeAttributes.BeforeFieldInit, ts.Object);
+		module.Types.Add(jitHelpers);
+		TypeDefinition type = module.GetType("System.Type");
+		TypeDefinition enumType = module.GetType("System.Enum");
+		MethodReference fromHandle = type.Methods.Single(m => m.Name == "GetTypeFromHandle" && m.Parameters.Count == 1);
+		MethodReference isEnum = type.Methods.Single(m => m.Name == "get_IsEnum");
+		MethodReference typeCode = type.Methods.Single(m => m.Name == "GetTypeCode" && m.IsStatic && m.Parameters.Count == 1);
+		MethodReference underlying = enumType.Methods.Single(m => m.Name == "GetUnderlyingType" && m.IsStatic && m.Parameters.Count == 1);
+		foreach (bool wide in new[] { false, true })
+		{
+			var cast = new MethodDefinition(wide ? "UnsafeEnumCastLong" : "UnsafeEnumCast", MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig, wide ? ts.Int64 : ts.Int32);
+			var t = new GenericParameter("T", cast) { Attributes = GenericParameterAttributes.NotNullableValueTypeConstraint | GenericParameterAttributes.DefaultConstructorConstraint };
+			t.Constraints.Add(new GenericParameterConstraint(module.GetType("System.ValueType")));
+			cast.GenericParameters.Add(t);
+			cast.Parameters.Add(new ParameterDefinition("val", ParameterAttributes.None, t));
+			var local = new VariableDefinition(type);
+			cast.Body.Variables.Add(local);
+			ILProcessor c = cast.Body.GetILProcessor();
+			// Type u = typeof(T); if (u.IsEnum) u = Enum.GetUnderlyingType(u); switch (Type.GetTypeCode(u) - TypeCode.SByte)
+			Instruction code = Instruction.Create(OpCodes.Ldloc, local);
+			c.Emit(OpCodes.Ldtoken, t);
+			c.Emit(OpCodes.Call, fromHandle);
+			c.Emit(OpCodes.Stloc, local);
+			c.Emit(OpCodes.Ldloc, local);
+			c.Emit(OpCodes.Callvirt, isEnum);
+			c.Emit(OpCodes.Brfalse, code);
+			c.Emit(OpCodes.Ldloc, local);
+			c.Emit(OpCodes.Call, underlying);
+			c.Emit(OpCodes.Stloc, local);
+			c.Append(code);
+			c.Emit(OpCodes.Call, typeCode);
+			c.Emit(OpCodes.Ldc_I4_5);
+			c.Emit(OpCodes.Sub);
+			// SByte, Byte, Int16, UInt16, Int32, UInt32, Int64, UInt64: the value's bits read at its own width
+			OpCode[] loads = { OpCodes.Ldind_I1, OpCodes.Ldind_U1, OpCodes.Ldind_I2, OpCodes.Ldind_U2, OpCodes.Ldind_I4, OpCodes.Ldind_U4, OpCodes.Ldind_I8, OpCodes.Ldind_I8 };
+			bool[] unsigned = { false, true, false, true, false, true, false, true };
+			var cases = new Instruction[loads.Length];
+			for (int i = 0; i < cases.Length; i++)
+			{
+				cases[i] = Instruction.Create(OpCodes.Ldarga, cast.Parameters[0]);
+			}
+			Instruction fallback = Instruction.Create(OpCodes.Ldarga, cast.Parameters[0]);
+			c.Emit(OpCodes.Switch, cases);
+			c.Emit(OpCodes.Br, fallback);
+			for (int i = 0; i < cases.Length; i++)
+			{
+				c.Append(cases[i]);
+				c.Emit(loads[i]);
+				if (wide && i < 6)
+				{
+					c.Emit(unsigned[i] ? OpCodes.Conv_U8 : OpCodes.Conv_I8);
+				}
+				else if (!wide && i >= 6)
+				{
+					c.Emit(OpCodes.Conv_I4);
+				}
+				c.Emit(OpCodes.Ret);
+			}
+			// Anything else (Ludeon's default): int, or long for the wide one.
+			c.Append(fallback);
+			c.Emit(wide ? OpCodes.Ldind_I8 : OpCodes.Ldind_I4);
+			c.Emit(OpCodes.Ret);
+			jitHelpers.Methods.Add(cast);
+		}
+		Console.WriteLine("Ludeon's additions: X86Base.ReadTimeStampCounter, AppDomain.DefineDynamicAssembly (2), AssemblyBuilder.DefineDynamicModule(name, fileName), JitHelpers.UnsafeEnumCast / UnsafeEnumCastLong");
 	}
 
 	/// <summary>
@@ -511,7 +676,7 @@ internal static class Patch
 	private static int CheckReferences(string root)
 	{
 		var resolver = new InMemoryResolver();
-		foreach (string dir in new[] { "build/game", "dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0" })
+		foreach (string dir in new[] { "build/game", "build/runtime", "dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0" })
 		{
 			if (Directory.Exists(dir))
 			{

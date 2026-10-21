@@ -323,11 +323,12 @@ namespace PortMobile
 				case "marry": return StartMarriage(args);
 				case "tune": return Tune(args);
 				case "worldtarget": return TestWorldTarget();
+				case "compat": return TestCompat(args);
 				case "mark":
 					// As the key wheel's "记录问题" does.
 					Recorder.Mark();
 					return Answer(w => w.WriteString("mark", "in three frames"));
-				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, pawn, menu, research, spawn, makepawn, heal, kill, save, hash, relation, rituals, marry, tune, worldtarget, mark, ping)");
+				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, pawn, menu, research, spawn, makepawn, heal, kill, save, hash, relation, rituals, marry, tune, worldtarget, compat, mark, ping)");
 			}
 		}
 
@@ -1323,6 +1324,61 @@ namespace PortMobile
 
 		/// <summary>The rituals of the colony's primary ideoligion: label, def, and what they take place at.</summary>
 		/// <summary>TEST ONLY: shows the world and picks a tile there as a shuttle does (the choice is only logged).</summary>
+		/// <summary>
+		/// Test: what the phone's CoreLib has from Ludeon's (patch/Patch.cs AddLudeonMembers), called the way mods and the
+		/// engine call them, and the engine's frame profiler switched on ("profiler": true; false switches it off again),
+		/// which needs X86Base.ReadTimeStampCounter to exist.
+		/// </summary>
+		private static string TestCompat(JsonElement args)
+		{
+			var results = new List<string>();
+			void Try(string name, Func<object> call)
+			{
+				try
+				{
+					results.Add(name + ": " + call());
+				}
+				catch (Exception e)
+				{
+					results.Add(name + ": " + (e is System.Reflection.TargetInvocationException t && t.InnerException != null ? t.InnerException : e).GetType().Name + " " + (e.InnerException ?? e).Message);
+				}
+			}
+			Type jit = Type.GetType("System.Runtime.CompilerServices.JitHelpers");
+			Try("JitHelpers.UnsafeEnumCast(Intelligence.Humanlike)", () => jit.GetMethod("UnsafeEnumCast").MakeGenericMethod(typeof(Intelligence)).Invoke(null, new object[] { Intelligence.Humanlike }));
+			Try("JitHelpers.UnsafeEnumCastLong((byte)200)", () => jit.GetMethod("UnsafeEnumCastLong").MakeGenericMethod(typeof(byte)).Invoke(null, new object[] { (byte)200 }));
+			Try("JitHelpers.UnsafeEnumCast((long)-5)", () => jit.GetMethod("UnsafeEnumCast").MakeGenericMethod(typeof(long)).Invoke(null, new object[] { -5L }));
+			Try("AppDomain.DefineDynamicAssembly(RunAndSave) + DefineDynamicModule(name, file)", () =>
+			{
+				var name = new System.Reflection.AssemblyName("port17compat");
+				object builder = typeof(AppDomain).GetMethod("DefineDynamicAssembly", new[] { typeof(System.Reflection.AssemblyName), typeof(System.Reflection.Emit.AssemblyBuilderAccess) })
+					.Invoke(AppDomain.CurrentDomain, new object[] { name, (System.Reflection.Emit.AssemblyBuilderAccess)3 });
+				object module = builder.GetType().GetMethod("DefineDynamicModule", new[] { typeof(string), typeof(string) }).Invoke(builder, new object[] { "port17compat", "port17compat.dll" });
+				return builder.GetType().Name + ", " + module.GetType().Name;
+			});
+			Try("X86Base.ReadTimeStampCounter exists", () => typeof(System.Runtime.Intrinsics.X86.X86Base).GetMethod("ReadTimeStampCounter") != null);
+			if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("profiler", out JsonElement on))
+			{
+				Try("FrameProfiler.SetEnabled(" + on.GetBoolean() + ")", () =>
+				{
+					Waylith.Profiling.FrameProfiler.SetEnabled(on.GetBoolean());
+					return "done (frames from now go through BeginFrame)";
+				});
+			}
+			foreach (string line in results)
+			{
+				Console.WriteLine("[mobile] agent: compat: " + line);
+			}
+			return Answer(w =>
+			{
+				w.WriteStartArray("results");
+				foreach (string line in results)
+				{
+					w.WriteStringValue(line);
+				}
+				w.WriteEndArray();
+			});
+		}
+
 		private static string TestWorldTarget()
 		{
 			if (!Playing)

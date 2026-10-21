@@ -554,7 +554,9 @@ namespace PortMobile
 						string type = File.ReadAllText(Path.Combine(zone, "type")).Trim();
 						string temp = Path.Combine(zone, "temp");
 						string group = Group(type);
-						if (group != null && File.Exists(temp) && int.TryParse(File.ReadAllText(temp).Trim(), out int value) && value > 0)
+						// A zone that reads 95 degrees or more when the game starts is not a temperature (a HONOR with a
+						// Snapdragon 8 Elite Gen 5 has a "cpu" zone that reads 105 the whole time, shell 37, GPU 40).
+						if (group != null && File.Exists(temp) && int.TryParse(File.ReadAllText(temp).Trim(), out int value) && value > 0 && (value > 1000 ? value / 1000 : value) < 95)
 						{
 							thermalZones.Add(new KeyValuePair<string, string>(group, temp));
 						}
