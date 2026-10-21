@@ -25,7 +25,7 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape"
-            android:configChanges="orientation|screenSize|keyboardHidden|keyboard|screenLayout|uiMode|density">
+            android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|keyboard|screenLayout|uiMode|density|fontScale|fontWeightAdjustment|navigation|touchscreen|layoutDirection|colorMode|locale|mcc|mnc">
             <meta-data android:name="android.app.lib_name" android:value="porthost" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

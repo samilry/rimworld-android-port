@@ -2,11 +2,13 @@ package com.local.waylith.port;
 
 import android.app.ActivityManager;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.app.NativeActivity;
 import android.content.DialogInterface;
 import android.content.ClipData;
 import android.content.ComponentName;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
@@ -320,22 +322,24 @@ public final class MainActivity extends NativeActivity
     /**
      * The system's file provider takes its time over every single file (about 23 a second on the test phone, whatever
      * their size), and a mod is thousands of small textures: the folders are walked here, the files copied by a few
-     * threads at once. The first failure stops the rest and is reported.
+     * threads at once. The first failure stops the rest and is reported. The provider is reached through DocumentReader,
+     * so that its process dying does not end this one.
      */
     private void copyTreeInParallel(Uri tree, String documentId, File into) throws IOException
     {
         ExecutorService pool = Executors.newFixedThreadPool(COPY_THREADS);
         AtomicReference<Throwable> failure = new AtomicReference<Throwable>();
+        DocumentReader reader = new DocumentReader(getContentResolver(), tree);
         try
         {
-            copyTree(tree, documentId, into, pool, failure);
-        }
-        finally
-        {
-            pool.shutdown();
-        }
-        try
-        {
+            try
+            {
+                copyTree(reader, tree, documentId, into, pool, failure);
+            }
+            finally
+            {
+                pool.shutdown();
+            }
             while (!pool.awaitTermination(1, TimeUnit.SECONDS))
             {
                 if (failure.get() != null)
@@ -349,6 +353,10 @@ public final class MainActivity extends NativeActivity
             pool.shutdownNow();
             throw new IOException("interrupted");
         }
+        finally
+        {
+            reader.close();
+        }
         Throwable problem = failure.get();
         if (problem != null)
         {
@@ -358,72 +366,56 @@ public final class MainActivity extends NativeActivity
 
     private static final int COPY_THREADS = 8;
 
-    private void copyTree(final Uri tree, String documentId, File into, ExecutorService pool, final AtomicReference<Throwable> failure) throws IOException
+    private void copyTree(final DocumentReader reader, final Uri tree, String documentId, File into, ExecutorService pool, final AtomicReference<Throwable> failure) throws IOException
     {
-        ContentResolver resolver = getContentResolver();
         Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, documentId);
-        Cursor cursor = resolver.query(children, new String[] { DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-            DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE }, null, null, null);
-        if (cursor == null)
+        List<String[]> rows = reader.query(children, new String[] { DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE });
+        for (String[] row : rows)
         {
-            throw new IOException("cannot list " + documentId);
-        }
-        try
-        {
-            while (cursor.moveToNext())
+            String id = row[0];
+            File out = new File(into, safeName(row[1] != null ? row[1] : "item"));
+            if (failure.get() != null)
             {
-                String id = cursor.getString(0);
-                File out = new File(into, safeName(cursor.getString(1)));
-                if (failure.get() != null)
+                return;
+            }
+            if (DocumentsContract.Document.MIME_TYPE_DIR.equals(row[2]))
+            {
+                out.mkdirs();
+                copyTree(reader, tree, id, out, pool, failure);
+            }
+            else
+            {
+                final String fileId = id;
+                final File target = out;
+                pool.execute(new Runnable()
                 {
-                    return;
-                }
-                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(2)))
-                {
-                    out.mkdirs();
-                    copyTree(tree, id, out, pool, failure);
-                }
-                else
-                {
-                    final String fileId = id;
-                    final File target = out;
-                    pool.execute(new Runnable()
+                    @Override
+                    public void run()
                     {
-                        @Override
-                        public void run()
+                        if (failure.get() != null)
                         {
-                            if (failure.get() != null)
-                            {
-                                return;
-                            }
+                            return;
+                        }
+                        try
+                        {
+                            InputStream in = reader.open(DocumentsContract.buildDocumentUriUsingTree(tree, fileId));
                             try
                             {
-                                InputStream in = getContentResolver().openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, fileId));
-                                if (in == null)
-                                {
-                                    throw new IOException("cannot open " + fileId);
-                                }
-                                try
-                                {
-                                    write(in, target);
-                                }
-                                finally
-                                {
-                                    in.close();
-                                }
+                                write(in, target);
                             }
-                            catch (Throwable problem)
+                            finally
                             {
-                                failure.compareAndSet(null, problem);
+                                in.close();
                             }
                         }
-                    });
-                }
+                        catch (Throwable problem)
+                        {
+                            failure.compareAndSet(null, problem);
+                        }
+                    }
+                });
             }
-        }
-        finally
-        {
-            cursor.close();
         }
     }
 
@@ -431,10 +423,17 @@ public final class MainActivity extends NativeActivity
     // so: the names are read undecoded and worked out one by one (ZipNames).
     private void unpack(Uri uri, File into) throws IOException
     {
-        InputStream raw = getContentResolver().openInputStream(uri);
-        if (raw == null)
+        // Opened through DocumentReader: a game's archive takes minutes, and its provider's process dying meanwhile would
+        // otherwise end this one.
+        DocumentReader reader = new DocumentReader(getContentResolver(), uri);
+        InputStream raw;
+        try
         {
-            throw new IOException("cannot open " + uri);
+            raw = reader.open(uri);
+        }
+        finally
+        {
+            reader.close();
         }
         ZipInputStream zip = new ZipInputStream(raw, ZipNames.RAW);
         try
@@ -695,6 +694,45 @@ public final class MainActivity extends NativeActivity
     private volatile boolean gamePickRunning;
     /** Set by prepareGame while a copy is asked for after "重新导入游戏" (ReimportActivity): the dialog says how to call it off. */
     private volatile boolean reimporting;
+    /** While prepareGame asks for, copies or sets up the game (in this process). */
+    private static volatile boolean importing;
+
+    /**
+     * The activity goes away while the game is imported (swiped away in the recent apps): the import ends with the
+     * process. ImportService would otherwise keep the process copying for nobody, and opening the app again would start a
+     * second import in the same process over the first (a tester's Samsung, 2026-10-21: the app swiped away during a
+     * 16-minute copy and opened again, two copies into one folder, the first one's end closed its dialog on the gone
+     * window and crashed the app, which cut the setup off half way). The next start asks for the game again.
+     */
+    @Override
+    protected void onDestroy()
+    {
+        if (importing && !isChangingConfigurations())
+        {
+            endImport(this, "the activity went away during the import");
+        }
+        super.onDestroy();
+    }
+
+    /** Ends the import: the setup process if one runs, then this process (announced, so it is not reported as a crash). */
+    static void endImport(Context context, String why)
+    {
+        Diagnostics.trail(context, why + ": the import ends with the process");
+        ActivityManager manager = (ActivityManager) context.getSystemService(ACTIVITY_SERVICE);
+        List<ActivityManager.RunningAppProcessInfo> processes = manager != null ? manager.getRunningAppProcesses() : null;
+        if (processes != null)
+        {
+            for (ActivityManager.RunningAppProcessInfo process : processes)
+            {
+                if (process.processName.endsWith(":setup"))
+                {
+                    android.os.Process.killProcess(process.pid);
+                }
+            }
+        }
+        Diagnostics.noteSelfExit(context);
+        android.os.Process.killProcess(android.os.Process.myPid());
+    }
 
     /**
      * Called by the host (host.c, on its runtime thread, before the runtime starts) when this is the tester's APK and
@@ -710,8 +748,11 @@ public final class MainActivity extends NativeActivity
         // "重新导入游戏" (ReimportActivity) put game/port-setup.txt aside: asked for a copy even though one was imported.
         final File aside = new File(ext, ReimportActivity.ASIDE);
         boolean reimport = reimporting = aside.exists();
-        boolean importedBefore = !reimport && new File(ext, "game/Assets.zip").exists() && kept != null && kept.length > 0;
-        if (!importedBefore && !reimport && new File(ext, "game/Assembly-CSharp.dll").exists() && new File(ext, "game/Assets.zip").exists() && !new File(ext, "game/port-setup.txt").exists())
+        // Imported before: a setup finished once (game/port-setup.txt, from older rules). A setup cut off half way leaves the
+        // game's data moved and some assemblies kept but no port-setup.txt; preparing those again failed on what was
+        // missing (a tester's Samsung: "Failed to resolve assembly: 'Brutal.Vulkan'"), so the game is asked for instead.
+        boolean importedBefore = !reimport && new File(ext, "game/port-setup.txt").exists() && new File(ext, "game/Assets.zip").exists() && kept != null && kept.length > 0;
+        if (!importedBefore && !reimport && (kept == null || kept.length == 0) && new File(ext, "game/Assembly-CSharp.dll").exists() && new File(ext, "game/Assets.zip").exists() && !new File(ext, "game/port-setup.txt").exists())
         {
             // A game made ready some other way (copied from the PC by host/stage.sh, or by a full APK): kept as it is.
             try
@@ -730,6 +771,7 @@ public final class MainActivity extends NativeActivity
         Diagnostics.trail(this, "game not ready: " + (reimport ? "to be imported again" : importedBefore ? "imported before, prepared again" : "to be imported") + "; " + (ext.getUsableSpace() >> 20) + " MB free");
         GameService.stop(this);
         ImportService.start(this);
+        importing = true;
         try
         {
             String problem = null;
@@ -777,6 +819,7 @@ public final class MainActivity extends NativeActivity
         }
         finally
         {
+            importing = false;
             ImportService.stop(this);
             GameService.start(this);
         }
@@ -953,7 +996,7 @@ public final class MainActivity extends NativeActivity
         if (askDialog != null && askDialog.isShowing())
         {
             // Shown again by a process the system started to take the chooser's answer; it is answered now.
-            askDialog.dismiss();
+            dismiss(askDialog);
         }
         showBusy("正在复制游戏文件…");
         new Thread(new Runnable()
@@ -972,7 +1015,8 @@ public final class MainActivity extends NativeActivity
                     {
                         while (copying[0])
                         {
-                            updateBusy("正在复制游戏文件：" + pickCount.get() + " 个文件，" + (pickBytes.get() >> 20) + " MB");
+                            updateBusy("正在复制游戏文件：" + pickCount.get() + " 个文件，" + (pickBytes.get() >> 20) + " MB\n\n"
+                                + "可以切到别的应用，但不要在最近任务里把本应用划掉：那样复制会停止，下次打开要重新选择。");
                             try
                             {
                                 Thread.sleep(500);
@@ -1412,6 +1456,10 @@ public final class MainActivity extends NativeActivity
             @Override
             public void run()
             {
+                if (isFinishing() || isDestroyed())
+                {
+                    return;
+                }
                 if (busyDialog != null)
                 {
                     busyDialog.setMessage(text);
@@ -1446,11 +1494,23 @@ public final class MainActivity extends NativeActivity
             {
                 if (busyDialog != null)
                 {
-                    busyDialog.dismiss();
+                    dismiss(busyDialog);
                     busyDialog = null;
                 }
             }
         });
+    }
+
+    /** Closes a dialog; nothing happens when its window is gone already (the activity went away). */
+    private static void dismiss(Dialog dialog)
+    {
+        try
+        {
+            dialog.dismiss();
+        }
+        catch (Throwable ignored)
+        {
+        }
     }
 
     /** A message the player confirms; blocks the calling (non-UI) thread until then. */
@@ -1495,6 +1555,8 @@ public final class MainActivity extends NativeActivity
             @Override
             public void run()
             {
+                // The player's own choice: not an import cut off by the activity going away (onDestroy).
+                importing = false;
                 Diagnostics.noteSelfExit(MainActivity.this);
                 finishAndRemoveTask();
                 android.os.Process.killProcess(android.os.Process.myPid());

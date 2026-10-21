@@ -102,6 +102,13 @@ public final class ImportService extends Service
         return START_NOT_STICKY;
     }
 
+    /** Swiped away in the recent apps while the game is imported: the import ends (MainActivity.endImport). */
+    @Override
+    public void onTaskRemoved(Intent rootIntent)
+    {
+        MainActivity.endImport(this, "the app was swiped away in the recent apps");
+    }
+
     @Override
     public IBinder onBind(Intent intent)
     {
