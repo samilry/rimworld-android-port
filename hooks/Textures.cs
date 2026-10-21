@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Brutal.VulkanApi;
 using HarmonyLib;
 using Waylith;
+using Waylith.Graphics;
 using Waylith.Rendering;
 
 namespace PortHooks
@@ -23,7 +24,8 @@ namespace PortHooks
 	/// RGBA, as with "-texFormat=none"), and an image the engine asks for in a BC format is made in the plain format
 	/// with the same channels instead (BC1/BC2/BC3/BC7 -> RGBA8, BC4 -> R8, BC5 -> RG8, sRGB kept), its data decoded
 	/// on the processor with the engine's own block decoders before the upload. A decoded texture takes 4 times the
-	/// memory of a BC7 one (8 times a BC1 one); the engine loads textures when they are first drawn.
+	/// memory of a BC7 one (8 times a BC1 one); the engine loads textures when they are first drawn. Where the GPU
+	/// has ASTC, Astc.cs takes it from there: those textures and the atlases become ASTC 4x4, the size of BC7.
 	///
 	/// mobile.txt: bcDecode=1 decodes on any GPU (to try this on a phone that reads BC), bcDecode=0 never.
 	/// </summary>
@@ -54,7 +56,8 @@ namespace PortHooks
 			}
 		}
 
-		private static string Setting()
+		/// <summary>A value of mobile.txt ("" when not there).</summary>
+		internal static string Setting(string name)
 		{
 			try
 			{
@@ -64,7 +67,7 @@ namespace PortHooks
 					foreach (string line in File.ReadLines(file))
 					{
 						string[] parts = line.Split('=');
-						if (parts.Length == 2 && parts[0].Trim() == "bcDecode")
+						if (parts.Length == 2 && parts[0].Trim() == name)
 						{
 							return parts[1].Trim();
 						}
@@ -81,9 +84,10 @@ namespace PortHooks
 		{
 			try
 			{
-				string setting = Setting();
+				string setting = Setting("bcDecode");
 				bool decode;
 				string why;
+				PhysicalDevice gpu = EngineApplication.Instance?.PhysicalDevice;
 				if (setting == "1" || setting == "0")
 				{
 					decode = setting == "1";
@@ -91,7 +95,6 @@ namespace PortHooks
 				}
 				else
 				{
-					PhysicalDevice gpu = EngineApplication.Instance?.PhysicalDevice;
 					if (gpu == null)
 					{
 						Console.WriteLine("[port17] textures: no GPU to ask yet; BC textures are left to the GPU");
@@ -113,6 +116,7 @@ namespace PortHooks
 				harmony.Patch(AccessTools.Method(service, "CreateTexture2DArrayCore"), prefix: new HarmonyMethod(typeof(Textures), nameof(PlainFormat)));
 				harmony.Patch(AccessTools.Method(service, "CreateTexture3D"), prefix: new HarmonyMethod(typeof(Textures), nameof(BeforeCreateTexture3D)));
 				Console.WriteLine("[port17] textures: " + why + ": BC encoding at load time is off, BC textures are decoded before they go to the GPU");
+				Astc.Start(harmony, gpu);
 			}
 			catch (Exception e)
 			{
@@ -163,12 +167,20 @@ namespace PortHooks
 			}
 		}
 
-		/// <summary>Prefix of GpuTextureService.CreateTexture2D: a BC texture becomes a plain one, every level decoded.</summary>
-		public static void BeforeCreateTexture2D(string label, ref VkFormat format, ref ReadOnlySpan<TextureLevelUpload> levels, ref TextureLevelFill fill)
+		/// <summary>
+		/// Prefix of GpuTextureService.CreateTexture2D: a BC texture becomes a plain one, every level decoded; or ASTC from
+		/// its cache (Astc.cs), as does a file's RGBA texture.
+		/// </summary>
+		public static void BeforeCreateTexture2D(string label, int width, int height, int mipCount, ref VkFormat format, ref ReadOnlySpan<TextureLevelUpload> levels, GpuMemoryCategory category, ref TextureLevelFill fill)
 		{
+			Waylith.Rendering.Texture2D owner = Astc.On ? Astc.TakeUploading(width, height) : null;
 			VkFormat plain = Plain(format, out int kind);
 			if (kind == 0)
 			{
+				if (owner != null && (format == VkFormat.R8G8B8A8UNorm || format == VkFormat.R8G8B8A8SRGB) && Astc.Wanted(width, height, mipCount, category, levels) && Astc.WouldBeCompressed(owner))
+				{
+					RgbaToAstc(width, height, ref format, ref levels, ref fill);
+				}
 				return;
 			}
 			if (kind < 0)
@@ -177,29 +189,59 @@ namespace PortHooks
 				return;
 			}
 			long started = System.Diagnostics.Stopwatch.GetTimestamp();
-			var decoded = new TextureLevelUpload[levels.Length];
-			long bytes = 0;
+			var source = new byte[levels.Length][];
 			for (int i = 0; i < levels.Length; i++)
 			{
 				TextureLevelUpload level = levels[i];
 				if (level.Size == 0)
 				{
+					continue;
+				}
+				source[i] = level.Bytes;
+				if (fill != null)
+				{
+					source[i] = new byte[level.Size];
+					fill(level.Level, source[i]);
+				}
+			}
+			// BC4 and BC5 (one and two channels) stay R8 and RG8: no smaller in ASTC.
+			bool srgb = plain == VkFormat.R8G8B8A8SRGB;
+			bool astc = kind != 4 && kind != 5 && Astc.Wanted(width, height, mipCount, category, levels);
+			ulong key = 0;
+			if (astc)
+			{
+				key = Astc.KeyOf(kind, width, height, srgb, source);
+				if (Astc.TryCached(key, width, height, levels.Length, out TextureLevelUpload[] cached, out VkFormat astcFormat))
+				{
+					format = astcFormat;
+					levels = cached;
+					fill = null;
+					return;
+				}
+			}
+			var decoded = new TextureLevelUpload[levels.Length];
+			var texels = new byte[levels.Length][];
+			long bytes = 0;
+			for (int i = 0; i < levels.Length; i++)
+			{
+				TextureLevelUpload level = levels[i];
+				if (source[i] == null)
+				{
 					decoded[i] = level;
 					continue;
 				}
-				byte[] blocks = level.Bytes;
-				if (fill != null)
-				{
-					blocks = new byte[level.Size];
-					fill(level.Level, blocks);
-				}
-				byte[] texels = Decode(blocks, level.Width, level.Height, kind);
-				bytes += texels.Length;
-				decoded[i] = new TextureLevelUpload(level.Level, level.Width, level.Height, level.Depth, 0, texels, texels.Length);
+				texels[i] = Decode(source[i], level.Width, level.Height, kind);
+				bytes += texels[i].Length;
+				decoded[i] = new TextureLevelUpload(level.Level, level.Width, level.Height, level.Depth, 0, texels[i], texels[i].Length);
 			}
 			format = plain;
 			levels = decoded;
 			fill = null;
+			if (astc)
+			{
+				// The decoded levels are only read from here on (CreateTexture2D copies them to its staging buffers).
+				Astc.Enqueue(key, width, height, srgb, texels);
+			}
 			long count = Interlocked.Increment(ref decodedTextures);
 			Interlocked.Add(ref decodedBytes, bytes);
 			long ticks = Interlocked.Add(ref decodeTicks, System.Diagnostics.Stopwatch.GetTimestamp() - started);
@@ -207,6 +249,61 @@ namespace PortHooks
 			{
 				Console.WriteLine("[port17] textures: " + count + " BC textures decoded so far, " + (Interlocked.Read(ref decodedBytes) / 1048576.0).ToString("F0") + " MB, " + (ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency).ToString("F0") + " ms (latest: " + label + ")");
 			}
+		}
+
+		/// <summary>A file's RGBA texture (every level there): ASTC from the cache, or RGBA now and ASTC for the next time.</summary>
+		private static void RgbaToAstc(int width, int height, ref VkFormat format, ref ReadOnlySpan<TextureLevelUpload> levels, ref TextureLevelFill fill)
+		{
+			var texels = new byte[levels.Length][];
+			bool own = fill != null;
+			for (int i = 0; i < levels.Length; i++)
+			{
+				TextureLevelUpload level = levels[i];
+				if (level.Size != level.Width * level.Height * 4)
+				{
+					return;
+				}
+				if (own)
+				{
+					texels[i] = new byte[level.Size];
+					fill(level.Level, texels[i]);
+				}
+				else
+				{
+					texels[i] = level.Bytes;
+					if (texels[i] == null || texels[i].Length < level.Size)
+					{
+						return;
+					}
+					if (texels[i].Length != level.Size)
+					{
+						texels[i] = level.Bytes.AsSpan(0, level.Size).ToArray();
+					}
+				}
+			}
+			bool srgb = format == VkFormat.R8G8B8A8SRGB;
+			ulong key = Astc.KeyOf(0, width, height, srgb, texels);
+			if (Astc.TryCached(key, width, height, levels.Length, out TextureLevelUpload[] cached, out VkFormat astcFormat))
+			{
+				format = astcFormat;
+				levels = cached;
+				fill = null;
+				return;
+			}
+			if (own)
+			{
+				// Read once: the upload takes these instead of reading the cache file again.
+				var uploads = new TextureLevelUpload[levels.Length];
+				for (int i = 0; i < uploads.Length; i++)
+				{
+					TextureLevelUpload level = levels[i];
+					uploads[i] = new TextureLevelUpload(level.Level, level.Width, level.Height, level.Depth, 0, texels[i], texels[i].Length);
+				}
+				levels = uploads;
+				fill = null;
+			}
+			// Without the fill these are the texture's own pixels, which it may change later: the encoder gets a copy.
+			Astc.Enqueue(key, width, height, srgb, texels, copy: !own);
 		}
 
 		/// <summary>Prefix of GpuTextureService.CreateTexture3D: the engine makes no BC volume textures; one from elsewhere is only reported.</summary>

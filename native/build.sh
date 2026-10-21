@@ -10,7 +10,8 @@
 #   libmonomodc.so       MonoMod's glibc P/Invokes for bionic (native/monomodc), used by the patched 0Harmony.dll
 #   libwaylithaudio.so   the engine's audio library on miniaudio 0.11.22 + stb_vorbis (native/waylithaudio)
 #   libmm_exhelper.so    MonoMod's native exception helper rebuilt with a static libunwind (native/exhelper)
-# usage: native/build.sh [all|vma|stb|gli|imgui|freetype|slang|monomodc|waylithaudio|exhelper]   (output: build/native/lib/*.so)
+#   libportastc.so       ASTC 4x4 encoding with ARM's astcenc 5.7.0 (native/astc), for GPUs without BC textures
+# usage: native/build.sh [all|vma|stb|gli|imgui|freetype|slang|monomodc|waylithaudio|exhelper|astc]   (output: build/native/lib/*.so)
 set -e
 cd "$(dirname "$0")/.."
 NDK="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/NDK"
@@ -108,6 +109,13 @@ if want freetype; then
   "$AR" rcs "$OBJ/libfreetype.a" "$OBJ"/ft_*.o
   "$CXX" $TARGET $CXXFLAGS $IMGUI_DEFS -shared -I "$IMGUI" -I "$FREETYPE/include" -o "$LIB/libimgui_freetype.so" \
     "$IMGUI/misc/freetype/imgui_freetype.cpp" native/imgui_freetype/imgui_freetype_c.cpp "$OBJ/libfreetype.a" -L "$LIB" -limgui -lm
+fi
+
+if want astc; then
+  echo "== astc"
+  # ARM's astcenc 5.7.0 (Apache-2.0), NEON only (every arm64 core), for the GPUs without BC (hooks/Textures.cs).
+  ASTC=$SRC/astc-encoder-5.7.0/Source
+  "$CXX" $TARGET -std=c++17 -O3 -fPIC -s -fvisibility=hidden -static-libstdc++ -DASTCENC_NEON=1 -DASTCENC_SSE=0 -DASTCENC_AVX=0 -DASTCENC_SVE=0 -DASTCENC_POPCNT=0 -DASTCENC_F16C=0 -DASTCENC_NO_INVARIANCE=1 -shared -I "$ASTC" -o "$LIB/libportastc.so" native/astc/astc_shim.cpp "$ASTC"/astcenc_*.cpp -lm
 fi
 
 ls -la "$LIB" | awk 'NR>3 {print $5"\t"$9}'
