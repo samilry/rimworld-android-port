@@ -28,7 +28,13 @@ public final class ReimportActivity extends Activity
         String version = MainActivity.readText(new File(ext, "game/Version.txt")).trim();
         int end = version.indexOf('\n');
         version = end < 0 ? version : version.substring(0, end).trim();
-        String[] rules = MainActivity.readText(new File(ext, "setup/version.txt")).split("\n");
+        // The version this APK was made for: from the installed APK (assets/version.txt, host/build.sh), as the unpacked
+        // setup/version.txt is the previous APK's until the game has been started once after an update.
+        String[] rules = installedRules().split("\n");
+        if (rules.length < 2)
+        {
+            rules = MainActivity.readText(new File(ext, "setup/version.txt")).split("\n");
+        }
         String supported = rules.length > 1 ? rules[1].trim() : "";
         final boolean imported = new File(ext, "game/port-setup.txt").exists();
         String text = "换成另一份 RimWorld，例如电脑上的游戏更新到了新版本。\n\n"
@@ -69,5 +75,33 @@ public final class ReimportActivity extends Activity
                 }
             })
             .show();
+    }
+
+    /** assets/version.txt of the installed APK ("" when it has none: an APK from before 2026-10-21). */
+    private String installedRules()
+    {
+        try
+        {
+            java.io.InputStream in = getAssets().open("version.txt");
+            try
+            {
+                java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+                byte[] buffer = new byte[256];
+                int n;
+                while ((n = in.read(buffer)) > 0)
+                {
+                    out.write(buffer, 0, n);
+                }
+                return new String(out.toByteArray(), "UTF-8");
+            }
+            finally
+            {
+                in.close();
+            }
+        }
+        catch (java.io.IOException e)
+        {
+            return "";
+        }
     }
 }

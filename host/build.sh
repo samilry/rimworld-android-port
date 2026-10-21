@@ -104,6 +104,9 @@ if [ "$PAYLOAD" = port ]; then
   printf "%s\n%s\n" "$(cat build/setup/PortSetup.dll build/game/PortHooks.dll | md5sum | cut -c1-16)" "$(head -1 build/game/Version.txt | cut -d' ' -f1)" > "$P/setup/version.txt"
   BYTES=$(du -sb "$P" | cut -f1)
   printf "%s\n%s\n" "port $(date +%Y%m%d-%H%M%S)" "$BYTES" > "$OUT/apk/assets/payload.txt"
+  # The same rules line and game version as an asset of its own: ReimportActivity reads it from the installed APK (the
+  # unpacked setup/version.txt is the previous APK's until the game has been started once).
+  cp "$P/setup/version.txt" "$OUT/apk/assets/version.txt"
   (cd "$P" && "$JDK/bin/jar.exe" cfM ../apk/assets/payload.zip runtime game setup)
   ls -la "$OUT/apk/assets/payload.zip" | awk -v b="$BYTES" '{print "payload.zip", $5, "bytes (" b " unpacked)"}'
   cat "$P/setup/version.txt"
