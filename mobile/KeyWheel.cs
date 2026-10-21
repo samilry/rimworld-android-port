@@ -395,7 +395,9 @@ namespace PortMobile
 			int glfw = GlfwKey(BoundKey(def));
 			if (glfw < 0)
 			{
-				Messages.Message(Texts.Chinese ? "“" + def.LabelCap + "”没有绑定可以用的键盘按键（在 选项 → 控制 里给它绑一个）。" : "\"" + def.LabelCap + "\" has no keyboard key bound to it (bind one in Options → Controls).", MessageTypeDefOf.RejectInput, false);
+				// No key to press: the player picks one now (BindKeys), and the next tap presses it.
+				Messages.Message(Texts.Chinese ? "“" + def.LabelCap + "”还没有绑定键盘按键：先选一个，之后点这个键就会按它。" : "\"" + def.LabelCap + "\" has no key yet: choose one, then this button presses it.", MessageTypeDefOf.NeutralEvent, false);
+				BindKeys.Ask(def);
 				return;
 			}
 			HoldCombination(0, glfw);

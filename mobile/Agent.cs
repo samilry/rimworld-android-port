@@ -137,6 +137,9 @@ namespace PortMobile
 				port = wantedPort;
 				stopping = false;
 				listener = new TcpListener(IPAddress.Loopback, port);
+				// The port of the listener just stopped (a new token) is still held by its last connection (TIME_WAIT):
+				// without this every restart failed with "Address already in use" until the game was restarted.
+				listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
 				listener.Start();
 				thread = new Thread(Serve) { IsBackground = true, Name = "port17 agent" };
 				thread.Start();
