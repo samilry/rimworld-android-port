@@ -527,6 +527,14 @@ final class Diagnostics
                         String stem = mark.substring(0, mark.length() - 4);
                         putFile(zip, "marks/" + mark, marks[i]);
                         putBinary(zip, "marks/" + stem + ".png", new File(marks[i].getParentFile(), stem + ".png"));
+                        // The pictures of the selected things the mark took (stem-N-atlas-L.png, stem-N-texture-L.png).
+                        for (File picture : marks)
+                        {
+                            if (picture.getName().startsWith(stem + "-") && picture.getName().endsWith(".png"))
+                            {
+                                putBinary(zip, "marks/" + picture.getName(), picture);
+                            }
+                        }
                         taken++;
                     }
                 }

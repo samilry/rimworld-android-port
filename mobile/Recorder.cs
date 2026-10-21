@@ -959,6 +959,7 @@ namespace PortMobile
 			Section(text, "Now", () => on ? Snap(clock.Elapsed.TotalSeconds) : Where());
 			Section(text, "Camera", () => Current.ProgramState == ProgramState.Playing && Find.CameraDriver != null ? "cell " + Find.CameraDriver.MapPosition + ", zoom " + Find.CameraDriver.RootSize.ToString("F1", CultureInfo.InvariantCulture) + (WorldRendererUtility.WorldSelected ? ", the world is shown" : "") : "");
 			Section(text, "Selected", () => Find.Selector == null ? "" : string.Join("\n", Find.Selector.SelectedObjectsListForReading.Take(20).Select(o => o is Thing t ? t.LabelCap + " (" + t.def.defName + ") at " + t.Position : o.ToString())));
+			Section(text, "How the selected things are drawn", () => Find.Selector == null || Current.ProgramState != ProgramState.Playing ? "" : MarkThings.Describe(marks, name));
 			Section(text, "Windows", () => Find.WindowStack == null ? "" : string.Join("\n", Find.WindowStack.Windows.Select(w => w.GetType().FullName + " " + w.windowRect)));
 			Section(text, "Graphics memory", () => GpuMemoryReport.BuildCompactSummary());
 			Section(text, "Process memory", () => ProcessMemoryReport.BuildReport());
@@ -996,7 +997,7 @@ namespace PortMobile
 			}
 		}
 
-		/// <summary>The last MarksKept marks are kept (a mark is its .png and its .txt).</summary>
+		/// <summary>The last MarksKept marks are kept (a mark is its .png, its .txt and the pictures of MarkThings).</summary>
 		private static void Prune(string marks)
 		{
 			try
@@ -1006,6 +1007,11 @@ namespace PortMobile
 				{
 					File.Delete(Path.Combine(marks, old + ".txt"));
 					File.Delete(Path.Combine(marks, old + ".png"));
+					// Its pictures of the selected things (MarkThings).
+					foreach (string picture in Directory.GetFiles(marks, old + "-*.png"))
+					{
+						File.Delete(picture);
+					}
 				}
 			}
 			catch (Exception)
