@@ -49,13 +49,19 @@ public final class ImportService extends Service
     /** The notification of the import; shown only where the player allows the app's notifications, the service runs either way. */
     static Notification notification(Context context, String text)
     {
+        return notification(context, CHANNEL, "导入游戏", android.R.drawable.stat_sys_download, text);
+    }
+
+    /** An ongoing notification in a quiet channel of its own (made the first time). */
+    static Notification notification(Context context, String channel, String channelName, int icon, String text)
+    {
         NotificationManager manager = context.getSystemService(NotificationManager.class);
-        if (manager != null && manager.getNotificationChannel(CHANNEL) == null)
+        if (manager != null && manager.getNotificationChannel(channel) == null)
         {
-            manager.createNotificationChannel(new NotificationChannel(CHANNEL, "导入游戏", NotificationManager.IMPORTANCE_LOW));
+            manager.createNotificationChannel(new NotificationChannel(channel, channelName, NotificationManager.IMPORTANCE_LOW));
         }
-        return new Notification.Builder(context, CHANNEL)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
+        return new Notification.Builder(context, channel)
+            .setSmallIcon(icon)
             .setContentTitle("Port17")
             .setContentText(text)
             .setOngoing(true)
@@ -65,15 +71,20 @@ public final class ImportService extends Service
     /** Makes the service a foreground one (a data transfer); false where the system does not allow it now. */
     static boolean goForeground(Service service, int id, String text)
     {
+        return goForeground(service, id, notification(service, text));
+    }
+
+    static boolean goForeground(Service service, int id, Notification notification)
+    {
         try
         {
             if (Build.VERSION.SDK_INT >= 29)
             {
-                service.startForeground(id, notification(service, text), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+                service.startForeground(id, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
             }
             else
             {
-                service.startForeground(id, notification(service, text));
+                service.startForeground(id, notification);
             }
             return true;
         }

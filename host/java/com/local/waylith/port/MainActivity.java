@@ -80,6 +80,7 @@ public final class MainActivity extends NativeActivity
         // A report in Download/Port17 when the last run ended badly, and the "导出日志" shortcut on the icon.
         Diagnostics.onStart(this);
         Diagnostics.trail(this, "started" + (savedInstanceState != null ? " again by the system (the process had been ended)" : ""));
+        GameService.start(this);
     }
 
     @Override
@@ -727,6 +728,7 @@ public final class MainActivity extends NativeActivity
         // From here to the end the process is a foreground one: the file chooser, or another app while the game is copied
         // and set up, would otherwise leave it to be ended in the background on a phone short of memory.
         Diagnostics.trail(this, "game not ready: " + (reimport ? "to be imported again" : importedBefore ? "imported before, prepared again" : "to be imported") + "; " + (ext.getUsableSpace() >> 20) + " MB free");
+        GameService.stop(this);
         ImportService.start(this);
         try
         {
@@ -776,6 +778,7 @@ public final class MainActivity extends NativeActivity
         finally
         {
             ImportService.stop(this);
+            GameService.start(this);
         }
     }
 

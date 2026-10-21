@@ -30,10 +30,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
 
 /**
@@ -550,6 +552,7 @@ final class Diagnostics
                     putFile(zip, "Crashes/" + crashes[i].getName(), crashes[i]);
                 }
             }
+            putDesyncReports(zip, data);
             zip.close();
             out = null;
             return where;
@@ -687,6 +690,85 @@ final class Diagnostics
             in.close();
         }
     }
+
+    /**
+     * The Multiplayer mod's desync reports (MpDesyncs, and the guests' that the host keeps in MpDesyncs/Guests): the newest
+     * two of each, without the saved games in them (the large parts; the traces and the info say where the sides parted).
+     * A tester's "联机不稳定" (2026-10-21) had one in Player.log and nothing else to tell the cause.
+     */
+    private static void putDesyncReports(ZipOutputStream zip, File data)
+    {
+        for (String folder : new String[] { "MpDesyncs", "MpDesyncs/Guests" })
+        {
+            File[] reports = new File(data, folder).listFiles();
+            if (reports == null)
+            {
+                continue;
+            }
+            Arrays.sort(reports, new java.util.Comparator<File>()
+            {
+                @Override
+                public int compare(File a, File b)
+                {
+                    return Long.compare(a.lastModified(), b.lastModified());
+                }
+            });
+            int taken = 0;
+            for (int i = reports.length - 1; i >= 0 && taken < 2; i--)
+            {
+                File report = reports[i];
+                String into = folder + "/" + report.getName();
+                try
+                {
+                    if (report.isDirectory())
+                    {
+                        File[] parts = report.listFiles();
+                        for (File part : parts != null ? parts : new File[0])
+                        {
+                            if (part.isFile() && part.length() <= DESYNC_PART_LIMIT)
+                            {
+                                putBinary(zip, into + "/" + part.getName(), part);
+                            }
+                        }
+                        taken++;
+                    }
+                    else if (report.getName().endsWith(".zip"))
+                    {
+                        try (ZipFile reportZip = new ZipFile(report))
+                        {
+                            Enumeration<? extends ZipEntry> entries = reportZip.entries();
+                            while (entries.hasMoreElements())
+                            {
+                                ZipEntry entry = entries.nextElement();
+                                if (entry.isDirectory() || entry.getSize() < 0 || entry.getSize() > DESYNC_PART_LIMIT)
+                                {
+                                    continue;
+                                }
+                                zip.putNextEntry(new ZipEntry(into + "/" + entry.getName()));
+                                try (InputStream in = reportZip.getInputStream(entry))
+                                {
+                                    byte[] buffer = new byte[65536];
+                                    int n;
+                                    while ((n = in.read(buffer)) > 0)
+                                    {
+                                        zip.write(buffer, 0, n);
+                                    }
+                                }
+                                zip.closeEntry();
+                            }
+                        }
+                        taken++;
+                    }
+                }
+                catch (Throwable problem)
+                {
+                    Log.w(TAG, "desync report " + report + " left out", problem);
+                }
+            }
+        }
+    }
+
+    private static final long DESYNC_PART_LIMIT = 4L << 20;
 
     /** A file as it is (a screenshot), when it is there. */
     private static void putBinary(ZipOutputStream zip, String name, File file) throws IOException
