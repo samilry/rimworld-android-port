@@ -12,6 +12,41 @@ namespace PortMobile
 		{
 			harmony.Patch(AccessTools.Method(typeof(RimWorld.Selector), "HandleMapClicks"), prefix: new HarmonyMethod(typeof(Diag), nameof(BeforeMapClicks)));
 			harmony.Patch(AccessTools.Method(typeof(WindowStack), nameof(WindowStack.Add)), postfix: new HarmonyMethod(typeof(Diag), nameof(AfterWindowAdd)));
+			harmony.Patch(AccessTools.Method(typeof(RimWorld.Selector), "SelectAllMatchingObjectUnderMouseOnScreen"), prefix: new HarmonyMethod(typeof(Diag), nameof(BeforeSelectAll)), postfix: new HarmonyMethod(typeof(Diag), nameof(AfterSelectAll)));
+			harmony.Patch(AccessTools.Method(typeof(RimWorld.Selector), nameof(RimWorld.Selector.ClearSelection)), prefix: new HarmonyMethod(typeof(Diag), nameof(BeforeClearSelection)));
+			harmony.Patch(AccessTools.Method(typeof(RimWorld.Selector), nameof(RimWorld.Selector.Deselect)), prefix: new HarmonyMethod(typeof(Diag), nameof(BeforeDeselect)));
+		}
+
+		public static void BeforeDeselect(object obj)
+		{
+			if (Touch.Verbose)
+			{
+				Console.WriteLine("[mobile] deselect " + obj + " by " + new System.Diagnostics.StackTrace(1, false).ToString().Replace("\n", " | "));
+			}
+		}
+
+		public static void BeforeSelectAll()
+		{
+			if (Touch.Verbose)
+			{
+				Console.WriteLine("[mobile] select all of the kind: " + Find.Selector.NumSelected + " selected before, mouse cell " + UI.MouseCell());
+			}
+		}
+
+		public static void AfterSelectAll()
+		{
+			if (Touch.Verbose)
+			{
+				Console.WriteLine("[mobile] select all of the kind: " + Find.Selector.NumSelected + " selected after");
+			}
+		}
+
+		public static void BeforeClearSelection()
+		{
+			if (Touch.Verbose && Find.Selector.NumSelected > 1)
+			{
+				Console.WriteLine("[mobile] selection of " + Find.Selector.NumSelected + " cleared by " + new System.Diagnostics.StackTrace(1, false).ToString().Replace("\n", " | "));
+			}
 		}
 
 		public static void BeforeMapClicks()
@@ -19,7 +54,7 @@ namespace PortMobile
 			Event current = Event.current;
 			if (Touch.Verbose && current != null && (current.type == EventType.MouseDown || current.rawType == EventType.MouseUp))
 			{
-				Console.WriteLine("[mobile] map clicks see " + current.type + " (raw " + current.rawType + ") button " + current.button + " at " + current.mousePosition + ", input mouse " + (Vector2)Input.mousePosition + ", buttons " + Input.GetMouseButton(0) + "/" + Input.GetMouseButton(1) + "/" + Input.GetMouseButton(2) + ", selected " + Find.Selector.NumSelected + " (pawns " + Find.Selector.SelectedPawns.Count + "), goto " + ((object)AccessTools.Field(typeof(RimWorld.Selector), "gotoController").GetValue(Find.Selector) != null));
+				Console.WriteLine("[mobile] map clicks see " + current.type + " (raw " + current.rawType + ") button " + current.button + " clicks " + current.clickCount + " at " + current.mousePosition + ", input mouse " + (Vector2)Input.mousePosition + ", buttons " + Input.GetMouseButton(0) + "/" + Input.GetMouseButton(1) + "/" + Input.GetMouseButton(2) + ", selected " + Find.Selector.NumSelected + " (pawns " + Find.Selector.SelectedPawns.Count + "), goto " + ((object)AccessTools.Field(typeof(RimWorld.Selector), "gotoController").GetValue(Find.Selector) != null));
 			}
 		}
 

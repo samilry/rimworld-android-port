@@ -329,6 +329,7 @@ namespace PortMobile
 				case "compat": return TestCompat(args);
 				case "xmltest": return XmlSerializerTest.Run();
 				case "mpctl": return MultiplayerPawnControl(args);
+				case "onscreen": return ThingsOnScreen();
 				case "mark":
 					// As the key wheel's "记录问题" does.
 					Recorder.Mark();
@@ -350,6 +351,40 @@ namespace PortMobile
 			{
 				w.WritePropertyName("result");
 				w.WriteRawValue(json);
+			});
+		}
+
+		/// <summary>
+		/// What a double click's "everything of the kind on the screen" works with: the screen in map cells as
+		/// ThingSelectionUtility computes it, the camera's own view, and the colonists the screen rectangle yields.
+		/// </summary>
+		private static string ThingsOnScreen()
+		{
+			if (!Playing)
+			{
+				return Failure("no map is shown");
+			}
+			var rect = new UnityEngine.Rect(0f, 0f, UI.screenWidth, UI.screenHeight);
+			var mapRect = (CellRect)AccessTools.Method(typeof(ThingSelectionUtility), "GetMapRect").Invoke(null, new object[] { rect });
+			CellRect view = Find.CameraDriver.CurrentViewRect;
+			var things = ThingSelectionUtility.MultiSelectableThingsInScreenRectDistinct(rect).ToList();
+			var colonists = things.OfType<Pawn>().Where(p => p.Faction == Faction.OfPlayer).ToList();
+			return Answer(w =>
+			{
+				w.WriteNumber("uiScale", Prefs.UIScale);
+				w.WriteNumber("uiWidth", UI.screenWidth);
+				w.WriteNumber("uiHeight", UI.screenHeight);
+				w.WriteNumber("screenWidth", UnityEngine.Screen.width);
+				w.WriteNumber("screenHeight", UnityEngine.Screen.height);
+				w.WriteString("screenRectCells", mapRect.minX + "," + mapRect.minZ + " - " + mapRect.maxX + "," + mapRect.maxZ);
+				w.WriteString("cameraViewCells", view.minX + "," + view.minZ + " - " + view.maxX + "," + view.maxZ);
+				w.WriteNumber("selectable", things.Count);
+				w.WriteStartArray("colonists");
+				foreach (Pawn p in colonists)
+				{
+					w.WriteStringValue(p.LabelShort + " " + p.Position.x + "," + p.Position.z);
+				}
+				w.WriteEndArray();
 			});
 		}
 
