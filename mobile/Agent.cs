@@ -328,12 +328,29 @@ namespace PortMobile
 				case "worldtarget": return TestWorldTarget();
 				case "compat": return TestCompat(args);
 				case "xmltest": return XmlSerializerTest.Run();
+				case "mpctl": return MultiplayerPawnControl(args);
 				case "mark":
 					// As the key wheel's "记录问题" does.
 					Recorder.Mark();
 					return Answer(w => w.WriteString("mark", "in three frames"));
-				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, pawn, menu, research, spawn, makepawn, heal, kill, save, hash, relation, rituals, marry, tune, worldtarget, compat, mark, ping)");
+				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, pawn, menu, research, spawn, makepawn, heal, kill, save, hash, relation, rituals, marry, tune, worldtarget, compat, mpctl, mark, ping)");
 			}
+		}
+
+		// Multiplayer's pawn control (the 1.7 test build): its test entry, which answers JSON
+		private static string MultiplayerPawnControl(JsonElement args)
+		{
+			var run = HarmonyLib.AccessTools.Method("Multiplayer.Client.PawnControlTest:Run");
+			if (run == null)
+			{
+				return Failure("Multiplayer with pawn control is not loaded");
+			}
+			string json = (string)run.Invoke(null, new object[] { Str(args, "cmd", "state"), Str(args, "a"), Str(args, "b") });
+			return Answer(w =>
+			{
+				w.WritePropertyName("result");
+				w.WriteRawValue(json);
+			});
 		}
 
 		private static void Rect(Utf8JsonWriter w, string name, float x0, float y0, float x1, float y1)
