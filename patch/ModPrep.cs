@@ -87,6 +87,15 @@ internal static class ModPrep
 
 	public const string StampName = ".port17-prepared";
 
+	/// <summary>
+	/// The CRC-32 of each assembly as it was before it was prepared, and as it is after ("path below the folder", a tab,
+	/// the original's, a tab, the prepared one's). A mod that compares files between players goes by their checksums:
+	/// Multiplayer (rwmt) hashes every assembly of every mod with CRC-32, and a prepared assembly differs from the PC's
+	/// copy of the same mod, so a phone could not join a PC (or the other way round) with the same mods. PortMobile's
+	/// MultiplayerFiles answers the original's checksum for a file that is still as prepared. Written by PrepareFolder.
+	/// </summary>
+	public const string OriginalsName = ".port17-original-crc";
+
 	public sealed class Result
 	{
 		public int Files, Changed, Embedded, Checksums;
@@ -288,6 +297,8 @@ internal static class ModPrep
 	public static Result PrepareFolder(string root, InMemoryResolver resolver, Action<string> log)
 	{
 		var result = new Result();
+		Dictionary<string, (int Original, int Prepared)> before = ReadOriginals(root);
+		var originals = new Dictionary<string, (int Original, int Prepared)>(StringComparer.OrdinalIgnoreCase);
 		foreach (string folder in Directory.GetDirectories(root))
 		{
 			if (VersionOf(Path.GetFileName(folder)) != null)
@@ -303,6 +314,10 @@ internal static class ModPrep
 			{
 				byte[] original = File.ReadAllBytes(file);
 				byte[] data = (byte[])original.Clone();
+				string relativePath = Path.GetRelativePath(root, file).Replace('\\', '/');
+				int crcNow = Crc32(original);
+				// A file prepared before (by older rules) is still the earlier output: its original stays the recorded one.
+				int crcOriginal = before.TryGetValue(relativePath, out var known) && known.Prepared == crcNow ? known.Original : crcNow;
 				byte[] output = null;
 				if (FixMachineType(data))
 				{
@@ -338,6 +353,11 @@ internal static class ModPrep
 					{
 						result.Checksums++;
 					}
+					originals[relativePath] = (crcOriginal, Crc32(File.ReadAllBytes(file)));
+				}
+				else if (crcOriginal != crcNow)
+				{
+					originals[relativePath] = (crcOriginal, crcNow);
 				}
 			}
 			catch (Exception e)
@@ -348,8 +368,72 @@ internal static class ModPrep
 				log(relative + ": not patched (" + e.GetType().Name + ": " + e.Message + ")" + (Environment.GetEnvironmentVariable("PORT17_PREP_TRACE") == "1" ? " " + e : ""));
 			}
 		}
+		WriteOriginals(root, originals);
 		WriteStamp(root);
 		return result;
+	}
+
+	private static Dictionary<string, (int Original, int Prepared)> ReadOriginals(string root)
+	{
+		var map = new Dictionary<string, (int Original, int Prepared)>(StringComparer.OrdinalIgnoreCase);
+		try
+		{
+			string path = Path.Combine(root, OriginalsName);
+			if (File.Exists(path))
+			{
+				foreach (string line in File.ReadAllLines(path))
+				{
+					string[] parts = line.Split('\t');
+					if (parts.Length == 3 && int.TryParse(parts[1], out int original) && int.TryParse(parts[2], out int prepared))
+					{
+						map[parts[0]] = (original, prepared);
+					}
+				}
+			}
+		}
+		catch (Exception)
+		{
+		}
+		return map;
+	}
+
+	private static void WriteOriginals(string root, Dictionary<string, (int Original, int Prepared)> originals)
+	{
+		string path = Path.Combine(root, OriginalsName);
+		if (originals.Count == 0)
+		{
+			File.Delete(path);
+			return;
+		}
+		File.WriteAllLines(path, originals.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e => e.Key + "\t" + e.Value.Original + "\t" + e.Value.Prepared));
+	}
+
+	private static readonly uint[] CrcTable = MakeCrcTable();
+
+	private static uint[] MakeCrcTable()
+	{
+		var table = new uint[256];
+		for (uint i = 0; i < 256; i++)
+		{
+			uint c = i;
+			for (int k = 0; k < 8; k++)
+			{
+				c = (c & 1) != 0 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+			}
+			table[i] = c;
+		}
+		return table;
+	}
+
+	/// <summary>CRC-32 (IEEE) as an int: what Multiplayer's checksum of a file (DotNetZip's Ionic.Crc.CRC32, in the game) gives.</summary>
+	public static int Crc32(byte[] data)
+	{
+		uint crc = 0xFFFFFFFFu;
+		foreach (byte b in data)
+		{
+			crc = CrcTable[(crc ^ b) & 0xFF] ^ (crc >> 8);
+		}
+		return (int)~crc;
 	}
 
 	/// <summary>The edits on one assembly, the assemblies in its resources included; returns how many were made.</summary>

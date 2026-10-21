@@ -82,6 +82,17 @@ namespace PortMobile
 				long indexed = clock.ElapsedMilliseconds;
 				harmony.Patch(updateWrapper, postfix: new HarmonyMethod(typeof(InlineGuard), nameof(AfterUpdateWrapper)));
 				Console.WriteLine("[mobile] inline guard: " + count + " patched methods looked through, " + callers.Count + " methods they call (" + indexed + " ms); watching new patches");
+				// The mods patched before the port was there: one that patched a method and then a small method it calls
+				// left the first one's replacement with its own copy of the second (Multiplayer: Map.ExposeData, then
+				// MapFileCompressor.ExposeData, whose prefix makes the save's compressibility decider; hosting a game threw
+				// for every rock and plant). Which came first is not known here: every patched method that calls a
+				// patched method that could be copied into it is made again, once.
+				HashSet<MethodBase> early;
+				lock (sync)
+				{
+					early = new HashSet<MethodBase>(patched.Where(m => callers.ContainsKey(m) && Inlinable(m)));
+				}
+				Rebuild(early, "the patches made before the port", includeBatch: true);
 			}
 			catch (Exception e)
 			{
@@ -238,7 +249,7 @@ namespace PortMobile
 			Rebuild(now, null);
 		}
 
-		private static void Rebuild(HashSet<MethodBase> newlyPatched, string what)
+		private static void Rebuild(HashSet<MethodBase> newlyPatched, string what, bool includeBatch = false)
 		{
 			var clock = Stopwatch.StartNew();
 			var todo = new List<MethodBase>();
@@ -251,7 +262,7 @@ namespace PortMobile
 					{
 						foreach (MethodBase caller in list)
 						{
-							if (!newlyPatched.Contains(caller) && seen.Add(caller))
+							if ((includeBatch || !newlyPatched.Contains(caller)) && seen.Add(caller))
 							{
 								todo.Add(caller);
 							}

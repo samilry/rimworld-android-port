@@ -152,9 +152,9 @@ namespace PortMobile
 		{
 			lock (gate)
 			{
-				if (byImage.TryGetValue(Handle(ref info), out (int, int, int) key))
+				if (SharedOf(ref info, out (int, int, int) key, out Shared shared))
 				{
-					if (bySize[key].Users == 1)
+					if (shared.Users == 1)
 					{
 						GpuMemoryTracker.Add(category, in info, label, "CameraBake.SharedDepth " + key.Item1 + "x" + key.Item2);
 					}
@@ -169,9 +169,9 @@ namespace PortMobile
 		{
 			lock (gate)
 			{
-				if (byImage.TryGetValue(Handle(ref info), out (int, int, int) key))
+				if (SharedOf(ref info, out _, out Shared shared))
 				{
-					if (bySize[key].Users == 1)
+					if (shared.Users == 1)
 					{
 						GpuMemoryTracker.Remove(category, in info);
 					}
@@ -181,15 +181,36 @@ namespace PortMobile
 			GpuMemoryTracker.Remove(category, in info);
 		}
 
+		/// <summary>
+		/// Whether the image is a shared depth image, and which. A handle can be left behind pointing at a size that is no
+		/// longer shared (an image the engine let go another way, its handle then given to a new image): MP's reload of the
+		/// game freed the pawn atlases in Root.Start and Untrack threw KeyNotFoundException for (2048, 2048, 130). Such a
+		/// stale entry is dropped and the image taken as an ordinary one.
+		/// </summary>
+		private static bool SharedOf(ref ImageAllocationInfo info, out (int, int, int) key, out Shared shared)
+		{
+			long handle = Handle(ref info);
+			shared = default;
+			if (!byImage.TryGetValue(handle, out key))
+			{
+				return false;
+			}
+			if (bySize.TryGetValue(key, out shared) && Handle(ref shared.Info) == handle)
+			{
+				return true;
+			}
+			byImage.Remove(handle);
+			return false;
+		}
+
 		/// <summary>In place of VmaAllocator.FreeAllocation in DestroyTarget: freed with its last user.</summary>
 		public static void Free(VmaAllocator allocator, ref ImageAllocationInfo info)
 		{
 			lock (gate)
 			{
 				long handle = Handle(ref info);
-				if (byImage.TryGetValue(handle, out (int, int, int) key))
+				if (SharedOf(ref info, out (int, int, int) key, out Shared shared))
 				{
-					Shared shared = bySize[key];
 					if (--shared.Users > 0)
 					{
 						bySize[key] = shared;
