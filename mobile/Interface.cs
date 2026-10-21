@@ -23,11 +23,36 @@ namespace PortMobile
 	///   mobile.txt: searchFocusOnTap=0 lets search boxes keep it too;
 	///   a finger that lands anywhere but on a text field takes the focus from the field that has it, and the keyboard
 	///   goes down (the game means to do that for its search boxes, but under this engine the press has already been
-	///   used by the window when the search box looks at it).
+	///   used by the window when the search box looks at it);
+	///   the soft keyboard's Done (or Enter) finishes the typing: the field lets go of the focus and the keyboard goes
+	///   down. It is not the game's Enter, which accepts or closes the window the field is in (testers, 2026-10-22: a
+	///   number typed in the caravan's window cancelled it, a search box kept the keyboard, the debug actions' search ran
+	///   the first action). Only a chat's field ("chat_input": Multiplayer's) gets the Enter, which sends.
 	/// </summary>
 	internal static class Interface
 	{
 		[System.Runtime.InteropServices.DllImport("glfw")] private static extern void glfwAndroidShowKeyboard(int show);
+		[System.Runtime.InteropServices.DllImport("glfw")] private static extern void glfwAndroidInjectKey(int key, int action, int mods);
+
+		private const int GlfwKeyEnter = 257, GlfwPress = 1, GlfwRelease = 0;
+		private static readonly HashSet<string> EnterFields = new HashSet<string> { "chat_input" };
+
+		/// <summary>The soft keyboard is up (asked for: a text field has the focus).</summary>
+		public static bool KeyboardShown => keyboardShown;
+
+		/// <summary>The soft keyboard's action key: typing is finished, or, in a chat's field, the Enter that sends.</summary>
+		public static void EditorAction()
+		{
+			string name = GUI.GetNameOfFocusedControl();
+			if (Touch.Verbose) Console.WriteLine("[mobile] the keyboard's Done (control " + GUIUtility.keyboardControl + ", " + name + ")");
+			if (name != null && EnterFields.Contains(name))
+			{
+				glfwAndroidInjectKey(GlfwKeyEnter, GlfwPress, 0);
+				glfwAndroidInjectKey(GlfwKeyEnter, GlfwRelease, 0);
+				return;
+			}
+			GUIUtility.keyboardControl = 0;
+		}
 
 		private static readonly IDictionary ActiveTips = (IDictionary)AccessTools.Field(typeof(TooltipHandler), "activeTips").GetValue(null);
 		private static readonly FieldInfo TipFrame = AccessTools.Field(typeof(TooltipHandler), "frame");

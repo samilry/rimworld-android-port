@@ -43,7 +43,7 @@ namespace PortMobile
 			public double time;
 		}
 
-		private const int Down = 1, Move = 2, Up = 3, Cancel = 4;
+		private const int Down = 1, Move = 2, Up = 3, Cancel = 4, EditorAction = 5;
 		private const int Press = 1, Release = 0;
 		private const int Left = 0, Right = 1, Middle = 2;
 
@@ -148,6 +148,8 @@ namespace PortMobile
 			steady = Settings.Get("tapSteady", 1) != 0;
 			TapAssist.Start(harmony, density);
 			TouchSizes.Start(harmony);
+			Letters.Start(harmony);
+			TypingBar.Start(harmony);
 			KeyWheel.Start();
 			BarInset.Start(harmony);
 			MouseDecorations.Start(harmony);
@@ -575,6 +577,13 @@ namespace PortMobile
 						// A finger resting on the interface is reading: the tooltips show now and nothing is clicked.
 						mode = Mode.Held;
 						Interface.HoldOnInterface();
+						if (Letters.DismissibleAt(pressAt))
+						{
+							// On a letter it is what a right click does there, as on the PC: the letter goes away.
+							Trace("hold on a letter at " + pressAt + ": a right click");
+							Button(Right, true);
+							releaseRightNextFrame = 2;
+						}
 					}
 					break;
 				default:
@@ -796,6 +805,10 @@ namespace PortMobile
 						finger.pos = pos;
 						return true;
 					}
+					return false;
+				case EditorAction:
+					// Not a finger: the soft keyboard's Done (it comes the same way, in order with the fingers)
+					Interface.EditorAction();
 					return false;
 				case Up:
 				case Cancel:

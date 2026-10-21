@@ -463,6 +463,18 @@ namespace PortMobile
 			return -1;
 		}
 
+		/// <summary>Where a rectangle of the interface being drawn now lies on the screen (window pixels, y down).</summary>
+		public static bool ScreenRect(Rect rect, out Rect screen)
+		{
+			screen = default(Rect);
+			if (!OnScreen(rect, true, out _, out float x0, out float y0, out float x1, out float y1))
+			{
+				return false;
+			}
+			screen = Rect.MinMaxRect(x0, y0, x1, y1);
+			return true;
+		}
+
 		/// <summary>Whether a text field was drawn at this point of the screen in the last pass.</summary>
 		public static bool FieldAt(Vector2 point)
 		{

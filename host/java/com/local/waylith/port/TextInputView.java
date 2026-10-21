@@ -53,6 +53,8 @@ public final class TextInputView extends View
 
     private static native void nativeKey(int keyCode, int action);
 
+    private static native void nativeEditorAction();
+
     @Override
     public boolean onCheckIsTextEditor()
     {
@@ -139,15 +141,25 @@ public final class TextInputView extends View
         @Override
         public boolean sendKeyEvent(KeyEvent event)
         {
-            nativeKey(event.getKeyCode(), event.getAction());
+            int code = event.getKeyCode();
+            if (code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_NUMPAD_ENTER)
+            {
+                // Some keyboards send their action key as Enter: the same as performEditorAction
+                if (event.getAction() == KeyEvent.ACTION_DOWN)
+                {
+                    nativeEditorAction();
+                }
+                return true;
+            }
+            nativeKey(code, event.getAction());
             return true;
         }
 
         @Override
         public boolean performEditorAction(int actionCode)
         {
-            nativeKey(KeyEvent.KEYCODE_ENTER, KeyEvent.ACTION_DOWN);
-            nativeKey(KeyEvent.KEYCODE_ENTER, KeyEvent.ACTION_UP);
+            // The keyboard's Done: typing is finished (the game's Enter would accept or close the window the field is in)
+            nativeEditorAction();
             return true;
         }
     }

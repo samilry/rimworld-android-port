@@ -133,7 +133,7 @@ static pthread_cond_t g_cond = PTHREAD_COND_INITIALIZER;
 // ---- raw finger events for the managed touch layer (PortMobile) ----
 // Every finger event is recorded here as well. With the managed mode on, this file no longer turns fingers into
 // mouse events: the managed side reads them (glfwAndroidPollTouches) and injects what the engine should see.
-typedef struct TouchEvent { int type; int id; float x, y; double time; } TouchEvent; // type: 1 down, 2 move, 3 up, 4 cancel
+typedef struct TouchEvent { int type; int id; float x, y; double time; } TouchEvent; // type: 1 down, 2 move, 3 up, 4 cancel, 5 the soft keyboard's action key
 #define TOUCH_CAP 2048
 static TouchEvent g_touches[TOUCH_CAP];
 static int g_thead, g_ttail;
@@ -820,6 +820,20 @@ JNIEXPORT void JNICALL Java_com_local_waylith_port_TextInputView_nativeKey(JNIEn
     int glfwKey = key_from_android(keyCode);
     if (glfwKey == GLFW_KEY_UNKNOWN) return;
     push(EV_KEY, glfwKey, keyCode, action == 0 ? GLFW_PRESS : GLFW_RELEASE, 0, 0, 0);
+}
+
+// The soft keyboard's action key (Done, or the Enter some keyboards send instead): with the managed touch layer on, it
+// decides what it means (typing is finished); without it, it is the Enter key as before.
+JNIEXPORT void JNICALL Java_com_local_waylith_port_TextInputView_nativeEditorAction(JNIEnv* env, jclass cls)
+{
+    (void)env; (void)cls;
+    if (g_touchManaged)
+    {
+        record_touch(5, -1, 0.0f, 0.0f);
+        return;
+    }
+    push(EV_KEY, key_from_android(AKEYCODE_ENTER), AKEYCODE_ENTER, GLFW_PRESS, 0, 0, 0);
+    push(EV_KEY, key_from_android(AKEYCODE_ENTER), AKEYCODE_ENTER, GLFW_RELEASE, 0, 0, 0);
 }
 
 API void glfwAndroidAttach(struct android_app* app)
