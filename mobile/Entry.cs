@@ -100,6 +100,7 @@ namespace PortMobile
 				Console.WriteLine("[mobile] main menu " + SecondsSinceProcessStart().ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + " s after the runtime started");
 				Console.WriteLine("[mobile] of that: " + WhereTheStartWent());
 				MemTrim.AtMainMenu();
+				PortHooks.JitProfile.AtMainMenu();
 			}
 			frames++;
 			MemTrim.OnFrame();

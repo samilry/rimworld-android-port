@@ -415,6 +415,7 @@ internal static class StartupHook
 	{
 		PortHooks.PortPlatform.StartedAtTick = Environment.TickCount64;
 		PortHooks.PortLog.Start();
+		PortHooks.JitProfile.Start();
 		AssemblyLoadContext.Default.Resolving += Resolve;
 		PretendProcessPath();
 		LimitGraphicsMemory();
