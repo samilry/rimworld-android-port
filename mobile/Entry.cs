@@ -49,6 +49,8 @@ namespace PortMobile
 			ColdTextures.Start(harmony);
 			AtlasSeams.Start(harmony);
 			PlainIcons.Start(harmony);
+			// The atlases are baked by now (once, a second at most; then by cache key).
+			AtlasCheck.Start();
 			// Last: the mods' replacements that hold their own copy of a method patched above.
 			InlineGuard.EndOfStart();
 		}

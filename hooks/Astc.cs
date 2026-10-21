@@ -43,7 +43,7 @@ namespace PortHooks
 	/// astcQuality (10: astcenc's "fast"), astcAtlasQuality (0, "fastest"), astcThreads (the background encoders, 1, or 2
 	/// with 8 cores or more), astcCacheMB.
 	/// </summary>
-	internal static class Astc
+	public static class Astc
 	{
 		[DllImport("portastc")] private static extern int port_astc_encode(byte[] rgba, int width, int height, int srgb, float quality, byte[] output, UIntPtr outLength);
 		[DllImport("portastc")] private static extern int port_astc_encode_parallel(byte[] rgba, int width, int height, int srgb, float quality, byte[] output, UIntPtr outLength, int threads);
@@ -634,6 +634,24 @@ namespace PortHooks
 			var hash = new XxHash3();
 			hash.Append(Encoding.UTF8.GetBytes("atlas " + Version + " " + atlasQuality.ToString(System.Globalization.CultureInfo.InvariantCulture) + " " + cacheKey));
 			return hash.GetCurrentHashAsUInt64();
+		}
+
+		/// <summary>For PortMobile.AtlasCheck: one level of an atlas page encoded as the pages are, on every core (null when astcenc fails).</summary>
+		public static byte[] EncodeAtlasLevel(byte[] rgba, int width, int height, bool srgb)
+		{
+			var blocks = new byte[BlockBytes(width, height)];
+			int error = port_astc_encode_parallel(rgba, width, height, srgb ? 1 : 0, atlasQuality, blocks, (UIntPtr)blocks.Length, width * height >= 65536 ? Environment.ProcessorCount : 1);
+			port_astc_release();
+			return error == 0 ? blocks : null;
+		}
+
+		/// <summary>For PortMobile.AtlasCheck: a repaired page in place of its cache entry.</summary>
+		public static void RewriteAtlasPage(string cacheKey, int width, int height, bool srgb, byte[][] levels)
+		{
+			if (On && cacheKey != null)
+			{
+				Write(AtlasKey(cacheKey), width, height, srgb, levels);
+			}
 		}
 
 		public static void BeforeBakeStaticAtlases()
