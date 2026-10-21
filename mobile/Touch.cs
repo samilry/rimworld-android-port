@@ -121,6 +121,9 @@ namespace PortMobile
 		private static bool squadTouch;
 		// Where the last finger lifted (its last movement often comes in the same batch as the lifting).
 		private static Vector2 liftedAt;
+		// The frame the current touch began in, and the last frame the map's (or the world's) selector took a press of the
+		// left button: a press there belongs to the map even when it was a double click, which starts no selection box.
+		private static int touchFrame, mapPressFrame = -1;
 
 		public static bool Verbose;
 
@@ -135,6 +138,8 @@ namespace PortMobile
 			Verbose = File.Exists(System.IO.Path.Combine(AppContext.BaseDirectory, "touch-verbose.txt"));
 			var harmony = new Harmony("port17.mobile.touch");
 			harmony.Patch(AccessTools.Method(typeof(UIRoot), nameof(UIRoot.UIRootUpdate)), prefix: new HarmonyMethod(typeof(Touch), nameof(Update)));
+			harmony.Patch(AccessTools.Method(typeof(Selector), "HandleMapClicks"), prefix: new HarmonyMethod(typeof(Touch), nameof(SelectorTakesClicks)));
+			harmony.Patch(AccessTools.Method(typeof(WorldSelector), "HandleWorldClicks"), prefix: new HarmonyMethod(typeof(Touch), nameof(SelectorTakesClicks)));
 			glfwAndroidSetTouchMode(1);
 			Diag.Start(harmony);
 			Interface.Start(harmony);
@@ -260,6 +265,16 @@ namespace PortMobile
 			else middleDown = down;
 		}
 
+		/// <summary>Prefix of Selector.HandleMapClicks and WorldSelector.HandleWorldClicks: the press reached the map (or the world), whatever its click count.</summary>
+		public static void SelectorTakesClicks()
+		{
+			Event e = Event.current;
+			if (e != null && e.type == EventType.MouseDown && e.button == 0 && TouchInProgress)
+			{
+				mapPressFrame = Time.frameCount;
+			}
+		}
+
 		// ---- per frame, before the engine dispatches this frame's input (prefix of UIRoot.UIRootUpdate) ----
 
 		public static void Update()
@@ -309,10 +324,9 @@ namespace PortMobile
 				{
 					EndWindowGesture();
 				}
-				if (mode == Mode.Held)
-				{
-					Interface.HoldEnded();
-				}
+				// Whatever the touch became: a hold that a second finger joined is still holding back the left button
+				// (testers, 2026-10-22: after that no press reached the map, and no drag on it moved it).
+				Interface.HoldEnded();
 				if (mode == Mode.ListScroll)
 				{
 					Interface.EndListScroll(true);
@@ -411,6 +425,7 @@ namespace PortMobile
 				Interface.TouchBegan();
 				first.seen = true;
 				framesDown = 0;
+				touchFrame = Time.frameCount;
 				last = first.pos;
 				pressAt = TapAssist.Adjust(first.pos);
 				Interface.FingerLanded(pressAt);
@@ -457,6 +472,7 @@ namespace PortMobile
 				// From here on the touch is a drag: the engine's mouse goes on from where the press went.
 				dragged = true;
 				cursorOffset = pressAt - first.pos;
+				DoubleTap.Forget();
 			}
 			bool moved = dragged;
 			bool held = Now - first.downTime > HoldSeconds;
@@ -464,8 +480,9 @@ namespace PortMobile
 			bool pressedNow = false;
 			if (mode == Mode.Pending && framesDown >= 2)
 			{
-				// The game handled the press during the previous frame's dispatch: what did it do with it?
-				if (InGame && BoxActive)
+				// The game handled the press during the previous frame's dispatch: what did it do with it? The map's
+				// selector takes a press of a double click too, without starting its box.
+				if (InGame && (BoxActive || mapPressFrame >= touchFrame))
 				{
 					mode = Mode.Map;
 				}
@@ -617,6 +634,9 @@ namespace PortMobile
 			Vector2 centre = (a.pos + b.pos) / 2f;
 			if (mode != Mode.Two)
 			{
+				// A hold the second finger joined ends here (its press is let go below), and a pinch is not a tap.
+				Interface.HoldEnded();
+				DoubleTap.Forget();
 				mode = Mode.Two;
 				CancelWhatTheFirstFingerStarted();
 				Window under = WindowAt(centre);

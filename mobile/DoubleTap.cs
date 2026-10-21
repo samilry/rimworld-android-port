@@ -66,6 +66,17 @@ namespace PortMobile
 			__state = (uint)button < (uint)buttonDown.Length && buttonDown[(int)button] != pressed;
 		}
 
+		/// <summary>
+		/// The touch of the last press dragged or became two fingers: not a tap, so the next press starts a new count. (A
+		/// quick second swipe from the same place was a double click: the game neither started its selection box, so the
+		/// finger did not move the map, nor kept from selecting everything of the kind under it.)
+		/// </summary>
+		public static void Forget()
+		{
+			lastTime = -10.0;
+			lastCount = 0;
+		}
+
 		public static void After(MouseButton button, bool pressed, System.Numerics.Vector2 position, bool __state)
 		{
 			if (!__state || !pressed || button != MouseButton.Left || eventsThisFrame.Count == 0)
