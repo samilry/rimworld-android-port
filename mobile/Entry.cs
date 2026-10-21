@@ -51,6 +51,8 @@ namespace PortMobile
 			PlainIcons.Start(harmony);
 			BindKeys.Start(harmony);
 			MintMenus.Start(harmony);
+			FactionList.Start(harmony);
+			WinterShadow.Start(harmony);
 			// The atlases are baked by now (once, a second at most; then by cache key).
 			AtlasCheck.Start();
 			// Last: the mods' replacements that hold their own copy of a method patched above.
