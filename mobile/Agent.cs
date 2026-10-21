@@ -327,6 +327,7 @@ namespace PortMobile
 				case "tune": return Tune(args);
 				case "worldtarget": return TestWorldTarget();
 				case "compat": return TestCompat(args);
+				case "xmltest": return XmlSerializerTest.Run();
 				case "mark":
 					// As the key wheel's "记录问题" does.
 					Recorder.Mark();
