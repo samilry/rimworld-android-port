@@ -1,5 +1,6 @@
-// Stands in for steam_api64 on the phone: Steam is never running, every call says so. Steamworks.NET only goes
-// on to the interfaces after SteamAPI_Init succeeds, so nothing beyond these is reached.
+// Stands in for steam_api64 on the phone (and, copied by host/build.sh, for steam_api: the name in the Linux and Mac
+// builds' Steamworks.NET): Steam is never running, every call says so. Steamworks.NET only goes on to the interfaces
+// after SteamAPI_Init succeeds, so nothing beyond these is reached.
 #include <stdint.h>
 #include <stddef.h>
 
