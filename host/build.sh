@@ -10,7 +10,8 @@
 #                                  an APK for a phone they are not copied to by hand. Output build/port17-full.apk.
 #                                  Only for the owner's own devices: it holds the whole game.
 #   TEST_PACKAGE=name host/build.sh  another package name and the label "Port17 测试", to try an APK beside the
-#                                  installed game (its own data folder; uninstalling it touches nothing else)
+#                                  installed game (its own data folder; uninstalling it touches nothing else);
+#                                  TEST_LABEL=Port17 keeps the normal label (screenshots for the tester guide)
 set -e
 cd "$(dirname "$0")/.."
 ANDROID="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer"
@@ -60,7 +61,7 @@ cp "$OUT/dex/classes.dex" "$OUT/apk/classes.dex"
 
 MANIFEST=host/AndroidManifest.xml
 if [ -n "$TEST_PACKAGE" ]; then
-  sed -e "s/package=\"com.local.waylith.port\"/package=\"$TEST_PACKAGE\"/" -e 's/android:label="Port17"/android:label="Port17 测试"/g' host/AndroidManifest.xml > "$OUT/AndroidManifest.test.xml"
+  sed -e "s/package=\"com.local.waylith.port\"/package=\"$TEST_PACKAGE\"/" -e "s/android:label=\"Port17\"/android:label=\"${TEST_LABEL:-Port17 测试}\"/g" host/AndroidManifest.xml > "$OUT/AndroidManifest.test.xml"
   MANIFEST="$OUT/AndroidManifest.test.xml"
   APK_NAME="${APK_NAME%.apk}-test.apk"
 fi
