@@ -61,6 +61,7 @@ namespace PortMobile
 			}
 			harmony.Patch(AccessTools.Method(typeof(ResolutionUtility), nameof(ResolutionUtility.Update)), prefix: new HarmonyMethod(typeof(UiScale), nameof(WithoutScaleReset)));
 			harmony.Patch(AccessTools.Method(typeof(Window), nameof(Window.WindowOnGUI)), prefix: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.Before)), finalizer: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.After)));
+			harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.DrawShadowAround)), prefix: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.BeforeShadow)));
 			try
 			{
 				Type backend = AccessTools.TypeByName("RimWorldWaylith.Imgui.ImGuiGuiBackend");
@@ -282,28 +283,67 @@ namespace PortMobile
 			return min + (size - fitted) / 2f;
 		}
 
+		/// <summary>Where a window that does not fit the screen is drawn, smaller by f; false when it is drawn as it is.</summary>
+		private static bool Fitted(Window window, out Rect fitted, out float f)
+		{
+			fitted = default(Rect);
+			f = 1f;
+			Rect rect = window.windowRect;
+			float width = UI.screenWidth, height = UI.screenHeight;
+			if (rect.width < 1f || rect.height < 1f)
+			{
+				return false;
+			}
+			bool sizeFits = rect.width <= width + 0.5f && rect.height <= height + 0.5f;
+			if (sizeFits && (window.draggable || window.resizeable))
+			{
+				return false; // the player may have moved it there
+			}
+			float fx = Axis(rect.xMin, rect.width, width, out int px), fy = Axis(rect.yMin, rect.height, height, out int py);
+			f = Mathf.Min(fx, fy);
+			if (f > 0.999f || f < SmallestFactor)
+			{
+				return false;
+			}
+			fitted = new Rect(Place(rect.xMin, rect.width, width, px, f), Place(rect.yMin, rect.height, height, py, f), rect.width * f, rect.height * f);
+			return true;
+		}
+
+		/// <summary>
+		/// Prefix of Widgets.DrawShadowAround. The window stack draws a window's shadow before the window, around its
+		/// rectangle as designed (WindowStack.WindowStackOnGUI); the middle of the shadow, which the window's background
+		/// covers, was left showing beside a window drawn smaller: a dark box over the map (the user, 2026-10-22: the log
+		/// tab's 630 x 510 window above RimHUD's taller inspect pane). The shadow goes around the window as it is drawn.
+		/// </summary>
+		public static void BeforeShadow(ref Rect rect)
+		{
+			WindowStack stack = Find.WindowStack;
+			if (stack == null)
+			{
+				return;
+			}
+			foreach (Window window in stack.Windows)
+			{
+				if (window.windowRect == rect)
+				{
+					if (Fitted(window, out Rect fitted, out _))
+					{
+						rect = fitted;
+					}
+					return;
+				}
+			}
+		}
+
 		/// <summary>Prefix of Window.WindowOnGUI.</summary>
 		public static void Before(Window __instance)
 		{
 			active = false;
 			Rect rect = __instance.windowRect;
-			float width = UI.screenWidth, height = UI.screenHeight;
-			if (rect.width < 1f || rect.height < 1f)
+			if (!Fitted(__instance, out Rect fitted, out float f))
 			{
 				return;
 			}
-			bool sizeFits = rect.width <= width + 0.5f && rect.height <= height + 0.5f;
-			if (sizeFits && (__instance.draggable || __instance.resizeable))
-			{
-				return; // the player may have moved it there
-			}
-			float fx = Axis(rect.xMin, rect.width, width, out int px), fy = Axis(rect.yMin, rect.height, height, out int py);
-			float f = Mathf.Min(fx, fy);
-			if (f > 0.999f || f < SmallestFactor)
-			{
-				return;
-			}
-			var fitted = new Rect(Place(rect.xMin, rect.width, width, px, f), Place(rect.yMin, rect.height, height, py, f), rect.width * f, rect.height * f);
 			design = rect;
 			factor = f;
 			// The same window in units that are f times smaller, rounded as the game is about to round it.
