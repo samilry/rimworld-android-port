@@ -482,7 +482,8 @@ tool('rw_game',
   async args => {
     if (args.action === 'start') {
       if (gamePid()) return textResult('already running');
-      shell('am start -n ' + PKG + '/.MainActivity');
+      // The activity keeps its Java package in every APK (a TEST_PACKAGE build only changes the application id).
+      shell('am start -n ' + PKG + '/com.local.waylith.port.MainActivity');
       token = null;
       return textResult('started; the main menu takes about a minute (rw_state answers when the game is up)');
     }

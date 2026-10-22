@@ -124,6 +124,11 @@ namespace PortMobile
 		// The frame the current touch began in, and the last frame the map's (or the world's) selector took a press of the
 		// left button: a press there belongs to the map even when it was a double click, which starts no selection box.
 		private static int touchFrame, mapPressFrame = -1;
+		// Where this class last put the engine's mouse, and where it had put it by the end of an earlier frame (window
+		// pixels, y down): the engine takes an injected position in its next frame.
+		private static Vector2 cursorAt, cursorBefore;
+		private static int cursorFrame = -1;
+		private static bool cursorPlaced;
 
 		public static bool Verbose;
 
@@ -131,6 +136,21 @@ namespace PortMobile
 
 		/// <summary>A touch is being delivered to the game: a finger is down, or the press of a finger that already lifted (a quick tap) is still on its way.</summary>
 		public static bool TouchInProgress => fingers.Count > 0 || leftDown;
+
+		/// <summary>The engine's mouse is where a finger put it: a real mouse (which moves it without this class) has not moved it since.</summary>
+		public static bool PointerFromFinger
+		{
+			get
+			{
+				if (!cursorPlaced)
+				{
+					return false;
+				}
+				Vector3 mouse = Input.mousePosition;
+				Vector2 now = new Vector2(mouse.x, Screen.height - mouse.y);
+				return (now - cursorAt).sqrMagnitude < 4f || (now - cursorBefore).sqrMagnitude < 4f;
+			}
+		}
 
 		public static void Start()
 		{
@@ -150,6 +170,7 @@ namespace PortMobile
 			TouchSizes.Start(harmony);
 			Letters.Start(harmony);
 			TypingBar.Start(harmony);
+			EdgeScroll.Start(harmony);
 			KeyWheel.Start();
 			BarInset.Start(harmony);
 			MouseDecorations.Start(harmony);
@@ -238,6 +259,13 @@ namespace PortMobile
 		private static void Cursor(Vector2 pixels)
 		{
 			glfwAndroidInjectCursor(pixels.x, pixels.y);
+			if (cursorFrame != Time.frameCount)
+			{
+				cursorBefore = cursorPlaced ? cursorAt : pixels;
+				cursorFrame = Time.frameCount;
+			}
+			cursorAt = pixels;
+			cursorPlaced = true;
 		}
 
 		/// <summary>

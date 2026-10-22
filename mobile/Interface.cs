@@ -17,10 +17,12 @@ namespace PortMobile
 	///   the next touch, and clicks nothing;
 	///   the tooltips of a tap do not linger (the engine's mouse stays where the last finger was);
 	///   the soft keyboard comes up while a text field has the focus;
-	///   a search box (the game's QuickSearchWidget: the info card's, the load dialog's; a mod's, by "search" in its name) takes the focus only
-	///   from a finger on it: given the focus by code (as the info card's is when it opens), it is let go at once, so
-	///   that the keyboard does not come up by itself. Other text fields (a name to type) keep such a focus.
-	///   mobile.txt: searchFocusOnTap=0 lets search boxes keep it too;
+	///   a search box (the game's QuickSearchWidget: the info card's, the load dialog's; a mod's, by "search" in its name),
+	///   and the name field of a save dialog (the game's, a scenario's, an ideoligion's, a mod list's: Dialog_FileList),
+	///   take the focus only from a finger on them: given the focus by code (as when their window opens), it is let go
+	///   at once, so that the keyboard does not come up by itself (testers, 2026-10-22: saving by hand brought it up over
+	///   the save dialog; the name is typed only to change it). Other text fields (a name to type in a rename window)
+	///   keep such a focus. mobile.txt: searchFocusOnTap=0 lets them all keep it;
 	///   a finger that lands anywhere but on a text field takes the focus from the field that has it, and the keyboard
 	///   goes down (the game means to do that for its search boxes, but under this engine the press has already been
 	///   used by the window when the search box looks at it);
@@ -248,7 +250,7 @@ namespace PortMobile
 			}
 		}
 
-		/// <summary>Once a frame, before the keyboard follows the focus: a search box that got the focus some other way than from a finger lets it go.</summary>
+		/// <summary>Once a frame, before the keyboard follows the focus: a search box or a save dialog's name that got the focus some other way than from a finger lets it go.</summary>
 		private static void LetGoOfGivenSearchFocus()
 		{
 			int focus = GUIUtility.keyboardControl;
@@ -263,13 +265,16 @@ namespace PortMobile
 				return;
 			}
 			string name = GUI.GetNameOfFocusedControl();
-			if (IsSearchBox(name))
+			if (IsSearchBox(name) || name == SaveNameField)
 			{
 				GUI.FocusControl(null);
 				lastFocus = 0;
-				if (Touch.Verbose) Console.WriteLine("[mobile] the search box " + name + " was given the focus without a finger on it: let go");
+				if (Touch.Verbose) Console.WriteLine("[mobile] the field " + name + " was given the focus without a finger on it: let go");
 			}
 		}
+
+		/// <summary>The name field of the game's save dialogs (Dialog_FileList.DoTypeInField), which focus it when they open.</summary>
+		private const string SaveNameField = "MapNameField";
 
 		/// <summary>
 		/// A search box by the name it was given: the game's QuickSearchWidget, and the mods' own (Dubs Mint Menus focuses
