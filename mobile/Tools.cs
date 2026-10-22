@@ -495,14 +495,19 @@ namespace PortMobile
 			{
 				return;
 			}
-			bool menuOpen = Find.MainTabsRoot.OpenTab == MainButtonDefOf.Architect;
+			MainButtonDef openTab = Find.MainTabsRoot.OpenTab;
+			bool menuOpen = openTab == MainButtonDefOf.Architect;
 			bool dragging = DragConfirm.Tool() == selected;
-			if (!(selected is Designator_Place) && !dragging)
+			bool ownDrag = DragConfirm.OwnDragTool() == selected;
+			if (!(selected is Designator_Place) && !dragging && !ownDrag)
 			{
 				return;
 			}
 			// With the menu open its categories cover the bottom left: the controls go above them, as the game puts them.
-			float bottomY = menuOpen ? UI.screenHeight - 35 - ((MainTabWindow_Architect)MainButtonDefOf.Architect.TabWindow).WinHeight - 270f : UI.screenHeight - 35 - 10;
+			// The inspect pane (things selected, as Select similar leaves them) is there too: above it.
+			float bottomY = menuOpen ? UI.screenHeight - 35 - ((MainTabWindow_Architect)MainButtonDefOf.Architect.TabWindow).WinHeight - 270f
+				: openTab == MainButtonDefOf.Inspect ? MainButtonDefOf.Inspect.TabWindow.windowRect.y - 8f
+				: UI.screenHeight - 35 - 10;
 			lastResort = true;
 			drew = false;
 			try
@@ -532,6 +537,10 @@ namespace PortMobile
 			else if (dragging)
 			{
 				DragConfirm.Draw(DragConfirm.ButtonsRect(selected, 0f, bottomY, selected is Designator_Place place && Rotates(place)));
+			}
+			else
+			{
+				DragConfirm.DrawPutAway(DragConfirm.ButtonsRect(selected, 0f, bottomY, false));
 			}
 		}
 
@@ -619,6 +628,20 @@ namespace PortMobile
 			}
 			DesignatorManager manager = Find.DesignatorManager;
 			return manager.SelectedStyle != null && !KeepsOwnDrag(manager.SelectedDesignator) ? manager.SelectedDesignator : null;
+		}
+
+		/// <summary>
+		/// The selected tool, if it acts by itself when the finger lifts (KeepsOwnDrag): it gets only a cancel button, the
+		/// mouse's right click (the user, 2026-10-22: after "选择相似" there was no quick way to put the tool away).
+		/// </summary>
+		public static Designator OwnDragTool()
+		{
+			if (!Settings.PlaceConfirm || Current.ProgramState != ProgramState.Playing || Find.CurrentMap == null || !WorldRendererUtility.DrawingMap)
+			{
+				return null;
+			}
+			Designator selected = Find.DesignatorManager.SelectedDesignator;
+			return KeepsOwnDrag(selected) ? selected : null;
 		}
 
 		private static readonly Dictionary<Type, bool> ownDrag = new Dictionary<Type, bool>();
@@ -782,6 +805,11 @@ namespace PortMobile
 		public static void Controls(Designator __instance, float leftX, float bottomY)
 		{
 			Placement.NoteControls();
+			if (OwnDragTool() == __instance)
+			{
+				DrawPutAway(ButtonsRect(__instance, leftX, bottomY, false));
+				return;
+			}
 			if (Tool() != __instance)
 			{
 				return;
@@ -811,6 +839,22 @@ namespace PortMobile
 				if (Widgets.ButtonText(new Rect(inner.xMax - width, inner.y, width, inner.height), "CancelButton".Translate()))
 				{
 					Cancel();
+				}
+			});
+		}
+
+		/// <summary>The cancel button alone, in the left half of the buttons' place.</summary>
+		internal static void DrawPutAway(Rect window)
+		{
+			Placement.NoteDrew();
+			window.width = window.width / 2f + 5f;
+			Find.WindowStack.ImmediateWindow(73195733, window, WindowLayer.GameUI, delegate
+			{
+				Text.Font = GameFont.Small;
+				if (Widgets.ButtonText(new Rect(0f, 0f, window.width, window.height).ContractedBy(10f), "CancelButton".Translate()))
+				{
+					SoundDefOf.CancelMode.PlayOneShotOnCamera();
+					Find.DesignatorManager.Deselect();
 				}
 			});
 		}

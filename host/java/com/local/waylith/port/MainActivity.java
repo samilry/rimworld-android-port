@@ -858,7 +858,7 @@ public final class MainActivity extends NativeActivity
                         // The chooser's answer arrived meanwhile: no dialog over the copying.
                         return;
                     }
-                    String text = "这个安装包只包含手机移植部分，不含游戏本体。请导入你自己在 Steam 上购买的 RimWorld 1.7（已购买的 DLC 会一起导入）：\n\n"
+                    String text = "这个安装包只包含手机移植部分，不含游戏本体。请导入你自己的 RimWorld 1.7：\n\n"
                         + "1. 在电脑的 Steam 库里右键 RimWorld → 管理 → 浏览本地文件，打开游戏文件夹；\n"
                         + "2. 把整个文件夹打包成 zip，传到手机上（或者直接把整个文件夹拷到手机上）；\n"
                         + "3. 点下面的按钮选择它。\n\n"
