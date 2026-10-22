@@ -19,6 +19,7 @@ namespace PortMobile
 			if (started)
 			{
 				MemTrim.AfterReturnToMenu();
+				UnreadableMods.Tell();
 				return;
 			}
 			started = true;
@@ -58,6 +59,7 @@ namespace PortMobile
 			AtlasCheck.Start();
 			// Last: the mods' replacements that hold their own copy of a method patched above.
 			InlineGuard.EndOfStart();
+			UnreadableMods.Tell();
 		}
 
 		private static bool menuTimed;

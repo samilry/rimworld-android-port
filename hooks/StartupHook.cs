@@ -116,6 +116,12 @@ namespace PortHooks
 			}
 		}
 
+		/// <summary>Stands in for DirectoryInfo.GetDirectories inside ModLister.RebuildModList: the mod folders the game may read (ModFolders).</summary>
+		public static DirectoryInfo[] ReadableModFolders(DirectoryInfo parent)
+		{
+			return ModFolders.Readable(parent);
+		}
+
 		/// <summary>
 		/// Stands in for Assembly.LoadFrom inside ModAssemblyHandler.ReloadAll. A mod's own copy of 0Harmony.dll (the Harmony
 		/// mod ships one, others bundle it) is not loaded: the copy in the game folder, patched for this runtime (MonoMod's

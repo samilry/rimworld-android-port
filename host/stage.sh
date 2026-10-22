@@ -7,11 +7,12 @@
 #   game    makes build/game and copies it over the phone's game folder. Nothing there is deleted: the folder also holds
 #           the user's mods (Mods/), the phone settings (mobile.txt), the Workshop downloader (workshop/) and the launch
 #           arguments (args.txt, not overwritten). Files the new build no longer has are listed, not removed.
+# RW_PACKAGE=<package> puts it into another install, e.g. the side-by-side test APK (com.local.waylith.porttest).
 set -e
 cd "$(dirname "$0")/.."
 ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
 export MSYS_NO_PATHCONV=1
-PKG=com.local.waylith.port
+PKG=${RW_PACKAGE:-com.local.waylith.port}
 D=/sdcard/Android/data/$PKG/files
 GAME="/d/SteamLibrary/steamapps/common/RimWorld"
 RT=dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0

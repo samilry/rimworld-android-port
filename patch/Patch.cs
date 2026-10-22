@@ -46,6 +46,12 @@ internal static class Patch
 		{
 			["System.Reflection.Assembly System.Reflection.Assembly::LoadFrom(System.String)"] = "LoadModAssembly",
 		},
+		// A mod folder whose files the game may not read (copied in by another app) is left out of the list of mods
+		// instead of ending the whole scan (hooks/ModFolders.cs).
+		["System.Void Verse.ModLister::RebuildModList()"] = new Dictionary<string, string>
+		{
+			["System.IO.DirectoryInfo[] System.IO.DirectoryInfo::GetDirectories()"] = "ReadableModFolders",
+		},
 	};
 
 	// MonoMod's native exception helper (trampolines that keep the runtime's C++ exceptions from unwinding through the
