@@ -88,6 +88,7 @@ static int opt_flush = 0;
 static int opt_logFrames = 5;
 static int opt_barriers = -1; // "barriers=1": a full barrier opens every command buffer; "barriers=0": never; default: on ARM Mali
 static int opt_noDebugUtils; // "debugutils=0": VK_EXT_debug_utils is hidden from the engine (to try the stand-ins below on a driver that has it)
+static int opt_debugTest; // "debugtest=1": a driver advice and an ordinary message go to the engine's messenger as it is made (see filter_DebugMessage)
 
 static long g_presents, g_acquires, g_presentFailures, g_acquireFailures;
 
@@ -519,6 +520,7 @@ static void read_options(void)
         else if (strcmp(tok, "memlog") == 0) opt_memlog = v;
         else if (strcmp(tok, "pools") == 0) opt_pools = v;
         else if (strcmp(tok, "debugutils") == 0) opt_noDebugUtils = !v;
+        else if (strcmp(tok, "debugtest") == 0) opt_debugTest = v;
         else if (strcmp(tok, "barriers") == 0) opt_barriers = v;
     }
 }
@@ -1154,6 +1156,66 @@ static PFN_vkVoidFunction debug_utils_noop(const char* name)
     return noop;
 }
 
+// What the driver says through VK_EXT_debug_utils, the engine reports as the game's errors (GraphicsDevice.
+// DebugUtilsCallback, with two stack traces each, on the render thread). Qualcomm's drivers on Adreno 7xx also give
+// their own performance advice that way, "The following warning was triggered: VKDBGUTILWARN003 ...", at the end of
+// render passes: about 2000 a run on testers' realme (Adreno 725) and Redmi (Adreno 710) on 2026-10-22, and the log
+// window opened at every start. Those are left out here (counted, a few logged); everything else reaches the engine.
+typedef struct
+{
+    PFN_vkDebugUtilsMessengerCallbackEXT callback;
+    void* userData;
+} MessengerTarget;
+
+static long g_driverAdviceLeftOut;
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL filter_DebugMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT types, const VkDebugUtilsMessengerCallbackDataEXT* data, void* userData)
+{
+    const MessengerTarget* target = (const MessengerTarget*)userData;
+    if (data && data->pMessage && strstr(data->pMessage, "VKDBGUTILWARN"))
+    {
+        long n = __atomic_add_fetch(&g_driverAdviceLeftOut, 1, __ATOMIC_RELAXED);
+        if (n <= 3 || n % 1000 == 0) LOGI("vulkan: driver advice left out of the game's log (%ld so far): %.200s", n, data->pMessage);
+        return VK_FALSE;
+    }
+    return target->callback(severity, types, data, target->userData);
+}
+
+static PFN_vkCreateDebugUtilsMessengerEXT real_CreateDebugUtilsMessenger;
+
+// vulkan.txt "debugtest=1": one driver advice (to be left out) and one ordinary message (to reach the game's log).
+static void send_test_messages(VkInstance instance)
+{
+    PFN_vkSubmitDebugUtilsMessageEXT submit = (PFN_vkSubmitDebugUtilsMessageEXT)g_gipa(instance, "vkSubmitDebugUtilsMessageEXT");
+    if (!submit) return;
+    VkDebugUtilsMessengerCallbackDataEXT data = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CALLBACK_DATA_EXT };
+    data.pMessage = "The following warning was triggered: VKDBGUTILWARN003. (port17 debugtest: must not reach the game's log)";
+    submit(instance, VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT, VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT, &data);
+    data.pMessage = "port17 debugtest: an ordinary message, to reach the game's log";
+    submit(instance, VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT, VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT, &data);
+    LOGI("vulkan: debugtest messages sent");
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDebugUtilsMessenger(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* info, const VkAllocationCallbacks* alloc, VkDebugUtilsMessengerEXT* out)
+{
+    // Kept for the messenger's life (the engine makes one, and destroys it only with the instance).
+    MessengerTarget* target = info && info->pfnUserCallback ? (MessengerTarget*)malloc(sizeof *target) : NULL;
+    if (!target) return real_CreateDebugUtilsMessenger(instance, info, alloc, out);
+    target->callback = info->pfnUserCallback;
+    target->userData = info->pUserData;
+    VkDebugUtilsMessengerCreateInfoEXT wrapped = *info;
+    wrapped.pfnUserCallback = filter_DebugMessage;
+    wrapped.pUserData = target;
+    VkResult r = real_CreateDebugUtilsMessenger(instance, &wrapped, alloc, out);
+    if (r != VK_SUCCESS)
+    {
+        free(target);
+        return r;
+    }
+    if (opt_debugTest) send_test_messages(instance);
+    return r;
+}
+
 static PFN_vkEnumerateInstanceExtensionProperties real_EnumerateInstanceExtensions;
 
 static VKAPI_ATTR VkResult VKAPI_CALL hook_EnumerateInstanceExtensions(const char* layer, uint32_t* count, VkExtensionProperties* props)
@@ -1201,6 +1263,7 @@ API VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance in
     }
     if (strcmp(name, "vkCreateInstance") == 0) { real_CreateInstance = (PFN_vkCreateInstance)real; return (PFN_vkVoidFunction)hook_CreateInstance; }
     if (strcmp(name, "vkCreateDevice") == 0) { real_CreateDevice = (PFN_vkCreateDevice)real; return (PFN_vkVoidFunction)hook_CreateDevice; }
+    if (strcmp(name, "vkCreateDebugUtilsMessengerEXT") == 0) { real_CreateDebugUtilsMessenger = (PFN_vkCreateDebugUtilsMessengerEXT)real; return (PFN_vkVoidFunction)hook_CreateDebugUtilsMessenger; }
     if (strcmp(name, "vkGetDeviceProcAddr") == 0) { g_gdpa = (PFN_vkGetDeviceProcAddr)real; return (PFN_vkVoidFunction)hook_GetDeviceProcAddr; }
     if (strcmp(name, "vkDestroySurfaceKHR") == 0) { real_DestroySurface = (PFN_vkDestroySurfaceKHR)real; return (PFN_vkVoidFunction)hook_DestroySurface; }
     if (strcmp(name, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR") == 0) { real_GetSurfaceCaps = (PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)real; return (PFN_vkVoidFunction)hook_GetSurfaceCaps; }

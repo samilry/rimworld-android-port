@@ -303,14 +303,42 @@ final class Diagnostics
      */
     static void noteSelfExit(Context context)
     {
-        context.getSharedPreferences("diagnostics", Context.MODE_PRIVATE).edit().putLong("selfExitAt", System.currentTimeMillis()).commit();
+        // The last few are kept: they can come close together (a tester's Redmi, 2026-10-22: after the game was swiped
+        // away the system started the app twice more, 12 s apart, and each ended itself; with only the newer one
+        // remembered, the first came back as a crash report).
+        SharedPreferences prefs = context.getSharedPreferences("diagnostics", Context.MODE_PRIVATE);
+        StringBuilder kept = new StringBuilder().append(System.currentTimeMillis());
+        String[] earlier = prefs.getString("selfExits", "").split(",");
+        for (int i = 0; i < earlier.length && i < 7; i++)
+        {
+            if (!earlier[i].isEmpty())
+            {
+                kept.append(',').append(earlier[i]);
+            }
+        }
+        prefs.edit().putString("selfExits", kept.toString()).commit();
     }
 
-    /** Whether an exit is the one the app announced (noteSelfExit): within a few seconds after it. */
-    private static boolean announced(ApplicationExitInfo exit, long selfExitAt)
+    /** Whether an exit is one the app announced (noteSelfExit): within a few seconds after one of them. */
+    private static boolean announced(ApplicationExitInfo exit, SharedPreferences prefs)
     {
-        long after = exit.getTimestamp() - selfExitAt;
-        return selfExitAt > 0 && after >= -1000 && after <= 15000;
+        String notes = prefs.getString("selfExits", "") + "," + prefs.getLong("selfExitAt", 0);
+        for (String note : notes.split(","))
+        {
+            try
+            {
+                long selfExitAt = Long.parseLong(note.trim());
+                long after = exit.getTimestamp() - selfExitAt;
+                if (selfExitAt > 0 && after >= -1000 && after <= 15000)
+                {
+                    return true;
+                }
+            }
+            catch (NumberFormatException ignored)
+            {
+            }
+        }
+        return false;
     }
 
     /**
@@ -378,11 +406,12 @@ final class Diagnostics
         List<ApplicationExitInfo> exits = manager.getHistoricalProcessExitReasons(context.getPackageName(), 0, 16);
         SharedPreferences prefs = context.getSharedPreferences("diagnostics", Context.MODE_PRIVATE);
         long seen = prefs.getLong("seenExit", 0);
-        long selfExitAt = prefs.getLong("selfExitAt", 0);
         if (seen == 0)
         {
-            // First start of this APK: exits of the last day still count (a crash of the APK this one replaced).
-            seen = System.currentTimeMillis() - 24L * 3600 * 1000;
+            // The first start with this data: a new install, or the app's storage was cleared, and with it the notes of
+            // the exits the app announced (a tester's Xiaomi, 2026-10-22: a restart after a change of mods, from before the
+            // storage was cleared, came back as a crash report). What happened before is not this data's to report.
+            seen = System.currentTimeMillis();
         }
         ApplicationExitInfo newest = null;
         StringBuilder history = new StringBuilder();
@@ -395,7 +424,7 @@ final class Diagnostics
             }
             history.append(describe(exit)).append('\n');
             newestTime = Math.max(newestTime, exit.getTimestamp());
-            if (exit.getTimestamp() > seen && abnormal(exit) && !announced(exit, selfExitAt))
+            if (exit.getTimestamp() > seen && abnormal(exit) && !announced(exit, prefs))
             {
                 // A native crash and the Java crash it brings can be recorded in the same second (a tester's Xiaomi): the
                 // native one is reported, its tombstone is where the crash is.
