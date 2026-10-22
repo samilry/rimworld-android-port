@@ -5,6 +5,9 @@ set -e
 cd "$(dirname "$0")/.."
 RT=dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0
 mkdir -p build
+# The game version this build is made for (the staged game's), for the reminder at the main menu (mobile/VersionNotice.cs).
+# BUILT_FOR=1.7.xxxx mobile/build.sh pretends another, to see the reminder.
+echo "namespace PortMobile { internal static class BuiltFor { public const string Version = \"${BUILT_FOR:-$(head -1 build/game/Version.txt | cut -d' ' -f1)}\"; } }" > build/BuiltFor.cs
 {
   echo "-nologo -target:library -optimize+ -nullable:disable -langversion:latest -nostdlib+ -noconfig -deterministic+ -unsafe+"
   echo "-out:build/PortMobile.dll"
@@ -13,6 +16,7 @@ mkdir -p build
   # The startup hook assembly: the mod import asks it to prepare a mod's assemblies (hooks/ModPrepHost.cs).
   echo "-r:\"$(cygpath -w build/PortHooks.dll)\""
   ls mobile/*.cs | tr '\n' ' '
+  echo "build/BuiltFor.cs"
 } > build/mobile.rsp
 dotnet /d/Harness/rimworld/tools/roslyn/pkg/tasks/netcore/bincore/csc.dll @build/mobile.rsp
 cp build/PortMobile.dll build/game/

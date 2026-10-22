@@ -618,7 +618,33 @@ namespace PortMobile
 				return null;
 			}
 			DesignatorManager manager = Find.DesignatorManager;
-			return manager.SelectedStyle != null ? manager.SelectedDesignator : null;
+			return manager.SelectedStyle != null && !KeepsOwnDrag(manager.SelectedDesignator) ? manager.SelectedDesignator : null;
+		}
+
+		private static readonly Dictionary<Type, bool> ownDrag = new Dictionary<Type, bool>();
+
+		/// <summary>
+		/// A tool that follows the drag itself and designates from that, not from the cells it is handed: Allow Tool's
+		/// (on its Designator_UnlimitedDragger: Select similar, Allow / Forbid all, Haul urgently, ...). By the time a
+		/// confirmation hands it the marked cells its own area is gone, and nothing was selected (the user, 2026-10-22: a
+		/// tree, "选择相似", a box around other trees). These act when the finger lifts, as with a mouse.
+		/// </summary>
+		private static bool KeepsOwnDrag(Designator designator)
+		{
+			if (designator == null)
+			{
+				return false;
+			}
+			Type type = designator.GetType();
+			if (!ownDrag.TryGetValue(type, out bool own))
+			{
+				for (Type t = type; t != null && t != typeof(Designator) && !own; t = t.BaseType)
+				{
+					own = t.Name == "Designator_UnlimitedDragger";
+				}
+				ownDrag[type] = own;
+			}
+			return own;
 		}
 
 		/// <summary>Every frame: marked cells belong to one tool on one map.</summary>

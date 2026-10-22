@@ -60,6 +60,7 @@ namespace PortMobile
 			// Last: the mods' replacements that hold their own copy of a method patched above.
 			InlineGuard.EndOfStart();
 			UnreadableMods.Tell();
+			VersionNotice.Tell();
 		}
 
 		private static bool menuTimed;
