@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using HarmonyLib;
@@ -24,7 +25,14 @@ namespace PortMobile
 	///   - windows (the architect's menu, the main tabs, the inspect pane, float menus, dialogs), before the window stack
 	///     draws them: moved aside, made narrower where there is no room;
 	///   - the resource readout at the top left, and the column at the bottom right (time controls, date and weather,
-	///     letters, alerts), as a whole, when they reach the hole.
+	///     letters, alerts), as a whole, when they reach the hole;
+	///   - what the architect's menu and the inspect pane draw outside their windows (their ExtraOnGUI), with them, when
+	///     they were moved off a hole at the left: the grid of commands (it begins at a fixed x, 210 for the architect,
+	///     the pane's width for a selection), the architect's info box above the menu, a tool's controls, the inspect
+	///     pane's tabs (immediate windows at x 0). The user, 2026-10-23: the menu moved, the first commands were under
+	///     it, and the info box stayed at the edge. The resource readout goes behind the moved info box with them;
+	///   - an immediate window asked for while the windows are drawn (the inspect pane's tab), which the move of the
+	///     windows comes too early for: when it is asked for.
 	/// Nothing on the map moves: the game and the mods place labels there by the camera's screen position.
 	/// A black band beside the hole (the window kept clear of it, LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER) was tried first and
 	/// turned down by the user ("太难看了").
@@ -58,6 +66,12 @@ namespace PortMobile
 		// Whether each patched drawing call (in the order they run) opened a group; the finalizer closes it.
 		private static readonly Stack<bool> groups = new Stack<bool>();
 		private static bool movedSaid;
+		// Where a window moved off a hole was before it was moved (its own place, to which the game puts it back when it opens).
+		private static readonly ConditionalWeakTable<Window, StrongBox<float>> ownX = new ConditionalWeakTable<Window, StrongBox<float>>();
+		// While the architect's menu or the inspect pane, moved right off a hole, draws what goes with it: how far it is
+		// moved, and whether a grid of commands is being drawn (its immediate windows are the grid's: GizmoFit).
+		private static float tabShift;
+		private static int gridDepth;
 
 		public static void Start(Harmony harmony)
 		{
@@ -70,6 +84,12 @@ namespace PortMobile
 				harmony.Patch(AccessTools.Method(typeof(GlobalControls), nameof(GlobalControls.GlobalControlsOnGUI)), prefix: right, finalizer: end);
 				harmony.Patch(AccessTools.Method(typeof(RimWorld.Planet.WorldGlobalControls), nameof(RimWorld.Planet.WorldGlobalControls.WorldGlobalControlsOnGUI)), prefix: right, finalizer: end);
 				harmony.Patch(AccessTools.Method(typeof(AlertsReadout), nameof(AlertsReadout.AlertsReadoutOnGUI)), prefix: right, finalizer: end);
+				HarmonyMethod extras = new HarmonyMethod(typeof(Cutout), nameof(BeforeTabExtras)), extrasEnd = new HarmonyMethod(typeof(Cutout), nameof(AfterTabExtras));
+				harmony.Patch(AccessTools.Method(typeof(MainTabWindow_Architect), nameof(MainTabWindow_Architect.ExtraOnGUI)), prefix: extras, finalizer: extrasEnd);
+				harmony.Patch(AccessTools.Method(typeof(MainTabWindow_Inspect), nameof(MainTabWindow_Inspect.ExtraOnGUI)), prefix: extras, finalizer: extrasEnd);
+				// Before GizmoFit's prefix, which lays the grid out from where it begins.
+				harmony.Patch(AccessTools.Method(typeof(GizmoGridDrawer), nameof(GizmoGridDrawer.DrawGizmoGrid)), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeGrid)) { priority = Priority.First }, finalizer: new HarmonyMethod(typeof(Cutout), nameof(AfterGrid)));
+				harmony.Patch(AccessTools.Method(typeof(WindowStack), nameof(WindowStack.ImmediateWindow)), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeImmediateWindow)) { priority = Priority.Last });
 				readoutHeight = AccessTools.FieldRefAccess<ResourceReadout, float>("lastDrawnHeight");
 				stackWindows = AccessTools.FieldRefAccess<WindowStack, List<Window>>("windows");
 				Console.WriteLine("[mobile] cutout: the interface keeps clear of the camera's hole" + (on ? "" : " (switched off in the options)"));
@@ -133,7 +153,11 @@ namespace PortMobile
 			Console.WriteLine("[mobile] cutout: " + (holes.Count == 0 ? "no hole" : string.Join(", ", holes.Select(h => "(" + h.xMin.ToString("0") + "," + h.yMin.ToString("0") + ")-(" + h.xMax.ToString("0") + "," + h.yMax.ToString("0") + ")")) + " in interface units of " + UI.screenWidth + "x" + UI.screenHeight));
 		}
 
-		/// <summary>Moves rect off the holes it overlaps, away from the edge each hole is at; narrower (or lower) where there is no room. Whether it changed.</summary>
+		/// <summary>
+		/// Moves rect off the holes it overlaps, away from the edge each hole is at; narrower (or lower) where there is no
+		/// room. Whether it changed. To whole units: the game rounds a window's rect when it draws it (Window.WindowOnGUI),
+		/// which put it a fraction of a unit back over the hole, to be moved again the next time.
+		/// </summary>
 		private static bool KeepClear(ref Rect rect)
 		{
 			bool changed = false;
@@ -147,38 +171,38 @@ namespace PortMobile
 				changed = true;
 				if (hole.center.x < width * 0.3f)
 				{
-					float need = hole.xMax - rect.xMin, room = Mathf.Max(0f, width - rect.xMax);
+					float edge = Mathf.Ceil(hole.xMax), need = edge - rect.xMin, room = Mathf.Max(0f, width - rect.xMax);
 					rect.x += Mathf.Min(need, room);
 					if (need > room)
 					{
-						rect.xMin = hole.xMax;
+						rect.xMin = edge;
 					}
 				}
 				else if (hole.center.x > width * 0.7f)
 				{
-					float need = rect.xMax - hole.xMin, room = Mathf.Max(0f, rect.xMin);
+					float edge = Mathf.Floor(hole.xMin), need = rect.xMax - edge, room = Mathf.Max(0f, rect.xMin);
 					rect.x -= Mathf.Min(need, room);
 					if (need > room)
 					{
-						rect.xMax = hole.xMin;
+						rect.xMax = edge;
 					}
 				}
 				else if (hole.center.y < height * 0.5f)
 				{
-					float need = hole.yMax - rect.yMin, room = Mathf.Max(0f, height - rect.yMax);
+					float edge = Mathf.Ceil(hole.yMax), need = edge - rect.yMin, room = Mathf.Max(0f, height - rect.yMax);
 					rect.y += Mathf.Min(need, room);
 					if (need > room)
 					{
-						rect.yMin = hole.yMax;
+						rect.yMin = edge;
 					}
 				}
 				else
 				{
-					float need = rect.yMax - hole.yMin, room = Mathf.Max(0f, rect.yMin);
+					float edge = Mathf.Floor(hole.yMin), need = rect.yMax - edge, room = Mathf.Max(0f, rect.yMin);
 					rect.y -= Mathf.Min(need, room);
 					if (need > room)
 					{
-						rect.yMax = hole.yMin;
+						rect.yMax = edge;
 					}
 				}
 			}
@@ -201,6 +225,10 @@ namespace PortMobile
 				Rect rect = window.windowRect;
 				if (KeepClear(ref rect))
 				{
+					if (!ownX.TryGetValue(window, out StrongBox<float> own) || window.windowRect.x <= own.Value + 0.5f)
+					{
+						ownX.AddOrUpdate(window, new StrongBox<float>(window.windowRect.x));
+					}
 					window.windowRect = rect;
 					if (!movedSaid)
 					{
@@ -213,6 +241,66 @@ namespace PortMobile
 			{
 				windowTicks += Stopwatch.GetTimestamp() - start;
 				TimingReport();
+			}
+		}
+
+		/// <summary>Prefix of MainTabWindow_Architect.ExtraOnGUI and MainTabWindow_Inspect.ExtraOnGUI: how far the window is moved off a hole at the left.</summary>
+		public static void BeforeTabExtras(Window __instance)
+		{
+			tabShift = ShiftOf(__instance);
+			gridDepth = 0;
+		}
+
+		/// <summary>How far an open window is moved right off a hole at the left (0: not moved, or not open).</summary>
+		private static float ShiftOf(Window window)
+		{
+			if (!on || !holeLeft || window == null || !ownX.TryGetValue(window, out StrongBox<float> own) || !window.IsOpen)
+			{
+				return 0f;
+			}
+			float dx = window.windowRect.x - own.Value;
+			return dx > 0.5f ? dx : 0f;
+		}
+
+		public static void AfterTabExtras()
+		{
+			tabShift = 0f;
+			gridDepth = 0;
+		}
+
+		/// <summary>Prefix of GizmoGridDrawer.DrawGizmoGrid (first of its prefixes): the grid begins as much further right.</summary>
+		public static void BeforeGrid(ref float startX)
+		{
+			if (tabShift > 0f)
+			{
+				startX += tabShift;
+				gridDepth++;
+			}
+		}
+
+		public static void AfterGrid()
+		{
+			if (gridDepth > 0)
+			{
+				gridDepth--;
+			}
+		}
+
+		/// <summary>
+		/// Prefix of WindowStack.ImmediateWindow (the last of its prefixes, after GizmoFit's): the info box, a tool's controls
+		/// and the inspect pane's tabs go with their window (not the grid's own: they are where the grid is). And an immediate
+		/// window keeps clear of the holes itself: one asked for while the window stack draws (a window's ExtraOnGUI: the
+		/// inspect pane's tab, a selection's commands) is drawn right after, before BeforeWindows could see it.
+		/// </summary>
+		public static void BeforeImmediateWindow(ref Rect rect)
+		{
+			if (tabShift > 0f && gridDepth == 0)
+			{
+				rect.x += tabShift;
+			}
+			if (on && holes.Count > 0)
+			{
+				KeepClear(ref rect);
 			}
 		}
 
@@ -229,9 +317,12 @@ namespace PortMobile
 				{
 					if (hole.center.x < UI.screenWidth * 0.3f && area.Overlaps(hole))
 					{
-						dx = Mathf.Max(dx, hole.xMax);
+						dx = Mathf.Max(dx, Mathf.Ceil(hole.xMax));
 					}
 				}
+				// The architect's info box lies over the list (as in the game); moved with the menu, the list goes along
+				// behind it rather than show its left edge beside it.
+				dx = Mathf.Max(dx, ShiftOf(MainButtonDefOf.Architect?.TabWindow));
 			}
 			Push(dx);
 			if (timing)
