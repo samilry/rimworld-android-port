@@ -244,6 +244,33 @@ namespace PortMobile
 			}
 		}
 
+		/// <summary>For what places itself (the key wheel's button): rect moved off the holes, as a window would be.</summary>
+		public static Rect ClearOf(Rect rect)
+		{
+			if (on && holes.Count > 0)
+			{
+				KeepClear(ref rect);
+			}
+			return rect;
+		}
+
+		/// <summary>Whether rect lies over a hole (with the margin around it).</summary>
+		public static bool OverHole(Rect rect)
+		{
+			if (!on)
+			{
+				return false;
+			}
+			foreach (Rect hole in holes)
+			{
+				if (rect.Overlaps(hole))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
 		/// <summary>Prefix of MainTabWindow_Architect.ExtraOnGUI and MainTabWindow_Inspect.ExtraOnGUI: how far the window is moved off a hole at the left.</summary>
 		public static void BeforeTabExtras(Window __instance)
 		{

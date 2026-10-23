@@ -104,6 +104,9 @@ namespace PortMobile
 
 		private static bool enabled, expanded;
 		private static Vector2 hubCenter = new Vector2(-1f, -1f);
+		// Where the button is shown: its place, moved off the camera's hole if it lies over it (Cutout). The keys go round
+		// this, and touches are taken here (a window moved by Cutout alone left the ring around the old place).
+		private static Vector2 shownCenter = new Vector2(-1f, -1f);
 		private static List<string> names = new List<string>();
 		private static List<WheelKey> keys;
 		private static readonly List<Vector2> slotCenters = new List<Vector2>();
@@ -183,7 +186,7 @@ namespace PortMobile
 
 		private static bool OnWheel(Vector2 ui)
 		{
-			if ((ui - hubCenter).magnitude <= HubSize / 2f + 4f)
+			if ((ui - shownCenter).magnitude <= HubSize / 2f + 4f)
 			{
 				return true;
 			}
@@ -545,6 +548,7 @@ namespace PortMobile
 				hubCenter = DefaultCenter();
 			}
 			hubCenter = Clamp(hubCenter, HubSize / 2f);
+			shownCenter = Cutout.ClearOf(new Rect(hubCenter.x - HubSize / 2f, hubCenter.y - HubSize / 2f, HubSize, HubSize)).center;
 			drawnFrame = Time.frameCount;
 			if (expanded)
 			{
@@ -559,20 +563,20 @@ namespace PortMobile
 					Find.WindowStack.ImmediateWindow(SlotIdBase + i, rect, WindowLayer.Super, () => DrawSlot(index), doBackground: false, absorbInputAroundWindow: false, shadowAlpha: 0f);
 				}
 			}
-			var hubRect = new Rect(hubCenter.x - HubSize / 2f, hubCenter.y - HubSize / 2f, HubSize, HubSize);
+			var hubRect = new Rect(shownCenter.x - HubSize / 2f, shownCenter.y - HubSize / 2f, HubSize, HubSize);
 			Find.WindowStack.ImmediateWindow(HubId, hubRect, WindowLayer.Super, DrawHub, doBackground: false, absorbInputAroundWindow: false, shadowAlpha: 0f);
 		}
 
 		/// <summary>
 		/// The keys' centres: on rings around the button, the first one beside the button and the rest alternately to
-		/// either side of the direction of the middle of the screen; places off the screen are passed over, and a ring
-		/// that is full gives way to a wider one.
+		/// either side of the direction of the middle of the screen; places off the screen or over the camera's hole are
+		/// passed over, and a ring that is full gives way to a wider one.
 		/// </summary>
 		private static void Layout(int count)
 		{
 			slotCenters.Clear();
 			var middle = new Vector2(UI.screenWidth / 2f, UI.screenHeight / 2f);
-			Vector2 towards = middle - hubCenter;
+			Vector2 towards = middle - shownCenter;
 			float baseAngle = Mathf.Atan2(towards.y, towards.x);
 			float margin = SlotSize / 2f + 4f;
 			for (int ring = 0; ring < 5 && slotCenters.Count < count; ring++)
@@ -584,8 +588,8 @@ namespace PortMobile
 				{
 					int side = (k % 2 == 1) ? (k + 1) / 2 : -(k / 2);
 					float angle = baseAngle + side * step;
-					Vector2 p = hubCenter + new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * radius;
-					if (p.x < margin || p.y < margin || p.x > UI.screenWidth - margin || p.y > UI.screenHeight - margin)
+					Vector2 p = shownCenter + new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * radius;
+					if (p.x < margin || p.y < margin || p.x > UI.screenWidth - margin || p.y > UI.screenHeight - margin || Cutout.OverHole(new Rect(p.x - SlotSize / 2f, p.y - SlotSize / 2f, SlotSize, SlotSize)))
 					{
 						continue;
 					}
@@ -667,7 +671,7 @@ namespace PortMobile
 			{
 				touching = HubTouch;
 				touchStart = UI.MousePositionOnUIInverted;
-				grabOffset = hubCenter - touchStart;
+				grabOffset = shownCenter - touchStart;
 				dragged = false;
 				Event.current.Use();
 			}
