@@ -93,6 +93,10 @@ static int opt_logFrames = 5;
 static int opt_barriers = -1; // "barriers=1": a full barrier opens every command buffer; "barriers=0": never; default: on ARM Mali
 static int opt_noDebugUtils; // "debugutils=0": VK_EXT_debug_utils is hidden from the engine (to try the stand-ins below on a driver that has it)
 static int opt_debugTest; // "debugtest=1": a driver advice and an ordinary message go to the engine's messenger as it is made (see filter_DebugMessage)
+static int opt_dropDebugTest; // "dropdebug=1": VK_EXT_debug_utils counts as missing when the instance is made (to try hook_CreateInstance's leaving out on a driver that has it)
+// Debug extensions the engine asked for and the driver does not have, left out of the instance (hook_CreateInstance):
+// their functions are the stand-ins that do nothing.
+static int g_droppedDebugReport, g_droppedDebugUtils;
 
 static long g_presents, g_acquires, g_presentFailures, g_acquireFailures;
 
@@ -525,6 +529,7 @@ static void read_options(void)
         else if (strcmp(tok, "pools") == 0) opt_pools = v;
         else if (strcmp(tok, "debugutils") == 0) opt_noDebugUtils = !v;
         else if (strcmp(tok, "debugtest") == 0) opt_debugTest = v;
+        else if (strcmp(tok, "dropdebug") == 0) opt_dropDebugTest = v;
         else if (strcmp(tok, "barriers") == 0) opt_barriers = v;
     }
 }
@@ -994,14 +999,55 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_WaitForFences(VkDevice device, uint32
 }
 
 // ---- instance / device ----
+// Whether the driver (with the system's loader) offers an instance extension.
+static int instance_extension_available(const char* name)
+{
+    if (opt_dropDebugTest && strcmp(name, "VK_EXT_debug_utils") == 0) return 0;
+    PFN_vkEnumerateInstanceExtensionProperties enumerate = (PFN_vkEnumerateInstanceExtensionProperties)g_gipa(NULL, "vkEnumerateInstanceExtensionProperties");
+    uint32_t n = 0;
+    if (!enumerate || enumerate(NULL, &n, NULL) != VK_SUCCESS) return 1;
+    VkExtensionProperties* all = (VkExtensionProperties*)calloc(n ? n : 1, sizeof *all);
+    int found = 0;
+    if (enumerate(NULL, &n, all) >= 0)
+    {
+        for (uint32_t i = 0; i < n && !found; i++) found = strcmp(all[i].extensionName, name) == 0;
+    }
+    free(all);
+    return found;
+}
+
 static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateInstance(const VkInstanceCreateInfo* info, const VkAllocationCallbacks* alloc, VkInstance* out)
 {
-    VkResult r = real_CreateInstance(info, alloc, out);
+    // The debug extensions are not needed to run: one the driver does not have is left out instead of failing the whole
+    // instance. 1.7.4976's engine asks for VK_EXT_debug_report (4985's does not), which a vivo's Mali driver (Dimensity
+    // 8200, Android 13) does not have: VK_ERROR_EXTENSION_NOT_PRESENT, and the game closed a second after it started.
+    VkInstanceCreateInfo filtered = *info;
+    const char* kept[64];
+    if (info->enabledExtensionCount <= 64)
+    {
+        uint32_t keptCount = 0;
+        for (uint32_t i = 0; i < info->enabledExtensionCount; i++)
+        {
+            const char* name = info->ppEnabledExtensionNames[i];
+            int report = strcmp(name, "VK_EXT_debug_report") == 0, utils = strcmp(name, "VK_EXT_debug_utils") == 0;
+            if ((report || utils) && !instance_extension_available(name))
+            {
+                if (report) g_droppedDebugReport = 1;
+                if (utils) g_droppedDebugUtils = 1;
+                LOGK("vulkan: the driver has no %s: left out of the instance, its functions do nothing", name);
+                continue;
+            }
+            kept[keptCount++] = name;
+        }
+        filtered.enabledExtensionCount = keptCount;
+        filtered.ppEnabledExtensionNames = kept;
+    }
+    VkResult r = real_CreateInstance(&filtered, alloc, out);
     if (r == VK_SUCCESS) g_instance = *out;
     char ext[1024] = "";
-    for (uint32_t i = 0; i < info->enabledExtensionCount && strlen(ext) < 900; i++)
+    for (uint32_t i = 0; i < filtered.enabledExtensionCount && strlen(ext) < 900; i++)
     {
-        strncat(ext, info->ppEnabledExtensionNames[i], sizeof ext - strlen(ext) - 2);
+        strncat(ext, filtered.ppEnabledExtensionNames[i], sizeof ext - strlen(ext) - 2);
         strncat(ext, " ", sizeof ext - strlen(ext) - 1);
     }
     char layers[512] = "";
@@ -1154,6 +1200,19 @@ static VKAPI_ATTR VkResult VKAPI_CALL noop_CreateMessenger(VkInstance instance, 
 static VKAPI_ATTR void VKAPI_CALL noop_DestroyMessenger(VkInstance instance, VkDebugUtilsMessengerEXT messenger, const VkAllocationCallbacks* alloc) { (void)instance; (void)messenger; (void)alloc; }
 static VKAPI_ATTR void VKAPI_CALL noop_SubmitMessage(VkInstance instance, VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT types, const VkDebugUtilsMessengerCallbackDataEXT* data) { (void)instance; (void)severity; (void)types; (void)data; }
 
+// VK_EXT_debug_report (asked for by older engines, 1.7.4976) the same way.
+static VKAPI_ATTR VkResult VKAPI_CALL noop_CreateReportCallback(VkInstance instance, const VkDebugReportCallbackCreateInfoEXT* info, const VkAllocationCallbacks* alloc, VkDebugReportCallbackEXT* out)
+{
+    (void)instance; (void)info; (void)alloc;
+    if (out) *out = (VkDebugReportCallbackEXT)(uintptr_t)1;
+    return VK_SUCCESS;
+}
+static VKAPI_ATTR void VKAPI_CALL noop_DestroyReportCallback(VkInstance instance, VkDebugReportCallbackEXT callback, const VkAllocationCallbacks* alloc) { (void)instance; (void)callback; (void)alloc; }
+static VKAPI_ATTR void VKAPI_CALL noop_ReportMessage(VkInstance instance, VkDebugReportFlagsEXT flags, VkDebugReportObjectTypeEXT type, uint64_t object, size_t location, int32_t code, const char* layer, const char* message)
+{
+    (void)instance; (void)flags; (void)type; (void)object; (void)location; (void)code; (void)layer; (void)message;
+}
+
 static PFN_vkVoidFunction debug_utils_noop(const char* name)
 {
     PFN_vkVoidFunction noop = NULL;
@@ -1166,10 +1225,13 @@ static PFN_vkVoidFunction debug_utils_noop(const char* name)
     else if (strcmp(name, "vkQueueEndDebugUtilsLabelEXT") == 0) noop = (PFN_vkVoidFunction)noop_QueueEndLabel;
     else if (strcmp(name, "vkSetDebugUtilsObjectNameEXT") == 0) noop = (PFN_vkVoidFunction)noop_SetObjectName;
     else if (strcmp(name, "vkSetDebugUtilsObjectTagEXT") == 0) noop = (PFN_vkVoidFunction)noop_SetObjectTag;
+    else if (strcmp(name, "vkCreateDebugReportCallbackEXT") == 0) noop = (PFN_vkVoidFunction)noop_CreateReportCallback;
+    else if (strcmp(name, "vkDestroyDebugReportCallbackEXT") == 0) noop = (PFN_vkVoidFunction)noop_DestroyReportCallback;
+    else if (strcmp(name, "vkDebugReportMessageEXT") == 0) noop = (PFN_vkVoidFunction)noop_ReportMessage;
     if (noop)
     {
         static int logged;
-        if (logged++ < 12) LOGK("vulkan: %s is missing (no VK_EXT_debug_utils); a stand-in that does nothing is used", name);
+        if (logged++ < 12) LOGK("vulkan: %s is missing (no such debug extension); a stand-in that does nothing is used", name);
     }
     else
     {
@@ -1268,6 +1330,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_EnumerateInstanceExtensions(const cha
 
 static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL hook_GetDeviceProcAddr(VkDevice device, const char* name)
 {
+    if (g_droppedDebugUtils && strstr(name, "DebugUtils")) return debug_utils_noop(name);
     PFN_vkVoidFunction real = g_gdpa(device, name);
     if (!real) return debug_utils_noop(name);
     PFN_vkVoidFunction hook = device_hook(name, real);
@@ -1277,6 +1340,7 @@ static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL hook_GetDeviceProcAddr(VkDevice 
 API VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* name)
 {
     if (!ensure() || !name) return NULL;
+    if (instance && ((g_droppedDebugUtils && strstr(name, "DebugUtils")) || (g_droppedDebugReport && strstr(name, "DebugReport")))) return debug_utils_noop(name);
     PFN_vkVoidFunction real = g_gipa(instance, name);
     if (!real) return instance ? debug_utils_noop(name) : NULL;
     if (instance && !g_instance) g_instance = instance;

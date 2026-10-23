@@ -696,6 +696,8 @@ public final class MainActivity extends NativeActivity
     /** The dialog asking for the game while it is shown; and whether a chosen game is being copied (onGamePicked). */
     private AlertDialog askDialog;
     private volatile boolean gamePickRunning;
+    /** The player chose other files over a game found in files/import (askForGame): not offered again in this process. */
+    private volatile boolean placedDeclined;
     /** Set by prepareGame while a copy is asked for after "重新导入游戏" (ReimportActivity): the dialog says how to call it off. */
     private volatile boolean reimporting;
     /** While prepareGame asks for, copies or sets up the game (in this process). */
@@ -713,7 +715,22 @@ public final class MainActivity extends NativeActivity
     {
         // Who ended it: the player or the app (finishing), or the system on its own (a phone short of memory, or the
         // developer option 不保留活动, which destroys every activity that leaves the screen).
-        String by = isFinishing() ? "" : " (by the system" + (Diagnostics.activitiesNotKept(this) ? ", developer option 不保留活动 on" : "") + ")";
+        String by = isFinishing() ? " (finishing)" : " (by the system" + (Diagnostics.activitiesNotKept(this) ? ", developer option 不保留活动 on" : "") + ")";
+        // And what the app's tasks hold now (a Xiaomi's chooser seemed to clear the task it was started in).
+        StringBuilder tasks = new StringBuilder();
+        try
+        {
+            for (ActivityManager.AppTask task : ((ActivityManager) getSystemService(ACTIVITY_SERVICE)).getAppTasks())
+            {
+                ActivityManager.RecentTaskInfo info = task.getTaskInfo();
+                tasks.append(tasks.length() > 0 ? ", " : "").append(info.baseActivity != null ? info.baseActivity.flattenToShortString() : "?").append(" .. ")
+                    .append(info.topActivity != null ? info.topActivity.flattenToShortString() : "?").append(" (").append(info.numActivities).append(')');
+            }
+        }
+        catch (Throwable ignored)
+        {
+        }
+        by += "; tasks: " + (tasks.length() > 0 ? tasks : "none");
         if (importing && !isChangingConfigurations())
         {
             endImport(this, "the activity went away during the import" + by);
@@ -859,6 +876,15 @@ public final class MainActivity extends NativeActivity
             gameEvents.clear();
             Diagnostics.trail(this, "asking for the game" + (problem != null ? " (last time: " + problem.replace('\n', ' ') + ")" : ""));
             final String shownProblem = problem;
+            // A game put into files/import by hand (over USB from a PC), offered before the chooser: the way in for a phone
+            // whose file chooser ends the app (a Xiaomi tester's HyperOS, 2026-10-23: the activity finished a second after
+            // the chooser came up, every time). Not after a failed setup, which may have been that very copy.
+            final File importDir = new File(getExternalFilesDir(null), "import");
+            final File placed = problem == null && !placedDeclined ? findGame(importDir, 4) : null;
+            if (placed != null)
+            {
+                Diagnostics.trail(this, "a game was put into the import folder: " + placed);
+            }
             runOnUiThread(new Runnable()
             {
                 @Override
@@ -867,6 +893,40 @@ public final class MainActivity extends NativeActivity
                     if (gamePickRunning)
                     {
                         // The chooser's answer arrived meanwhile: no dialog over the copying.
+                        return;
+                    }
+                    if (placed != null)
+                    {
+                        String where = placed.getPath();
+                        int at = where.indexOf("/Android/");
+                        askDialog = new AlertDialog.Builder(MainActivity.this)
+                            .setTitle("找到你放入的游戏文件")
+                            .setMessage("在 " + (at >= 0 ? where.substring(at + 1) : where) + " 里找到了 RimWorld 的游戏文件。用它导入吗？\n\n"
+                                + "导入时会把这些文件移进游戏目录，完成后这个文件夹会清空。")
+                            .setCancelable(false)
+                            .setPositiveButton("用它导入", new DialogInterface.OnClickListener()
+                            {
+                                public void onClick(DialogInterface dialog, int which)
+                                {
+                                    gameEvents.offer(new String[] { "picked", placed.getPath() });
+                                }
+                            })
+                            .setNeutralButton("改选其他文件", new DialogInterface.OnClickListener()
+                            {
+                                public void onClick(DialogInterface dialog, int which)
+                                {
+                                    placedDeclined = true;
+                                    gameEvents.offer(new String[] { "again" });
+                                }
+                            })
+                            .setNegativeButton("退出", new DialogInterface.OnClickListener()
+                            {
+                                public void onClick(DialogInterface dialog, int which)
+                                {
+                                    gameEvents.offer(new String[] { "quit" });
+                                }
+                            })
+                            .show();
                         return;
                     }
                     if (Diagnostics.activitiesNotKept(MainActivity.this))
@@ -906,7 +966,9 @@ public final class MainActivity extends NativeActivity
                         + "1. 在电脑的 Steam 库里右键 RimWorld → 管理 → 浏览本地文件，打开游戏文件夹；\n"
                         + "2. 把整个文件夹打包成 zip，传到手机上（或者直接把整个文件夹拷到手机上）；\n"
                         + "3. 点下面的按钮选择它。\n\n"
-                        + "需要约 3 GB 空闲空间，复制和处理需要一两分钟。";
+                        + "需要约 3 GB 空闲空间，复制和处理需要一两分钟。\n\n"
+                        + "如果文件选择器打不开，或者一选就退出：用数据线把手机连到电脑，把整个游戏文件夹复制到手机存储的 Android/data/" + getPackageName()
+                        + "/files/import 文件夹里（没有 import 就新建一个），再打开 Port17。";
                     if (reimporting)
                     {
                         text = "重新导入游戏：存档、设置和 mod 都会保留，只替换游戏本体。不想换了就点“退出”，下次打开照常用原来的游戏"
@@ -1009,7 +1071,20 @@ public final class MainActivity extends NativeActivity
                 intent.addCategory(Intent.CATEGORY_OPENABLE);
                 intent.setType("*/*");
             }
-            Diagnostics.trail(this, "chooser opened for a " + (folder ? "folder" : "zip"));
+            // Which app answers (on some phones the maker's own file manager), for the trail.
+            String chooser = "?";
+            try
+            {
+                android.content.pm.ResolveInfo answers = getPackageManager().resolveActivity(intent, 0);
+                if (answers != null && answers.activityInfo != null)
+                {
+                    chooser = answers.activityInfo.packageName + "/" + answers.activityInfo.name;
+                }
+            }
+            catch (Throwable ignored)
+            {
+            }
+            Diagnostics.trail(this, "chooser opened for a " + (folder ? "folder" : "zip") + " (" + chooser + ")");
             startActivityForResult(intent, folder ? PICK_GAME_FOLDER : PICK_GAME_ZIP);
         }
         catch (Throwable problem)
