@@ -2,6 +2,7 @@
 # Samples one thread of the running game and says where its time goes, with the compiled (JIT) code named.
 # The game has to run with the runtime's method map on: start it with
 #   host/perf-start.sh DOTNET_PerfMapEnabled=3 DOTNET_PerfMapJitDumpPath=/data/user/0/com.local.waylith.port/files
+# (RW_PACKAGE=com.local.waylith.porttest for the side-by-side test package, its runtime.env written by hand)
 # (game/runtime.env; the map file grows to some 17 MB and is deleted here at the next such start by hand).
 # usage: host/perf-profile.sh <label> [seconds] [thread name or id] [pattern...]
 #        e.g. host/perf-profile.sh paused 10 MainThread "ThrottleToTargetFrameRate" "callers:^\[vdso\]!"
@@ -10,7 +11,7 @@
 ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
-PKG=com.local.waylith.port
+PKG=${RW_PACKAGE:-com.local.waylith.port}
 LABEL=${1:?label}
 SECS=${2:-10}
 THREAD=${3:-MainThread}

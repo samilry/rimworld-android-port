@@ -18,7 +18,7 @@ namespace PortHooks
 	/// event). Measured 2026-10-23 (OnePlus, 137 mods, 2389 patched methods, at the main menu): as the runtime comes,
 	/// 8 patched methods in 36-37 places (Rand.get_Int/PushState/PopState/set_Seed, ThingFilter.Allows, the loading
 	/// screen's Widgets.DrawShadowAround/DrawAtlas into LongEventsOnGUI, Texture2D.EnsureResident); with
-	/// TC_CallCountingDelayMs=0 9 in 89 places (Rand.get_Int alone 63); with TieredPGO=0 3 in 7 (host.c sets that now).
+	/// TC_CallCountingDelayMs=0 9 in 89 places (Rand.get_Int alone 63); with TieredPGO=0 3 in 7 (left on all the same: see host.c).
 	/// </summary>
 	public static class InlineWatch
 	{
