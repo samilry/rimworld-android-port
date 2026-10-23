@@ -626,7 +626,25 @@ final class Diagnostics
         text.append("游戏准备：").append(readSmall(new File(ext, "game/port-setup.txt")).replace('\n', ' ')).append('\n');
         text.append("启动参数：").append(readSmall(new File(ext, "game/args.txt")).replace('\n', ' ')).append('\n');
         text.append("mobile.txt：").append(readSmall(new File(ext, "game/mobile.txt")).replace('\n', ' ')).append('\n');
+        text.append("不保留活动：").append(activitiesNotKept(context) ? "开（开发者选项）" : "关").append('\n');
         return text.toString();
+    }
+
+    /**
+     * The developer option "不保留活动" (Don't keep activities): the system destroys every activity as soon as it leaves
+     * the screen. The game's activity cannot outlive that (a NativeActivity; a new one would start the game a second time
+     * in the process), so the game ends when another app or the file chooser comes up.
+     */
+    static boolean activitiesNotKept(Context context)
+    {
+        try
+        {
+            return android.provider.Settings.Global.getInt(context.getContentResolver(), android.provider.Settings.Global.ALWAYS_FINISH_ACTIVITIES, 0) != 0;
+        }
+        catch (Throwable ignored)
+        {
+            return false;
+        }
     }
 
     private static String readSmall(File file)

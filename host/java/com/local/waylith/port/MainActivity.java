@@ -81,7 +81,11 @@ public final class MainActivity extends NativeActivity
         hideSystemBars();
         // A report in Download/Port17 when the last run ended badly, and the "导出日志" shortcut on the icon.
         Diagnostics.onStart(this);
-        Diagnostics.trail(this, "started" + (savedInstanceState != null ? " again by the system (the process had been ended)" : ""));
+        Diagnostics.trail(this, "started" + (savedInstanceState != null ? " again by the system (the process had been ended)" : "") + (Diagnostics.activitiesNotKept(this) ? "; developer option 不保留活动 is on" : ""));
+        if (Diagnostics.activitiesNotKept(this))
+        {
+            Toast.makeText(this, "手机的开发者选项里开着「不保留活动」（有的手机叫「不保留 activity」）：切到别的应用或打开文件选择器时，游戏会被系统关掉。请先关掉这个选项。", Toast.LENGTH_LONG).show();
+        }
         GameService.start(this);
     }
 
@@ -707,9 +711,16 @@ public final class MainActivity extends NativeActivity
     @Override
     protected void onDestroy()
     {
+        // Who ended it: the player or the app (finishing), or the system on its own (a phone short of memory, or the
+        // developer option 不保留活动, which destroys every activity that leaves the screen).
+        String by = isFinishing() ? "" : " (by the system" + (Diagnostics.activitiesNotKept(this) ? ", developer option 不保留活动 on" : "") + ")";
         if (importing && !isChangingConfigurations())
         {
-            endImport(this, "the activity went away during the import");
+            endImport(this, "the activity went away during the import" + by);
+        }
+        else
+        {
+            Diagnostics.trail(this, "the activity is destroyed" + by);
         }
         super.onDestroy();
     }
@@ -856,6 +867,39 @@ public final class MainActivity extends NativeActivity
                     if (gamePickRunning)
                     {
                         // The chooser's answer arrived meanwhile: no dialog over the copying.
+                        return;
+                    }
+                    if (Diagnostics.activitiesNotKept(MainActivity.this))
+                    {
+                        // The system would destroy this activity under the file chooser, and the import with it (onDestroy):
+                        // a Xiaomi tester's five tries, 2026-10-23, each ended a second after the chooser came up.
+                        askDialog = new AlertDialog.Builder(MainActivity.this)
+                            .setTitle("请先关掉「不保留活动」")
+                            .setMessage("这台手机的开发者选项里开着「不保留活动」（有的手机叫「不保留 activity」，在开发者选项的“应用”一栏）。打开文件选择器时，系统会马上把游戏关掉，所以没法导入；玩的时候切到别的应用，游戏也会被关掉。\n\n"
+                                + "请点下面的按钮（或到 设置 → 开发者选项，小米在 设置 → 更多设置 → 开发者选项）关掉它，再重新打开游戏。")
+                            .setCancelable(false)
+                            .setPositiveButton("打开开发者选项", new DialogInterface.OnClickListener()
+                            {
+                                public void onClick(DialogInterface dialog, int which)
+                                {
+                                    try
+                                    {
+                                        startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                                    }
+                                    catch (Throwable ignored)
+                                    {
+                                    }
+                                    gameEvents.offer(new String[] { "quit" });
+                                }
+                            })
+                            .setNegativeButton("退出", new DialogInterface.OnClickListener()
+                            {
+                                public void onClick(DialogInterface dialog, int which)
+                                {
+                                    gameEvents.offer(new String[] { "quit" });
+                                }
+                            })
+                            .show();
                         return;
                     }
                     String text = "这个安装包只包含手机移植部分，不含游戏本体。请导入你自己的 RimWorld 1.7：\n\n"
