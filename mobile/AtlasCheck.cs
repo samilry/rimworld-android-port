@@ -32,7 +32,8 @@ namespace PortMobile
 	/// (TextureCache/atlas-checked.txt) and not read again. On the OnePlus, 23 pages (8192x4096 and smaller): 0.6 s
 	/// for BC7, 0.9 s for ASTC, once; a level of 4096x2048 made again in 0.3 s (BC7) / 0.5 s (ASTC).
 	/// mobile.txt: atlasCheck=0 leaves it out; atlasCheckTest=Item empties level 1 of the first Item page first, to
-	/// see the repair work.
+	/// see the repair work (atlasCheckTestCut=1 also cuts level 0 off below its middle). On some GPUs (Verify) pages are
+	/// also compared with their cache files, which mends a broken level 0 as well.
 	/// </summary>
 	internal static class AtlasCheck
 	{
@@ -41,12 +42,68 @@ namespace PortMobile
 		private const int SamplesX = 128, SamplesY = 64;
 		private static byte[][] readback;
 
-		public static void Start()
+		/// <summary>
+		/// GPUs on which atlas pages have gone wrong in the GPU's memory after a check found them whole (a tester's Adreno 725,
+		/// 2026-10-23: the Plant page from the cache, checked whole in an earlier run, had level 0 cut off below a line,
+		/// level 1 empty and level 2 in part: trees drawn in part or not at all; earlier an Adreno 720's Item page). On these
+		/// every page is compared with its cache file at every start, after every bake and after a game has loaded, and
+		/// put up again from the file where they differ. mobile.txt atlasVerify=1 / 0 switches it on / off for any GPU.
+		/// </summary>
+		private static bool Verify
+		{
+			get
+			{
+				if (verify == null)
+				{
+					string setting = Settings.Get("atlasVerify", "auto");
+					bool on = setting == "1";
+					if (setting == "auto")
+					{
+						try
+						{
+							System.Text.RegularExpressions.Match m = System.Text.RegularExpressions.Regex.Match(Waylith.Graphics.GpuInfo.DeviceName ?? "", @"Adreno\D*(\d{3})");
+							on = m.Success && int.Parse(m.Groups[1].Value) < 800;
+						}
+						catch (Exception)
+						{
+						}
+					}
+					verify = on;
+				}
+				return verify.Value;
+			}
+		}
+
+		private static bool? verify;
+
+		/// <summary>From Entry, once the atlases are baked: the check now, and again after every bake and every loaded game where pages are compared with their files.</summary>
+		public static void Start(Harmony harmony)
 		{
 			if (Settings.Get("atlasCheck", 1) == 0)
 			{
 				return;
 			}
+			Run("start");
+			if (Verify)
+			{
+				harmony.Patch(AccessTools.Method(typeof(GlobalTextureAtlasManager), nameof(GlobalTextureAtlasManager.BakeStaticAtlases)), postfix: new HarmonyMethod(typeof(AtlasCheck), nameof(AfterBake)));
+				harmony.Patch(AccessTools.Method(typeof(Game), nameof(Game.FinalizeInit)), postfix: new HarmonyMethod(typeof(AtlasCheck), nameof(AfterGameInit)));
+			}
+		}
+
+		public static void AfterBake()
+		{
+			LongEventHandler.ExecuteWhenFinished(() => Run("after a bake"));
+		}
+
+		/// <summary>Postfix of Game.FinalizeInit (on the loading thread): the check on the main thread when the loading is over.</summary>
+		public static void AfterGameInit()
+		{
+			LongEventHandler.ExecuteWhenFinished(() => Run("after the game loaded"));
+		}
+
+		private static void Run(string why)
+		{
 			try
 			{
 				var atlases = AccessTools.Field(typeof(GlobalTextureAtlasManager), "staticTextureAtlases")?.GetValue(null) as List<StaticTextureAtlas>;
@@ -65,7 +122,7 @@ namespace PortMobile
 					BreakForTest(atlases, test);
 				}
 				var stopwatch = Stopwatch.StartNew();
-				int pages = 0, skipped = 0, repaired = 0;
+				int pages = 0, skipped = 0, repaired = 0, compared = 0, reuploaded = 0;
 				var added = new List<string>();
 				foreach (StaticTextureAtlas atlas in atlases)
 				{
@@ -78,6 +135,15 @@ namespace PortMobile
 						}
 						string key = atlas.CacheKey(mask);
 						string id = key == null ? null : Hash(key + " " + page.CoreTexture.GpuResource.Format + " " + page.CoreTexture.GpuResource.MipCount);
+						if (Verify && key != null)
+						{
+							int put = Compare(page, key);
+							if (put >= 0)
+							{
+								compared++;
+								reuploaded += put;
+							}
+						}
 						if (id != null && checkedKeys.Contains(id))
 						{
 							skipped++;
@@ -96,9 +162,10 @@ namespace PortMobile
 				{
 					File.AppendAllLines(list, added);
 				}
-				if (pages > 0)
+				if (pages > 0 || compared > 0)
 				{
-					Console.WriteLine("[mobile] atlas check: " + pages + " pages checked (" + skipped + " known whole), " + repaired + " levels made again, " + stopwatch.ElapsedMilliseconds + " ms");
+					Console.WriteLine("[mobile] atlas check (" + why + "): " + pages + " pages checked (" + skipped + " known whole), " + repaired + " levels made again"
+						+ (Verify ? ", " + compared + " compared with their cache files, " + reuploaded + " of them put up again" : "") + ", " + stopwatch.ElapsedMilliseconds + " ms");
 				}
 			}
 			catch (Exception e)
@@ -113,6 +180,7 @@ namespace PortMobile
 		/// </summary>
 		private static void BreakForTest(List<StaticTextureAtlas> atlases, string name)
 		{
+			bool cutLevel0 = Settings.Get("atlasCheckTestCut", 0) == 1;
 			foreach (StaticTextureAtlas atlas in atlases)
 			{
 				UnityEngine.Texture2D page = atlas.ColorTexture;
@@ -130,21 +198,13 @@ namespace PortMobile
 					byte[] level = levels[i].AsSpan(0, ((w + 3) / 4) * ((h + 3) / 4) * 16).ToArray();
 					if (i == 1)
 					{
-						// BC7 all zero is a block of mode "none": transparent black. ASTC needs a block of its own: the
-						// void-extent block of transparent black (0xFC 0xFD then all ones, colour zero).
-						Array.Clear(level, 0, level.Length);
-						if (gpu.Format != VkFormat.Bc7UNormBlock)
-						{
-							for (int b = 0; b < level.Length; b += 16)
-							{
-								level[b] = 0xFC;
-								level[b + 1] = 0xFD;
-								for (int k = 2; k < 8; k++)
-								{
-									level[b + k] = 0xFF;
-								}
-							}
-						}
+						Blank(level, 0, level.Length, gpu.Format != VkFormat.Bc7UNormBlock);
+					}
+					else if (i == 0 && cutLevel0)
+					{
+						// The Adreno 725's Plant page: level 0 cut off below a line.
+						int start = ((h + 3) / 4 / 2) * ((w + 3) / 4) * 16;
+						Blank(level, start, level.Length - start, gpu.Format != VkFormat.Bc7UNormBlock);
 					}
 					uploads[i] = new TextureLevelUpload(i, w, h, 1, 0, level, level.Length);
 				}
@@ -152,10 +212,114 @@ namespace PortMobile
 				if (image != null)
 				{
 					page.CoreTexture.AdoptEncodedImage(image, LoadedTextureFormat.Bc7, mipCount);
-					Console.WriteLine("[mobile] atlas check: test: level 1 of " + page.name + " emptied");
+					Console.WriteLine("[mobile] atlas check: test: level 1 of " + page.name + " emptied" + (cutLevel0 ? ", level 0 cut off below its middle" : ""));
 				}
 				return;
 			}
+		}
+
+		/// <summary>Blocks of transparent black: BC7 all zero is a block of mode "none"; ASTC needs the void-extent block (0xFC 0xFD, then all ones, colour zero).</summary>
+		private static void Blank(byte[] level, int start, int count, bool astc)
+		{
+			Array.Clear(level, start, count);
+			if (astc)
+			{
+				for (int b = start; b < start + count; b += 16)
+				{
+					level[b] = 0xFC;
+					level[b + 1] = 0xFD;
+					for (int k = 2; k < 8; k++)
+					{
+						level[b + k] = 0xFF;
+					}
+				}
+			}
+		}
+
+		/// <summary>
+		/// A BC7 page against its file in the engine's cache: -1 when there is no file to compare with, 1 when the GPU's copy
+		/// differed and the page was put up again from the file, 0 when they were the same.
+		/// </summary>
+		private static int Compare(UnityEngine.Texture2D page, string key)
+		{
+			Waylith.Rendering.Texture2D core = page.CoreTexture;
+			GpuTextureAllocation gpu = core.GpuResource;
+			if (gpu.Format != VkFormat.Bc7UNormBlock && gpu.Format != VkFormat.Bc7SRGBBlock)
+			{
+				return -1;
+			}
+			int width = page.width, height = page.height, mipCount = gpu.MipCount;
+			if (!GpuTextureService.TryLoadKeyedTextureCache(key, out LoadedTextureData file) || file.Format != LoadedTextureFormat.Bc7 || file.Levels == null
+				|| file.Width != width || file.Height != height || file.MipCount != mipCount || file.Levels.Length < mipCount)
+			{
+				return -1;
+			}
+			byte[][] levels = GpuTextureService.ReadbackTexture2DLevels(gpu, width, height, mipCount, 1, readback);
+			if (levels == null)
+			{
+				return -1;
+			}
+			readback = levels;
+			string differ = Differences(levels, file.Levels, width, height, mipCount);
+			if (differ == null)
+			{
+				return 0;
+			}
+			var uploads = new TextureLevelUpload[mipCount];
+			for (int i = 0; i < mipCount; i++)
+			{
+				uploads[i] = new TextureLevelUpload(i, Math.Max(1, width >> i), Math.Max(1, height >> i), 1, 0, file.Levels[i], BlockBytes(width, height, i));
+			}
+			GpuTextureAllocation image = GpuTextureService.CreateTexture2D(page.name ?? "TextureAtlas", width, height, mipCount, gpu.Format, uploads, GpuMemoryCategory.Atlas);
+			if (image == null)
+			{
+				Console.WriteLine("[mobile] atlas check: " + page.name + " differed from its cache file (" + differ + "); could not be put up again");
+				return 0;
+			}
+			core.AdoptEncodedImage(image, LoadedTextureFormat.Bc7, mipCount);
+			byte[][] now = GpuTextureService.ReadbackTexture2DLevels(image, width, height, mipCount, 1, readback);
+			if (now != null)
+			{
+				readback = now;
+			}
+			Console.WriteLine("[mobile] atlas check: " + page.name + " (" + width + "x" + height + ") differed from its cache file (" + differ + "); put up again from the file, the GPU has now: "
+				+ (now == null ? "(no readback)" : Differences(now, file.Levels, width, height, mipCount) ?? "the same as the file"));
+			return 1;
+		}
+
+		private static int BlockBytes(int width, int height, int level)
+		{
+			return ((Math.Max(1, width >> level) + 3) / 4) * ((Math.Max(1, height >> level) + 3) / 4) * 16;
+		}
+
+		/// <summary>Null when every level is the same, else the share of blocks that differ in each level that differs.</summary>
+		private static string Differences(byte[][] gpu, byte[][] file, int width, int height, int mipCount)
+		{
+			System.Text.StringBuilder text = null;
+			for (int level = 0; level < mipCount; level++)
+			{
+				int length = BlockBytes(width, height, level);
+				if (gpu[level] == null || file[level] == null || gpu[level].Length < length || file[level].Length < length)
+				{
+					return "level " + level + " not all there";
+				}
+				ReadOnlySpan<byte> a = gpu[level].AsSpan(0, length), b = file[level].AsSpan(0, length);
+				if (a.SequenceEqual(b))
+				{
+					continue;
+				}
+				int blocks = length / 16, different = 0;
+				for (int i = 0; i < blocks; i++)
+				{
+					if (!a.Slice(i * 16, 16).SequenceEqual(b.Slice(i * 16, 16)))
+					{
+						different++;
+					}
+				}
+				text = text ?? new System.Text.StringBuilder();
+				text.Append((text.Length > 0 ? ", " : "") + "level " + level + ": " + (different * 100.0 / blocks).ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + "% of blocks");
+			}
+			return text?.ToString();
 		}
 
 		private static string Hash(string text)
