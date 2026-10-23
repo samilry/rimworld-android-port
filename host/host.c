@@ -538,6 +538,16 @@ static void* run_runtime(void* arg)
     // Only the environment can set it. <game>/runtime.env
     // ("NAME=value" per line) comes after this and may say otherwise, or set anything else the runtime reads there.
     setenv("DOTNET_GCgen0size", "0x2000000", 1);
+    // The tiered compiler's profile-guided optimisation (on by default since .NET 8; the PC game does not change it):
+    // off. With it a hot method is compiled three times (quick, instrumented, optimised) and the optimised code copies
+    // more methods into its callers, guided by the profile. Measured 2026-10-23 on the OnePlus, 137 mods, a 275 map
+    // loaded and set to triple speed at once: the frame rate stayed below 55 for 10-12 s after the load (5-18 fps at
+    // first) with it, 4-6 s (35-39 fps at first) without; the main menu came after 58 s against 49-50 s; patched
+    // methods that had already been copied into compiled code before their patch went in (hooks/InlineWatch.cs, at the
+    // main menu): 36-37 places with it, 7 without. Its price: once warm, the main thread needs about 3 % more time per
+    // frame (76 % against 73-74 % at 60 fps). Removing the 100 ms call counting delay instead (TC_CallCountingDelayMs=0)
+    // shortened the dip as much but let the optimised code in during the mods' patching: 89 such places.
+    setenv("DOTNET_TieredPGO", "0", 1);
     {
         const char* lines[32];
         static char storage[4096];

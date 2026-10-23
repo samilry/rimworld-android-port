@@ -112,6 +112,7 @@ namespace PortMobile
 				Temporaries.Test();
 				MemTrim.AtMainMenu();
 				PortHooks.JitProfile.AtMainMenu();
+				PortHooks.InlineWatch.Report("main menu", Harmony.GetAllPatchedMethods());
 			}
 			frames++;
 			MemTrim.OnFrame();

@@ -57,6 +57,9 @@ namespace PortMobile
 		private static long mainCpuAtStart, renderCpuAtStart, processCpuAtStart;
 		private static int gen2AtStart;
 		private static TimeSpan pauseAtStart;
+		// The compiler since the last snap: methods, its time on all threads and on the main thread.
+		private static long jitMethodsAtStart;
+		private static TimeSpan jitAtStart, jitMainAtStart;
 		private static int errors, warnings, slowFrames;
 		private static double lastSlowAt = -100;
 		private static int slowUnsaid;
@@ -374,6 +377,9 @@ namespace PortMobile
 			processCpuAtStart = ProcessCpu();
 			gen2AtStart = GC.CollectionCount(2);
 			pauseAtStart = GC.GetTotalPauseDuration();
+			jitMethodsAtStart = System.Runtime.JitInfo.GetCompiledMethodCount();
+			jitAtStart = System.Runtime.JitInfo.GetCompilationTime();
+			jitMainAtStart = System.Runtime.JitInfo.GetCompilationTime(true);
 		}
 
 		private static string Snap(double now)
@@ -405,6 +411,8 @@ namespace PortMobile
 				GCMemoryInfo info = GC.GetGCMemoryInfo();
 				return string.Format(CultureInfo.InvariantCulture, "heap {0}/{1} MB, gen2 {2}, pauses {3:F0} ms", info.HeapSizeBytes >> 20, info.TotalCommittedBytes >> 20, GC.CollectionCount(2) - gen2AtStart, (GC.GetTotalPauseDuration() - pauseAtStart).TotalMilliseconds);
 			});
+			Part(line, () => string.Format(CultureInfo.InvariantCulture, "jit {0} methods, {1:F0} ms ({2:F0} on the main thread)", System.Runtime.JitInfo.GetCompiledMethodCount() - jitMethodsAtStart,
+				(System.Runtime.JitInfo.GetCompilationTime() - jitAtStart).TotalMilliseconds, (System.Runtime.JitInfo.GetCompilationTime(true) - jitMainAtStart).TotalMilliseconds));
 			Part(line, () => ProcessMemory());
 			Part(line, () => GraphicsMemory());
 			Part(line, () => Temperatures());
