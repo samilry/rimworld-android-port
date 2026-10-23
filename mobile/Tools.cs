@@ -105,6 +105,7 @@ namespace PortMobile
 			Placement.Start(harmony);
 			WorldConfirm.Start(harmony);
 			DragConfirm.Start(harmony);
+			LandingConfirm.Start(harmony);
 		}
 
 		/// <summary>Every frame (from Touch).</summary>
@@ -174,6 +175,12 @@ namespace PortMobile
 				}
 				else if (!deferredCancelled && current.type == EventType.MouseUp)
 				{
+					if (!deferredIsPlacing && LandingConfirm.Mark())
+					{
+						// A landing spot: marked here, chosen by the confirm button.
+						current.Use();
+						return;
+					}
 					// The choice is made now, where the finger lifted: the tool sees the press it was kept from.
 					current.type = EventType.MouseDown;
 					converted = true;
@@ -329,6 +336,207 @@ namespace PortMobile
 	/// The outline is wherever the game thinks the mouse is. While a place is chosen, the game is told that the
 	/// mouse is over that map cell, whatever the fingers do meanwhile (press buttons, move the camera).
 	/// </summary>
+	/// <summary>
+	/// Picking a spot on the map for something to land (a shuttle's landing spot, drop pods' destination, any targeting
+	/// that draws a ghost of what will come down) in two steps, like placing a building (the user, 2026-10-23: "穿梭机无法
+	/// 在降落的时候旋转，没有旋转按钮", "降落也没有确定键"; a tap landed the shuttle at once). A tap marks the cell: the
+	/// targeting's ghost stays there whatever the finger does next, a tap elsewhere moves it. "Confirm" lands there (the
+	/// game's own checks, e.g. "blocked by a tree", still say no), "cancel" ends the targeting. A targeting that turns its
+	/// ghost with the rotate keys (MapParent's shuttle landing reads Q/E in its GUI action) gets the game's rotate buttons,
+	/// which press those keys. With a mouse (no touch) nothing is marked: the game's own single click.
+	/// </summary>
+	internal static class LandingConfirm
+	{
+		private static readonly AccessTools.FieldRef<Targeter, Action<LocalTargetInfo>> Action = AccessTools.FieldRefAccess<Targeter, Action<LocalTargetInfo>>("action");
+		private static readonly AccessTools.FieldRef<Targeter, Action<LocalTargetInfo>> Highlight = AccessTools.FieldRefAccess<Targeter, Action<LocalTargetInfo>>("highlightAction");
+		private static readonly AccessTools.FieldRef<Targeter, Action<LocalTargetInfo>> OnGui = AccessTools.FieldRefAccess<Targeter, Action<LocalTargetInfo>>("onGuiAction");
+		private static readonly AccessTools.FieldRef<Targeter, Func<LocalTargetInfo, bool>> Validator = AccessTools.FieldRefAccess<Targeter, Func<LocalTargetInfo, bool>>("targetValidator");
+		private static readonly AccessTools.FieldRef<Targeter, TargetingParameters> Params = AccessTools.FieldRefAccess<Targeter, TargetingParameters>("targetParams");
+		private static readonly AccessTools.FieldRef<Targeter, bool> PlaySound = AccessTools.FieldRefAccess<Targeter, bool>("playSoundOnAction");
+		private static readonly AccessTools.FieldRef<Targeter, bool> NeedsStop = AccessTools.FieldRefAccess<Targeter, bool>("needsStopTargetingCall");
+		private static LocalTargetInfo marked = LocalTargetInfo.Invalid;
+		private static Map markedMap;
+		// The targeting the mark belongs to (a new one starts unmarked).
+		private static Action<LocalTargetInfo> markedFor, toldFor;
+		private static readonly Dictionary<System.Reflection.MethodInfo, bool> rotating = new Dictionary<System.Reflection.MethodInfo, bool>();
+
+		public static void Start(Harmony harmony)
+		{
+			harmony.Patch(AccessTools.Method(typeof(Targeter), "CurrentTargetUnderMouse"), prefix: new HarmonyMethod(typeof(LandingConfirm), nameof(MarkedTarget)));
+			harmony.Patch(AccessTools.Method(typeof(Targeter), nameof(Targeter.TargeterOnGUI)), postfix: new HarmonyMethod(typeof(LandingConfirm), nameof(Controls)));
+		}
+
+		/// <summary>The targeting picks a landing spot on the map.</summary>
+		private static bool Applies(Targeter targeter)
+		{
+			if (!Settings.PlaceConfirm || Current.ProgramState != ProgramState.Playing || Find.CurrentMap == null || !WorldRendererUtility.DrawingMap
+				|| targeter == null || targeter.targetingSource != null || Action(targeter) == null || Find.DesignatorManager.SelectedDesignator != null)
+			{
+				return false;
+			}
+			if (Highlight(targeter) != null)
+			{
+				return true;
+			}
+			TargetingParameters p = Params(targeter);
+			return p != null && p.canTargetLocations && !p.canTargetPawns && !p.canTargetBuildings && !p.canTargetItems;
+		}
+
+		private static bool IsMarked(Targeter targeter)
+		{
+			return marked.IsValid && markedFor != null && markedFor == Action(targeter) && markedMap == Find.CurrentMap;
+		}
+
+		/// <summary>The finger lifted on the map while targeting (MapTools): true when it only marked a landing spot.</summary>
+		public static bool Mark()
+		{
+			Targeter targeter = Find.Targeter;
+			if (!Applies(targeter))
+			{
+				return false;
+			}
+			IntVec3 cell = UI.MouseCell();
+			if (!cell.InBounds(Find.CurrentMap))
+			{
+				return true;
+			}
+			marked = new LocalTargetInfo(cell);
+			markedMap = Find.CurrentMap;
+			markedFor = Action(targeter);
+			SoundDefOf.Tick_Low.PlayOneShotOnCamera();
+			if (toldFor != markedFor)
+			{
+				toldFor = markedFor;
+				Messages.Message(Texts.Chinese ? "点左下角的“确定”在这里降落（点别处换位置；能旋转的用旋转按钮）" : "Tap Confirm (bottom left) to land here (tap elsewhere to move it; rotate with the arrows where it turns)", MessageTypeDefOf.SilentInput, false);
+			}
+			return true;
+		}
+
+		/// <summary>Prefix of Targeter.CurrentTargetUnderMouse: the marked spot, wherever the finger went after marking it.</summary>
+		public static bool MarkedTarget(Targeter __instance, ref LocalTargetInfo __result)
+		{
+			if (!IsMarked(__instance))
+			{
+				return true;
+			}
+			__result = marked;
+			return false;
+		}
+
+		/// <summary>Postfix of Targeter.TargeterOnGUI: the buttons, above the bottom bar (above the inspect pane when it is open).</summary>
+		public static void Controls(Targeter __instance)
+		{
+			if (!Applies(__instance))
+			{
+				return;
+			}
+			float bottomY = Find.MainTabsRoot.OpenTab == MainButtonDefOf.Inspect ? MainButtonDefOf.Inspect.TabWindow.windowRect.y - 8f : UI.screenHeight - 35 - 10;
+			float leftX = 0f;
+			if (Rotates(OnGui(__instance)))
+			{
+				DesignatorUtility.GUIDoRotationControls(0f, bottomY, Rot4.North, delegate(Rot4 rot)
+				{
+					// The targeting turns its own ghost when it sees the key: the button presses it.
+					KeyWheel.TapKey(rot == Rot4.East ? KeyBindingDefOf.Designator_RotateRight : KeyBindingDefOf.Designator_RotateLeft);
+				});
+				leftX = 200f;
+			}
+			var window = new Rect(leftX, bottomY - 90f, 200f, 90f);
+			Find.WindowStack.ImmediateWindow(73195734, window, WindowLayer.GameUI, delegate
+			{
+				Text.Font = GameFont.Small;
+				var inner = new Rect(0f, 0f, window.width, window.height).ContractedBy(10f);
+				float width = (inner.width - 10f) / 2f;
+				if (Widgets.ButtonText(new Rect(inner.x, inner.y, width, inner.height), "Confirm".Translate()))
+				{
+					Confirm();
+				}
+				if (Widgets.ButtonText(new Rect(inner.xMax - width, inner.y, width, inner.height), "CancelButton".Translate()))
+				{
+					SoundDefOf.CancelMode.PlayOneShotOnCamera();
+					Find.Targeter.StopTargeting();
+				}
+			});
+		}
+
+		/// <summary>What the game does for a click (Targeter.ProcessInputEvents, a targeting without a verb), at the marked spot.</summary>
+		private static void Confirm()
+		{
+			Targeter targeter = Find.Targeter;
+			if (!Applies(targeter) || !IsMarked(targeter))
+			{
+				Messages.Message(Texts.Chinese ? "先在地图上点一下降落的位置。" : "Tap the map where it should land first.", MessageTypeDefOf.RejectInput, false);
+				return;
+			}
+			LocalTargetInfo target = marked;
+			Action<LocalTargetInfo> action = Action(targeter);
+			Func<LocalTargetInfo, bool> validator = Validator(targeter);
+			NeedsStop(targeter) = true;
+			if (validator != null)
+			{
+				if (validator(target))
+				{
+					action(target);
+				}
+				else
+				{
+					NeedsStop(targeter) = false;
+				}
+			}
+			else if (target.IsValid)
+			{
+				action(target);
+			}
+			if (PlaySound(targeter))
+			{
+				SoundDefOf.Tick_High.PlayOneShotOnCamera();
+			}
+			if (NeedsStop(targeter))
+			{
+				targeter.StopTargeting();
+			}
+		}
+
+		/// <summary>The targeting's GUI action reads the rotate keys (KeyBindingDefOf.Designator_RotateLeft/Right in its IL).</summary>
+		private static bool Rotates(Action<LocalTargetInfo> gui)
+		{
+			if (gui == null)
+			{
+				return false;
+			}
+			System.Reflection.MethodInfo method = gui.Method;
+			if (!rotating.TryGetValue(method, out bool turns))
+			{
+				try
+				{
+					System.Reflection.FieldInfo left = AccessTools.Field(typeof(KeyBindingDefOf), nameof(KeyBindingDefOf.Designator_RotateLeft));
+					System.Reflection.FieldInfo right = AccessTools.Field(typeof(KeyBindingDefOf), nameof(KeyBindingDefOf.Designator_RotateRight));
+					byte[] il = method.GetMethodBody()?.GetILAsByteArray();
+					for (int i = 0; il != null && i + 4 < il.Length && !turns; i++)
+					{
+						if (il[i] != 0x7E)
+						{
+							continue;
+						}
+						try
+						{
+							System.Reflection.FieldInfo field = method.Module.ResolveField(BitConverter.ToInt32(il, i + 1));
+							turns = field == left || field == right;
+						}
+						catch (Exception)
+						{
+						}
+					}
+				}
+				catch (Exception)
+				{
+				}
+				rotating[method] = turns;
+			}
+			return turns;
+		}
+	}
+
 	internal static class Placement
 	{
 		private static Designator_Place tool;

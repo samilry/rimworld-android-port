@@ -426,6 +426,19 @@ namespace PortMobile
 			traced = false;
 		}
 
+		/// <summary>A binding's key pressed and let go at once, for a button that stands in for it (LandingConfirm's rotate buttons).</summary>
+		internal static void TapKey(KeyBindingDef def)
+		{
+			int glfw = GlfwKey(BoundKey(def));
+			if (glfw < 0)
+			{
+				return;
+			}
+			int mods = LatchedKey.Mods;
+			glfwAndroidInjectKey(glfw, Press, mods);
+			glfwAndroidInjectKey(glfw, Release, mods);
+		}
+
 		/// <summary>The keys of the last key up again, the other way round.</summary>
 		private static void ReleaseKey()
 		{
