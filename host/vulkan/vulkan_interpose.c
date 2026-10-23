@@ -71,6 +71,8 @@ static PFN_vkCmdSetScissor real_CmdSetScissor;
 static PFN_vkCmdBindPipeline real_CmdBindPipeline;
 static PFN_vkCmdBlitImage real_CmdBlitImage;
 static PFN_vkCmdCopyImage real_CmdCopyImage;
+// A command for an image without a handle is left out (see "no image, no command" below).
+static void note_null_image(const char* what);
 static PFN_vkCreateGraphicsPipelines real_CreateGraphicsPipelines;
 static PFN_vkCreateComputePipelines real_CreateComputePipelines;
 static PFN_vkGetPhysicalDeviceMemoryProperties real_GetMemoryProperties;
@@ -800,8 +802,8 @@ static VKAPI_ATTR void VKAPI_CALL hook_CmdDrawIndirect(VkCommandBuffer cb, VkBuf
 static VKAPI_ATTR void VKAPI_CALL hook_CmdDrawIndexedIndirect(VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, uint32_t c, uint32_t s) { f_drawsIndirect++; real_CmdDrawIndexedIndirect(cb, b, o, c, s); }
 static VKAPI_ATTR void VKAPI_CALL hook_CmdDispatch(VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t z) { f_dispatches++; real_CmdDispatch(cb, x, y, z); }
 static VKAPI_ATTR void VKAPI_CALL hook_CmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline p) { f_pipelines++; real_CmdBindPipeline(cb, bp, p); }
-static VKAPI_ATTR void VKAPI_CALL hook_CmdBlitImage(VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage d, VkImageLayout dl, uint32_t n, const VkImageBlit* r, VkFilter f) { f_blits++; real_CmdBlitImage(cb, s, sl, d, dl, n, r, f); }
-static VKAPI_ATTR void VKAPI_CALL hook_CmdCopyImage(VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage d, VkImageLayout dl, uint32_t n, const VkImageCopy* r) { f_copies++; real_CmdCopyImage(cb, s, sl, d, dl, n, r); }
+static VKAPI_ATTR void VKAPI_CALL hook_CmdBlitImage(VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage d, VkImageLayout dl, uint32_t n, const VkImageBlit* r, VkFilter f) { f_blits++; if (!s || !d) { note_null_image("vkCmdBlitImage"); return; } real_CmdBlitImage(cb, s, sl, d, dl, n, r, f); }
+static VKAPI_ATTR void VKAPI_CALL hook_CmdCopyImage(VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage d, VkImageLayout dl, uint32_t n, const VkImageCopy* r) { f_copies++; if (!s || !d) { note_null_image("vkCmdCopyImage"); return; } real_CmdCopyImage(cb, s, sl, d, dl, n, r); }
 
 static VKAPI_ATTR void VKAPI_CALL hook_CmdSetViewport(VkCommandBuffer cb, uint32_t first, uint32_t count, const VkViewport* v)
 {
@@ -1135,6 +1137,78 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice pd, con
 #define hook_QueuePresentKHR hook_QueuePresent
 
 // Device-level functions we stand in for; looked up through either vkGetDeviceProcAddr or vkGetInstanceProcAddr.
+// ---- no image, no command ----
+// A copy, blit or layout change of an image whose handle is VK_NULL_HANDLE crashes Adreno's driver (a Xiaomi with the
+// Snapdragon 8 Elite, 2026-10-23: SIGSEGV at 0x140 inside vkCmdBlitImage, three hours into a game, a second after a
+// caravan's new map was made): a texture was let go (evicted, released) while a command for it was still to be
+// recorded. Such a command is left out here, and the first ones are noted (stderr: the crash report has it). The copy
+// that does not happen costs at worst a texture that looks wrong for a while.
+static int g_nullImageCommands;
+
+static void note_null_image(const char* what)
+{
+    if (g_nullImageCommands++ < 20) LOGK("vulkan: %s with no image left out (%d so far)", what, g_nullImageCommands);
+}
+
+static PFN_vkCmdBlitImage2 real_CmdBlitImage2;
+static VKAPI_ATTR void VKAPI_CALL hook_CmdBlitImage2(VkCommandBuffer cb, const VkBlitImageInfo2* info)
+{
+    if (!info || info->srcImage == VK_NULL_HANDLE || info->dstImage == VK_NULL_HANDLE) { note_null_image("vkCmdBlitImage2"); return; }
+    real_CmdBlitImage2(cb, info);
+}
+
+static PFN_vkCmdCopyBufferToImage real_CmdCopyBufferToImage;
+static VKAPI_ATTR void VKAPI_CALL hook_CmdCopyBufferToImage(VkCommandBuffer cb, VkBuffer buffer, VkImage dst, VkImageLayout layout, uint32_t count, const VkBufferImageCopy* regions)
+{
+    if (dst == VK_NULL_HANDLE) { note_null_image("vkCmdCopyBufferToImage"); return; }
+    real_CmdCopyBufferToImage(cb, buffer, dst, layout, count, regions);
+}
+
+static PFN_vkCmdCopyImageToBuffer real_CmdCopyImageToBuffer;
+static VKAPI_ATTR void VKAPI_CALL hook_CmdCopyImageToBuffer(VkCommandBuffer cb, VkImage src, VkImageLayout layout, VkBuffer buffer, uint32_t count, const VkBufferImageCopy* regions)
+{
+    if (src == VK_NULL_HANDLE) { note_null_image("vkCmdCopyImageToBuffer"); return; }
+    real_CmdCopyImageToBuffer(cb, src, layout, buffer, count, regions);
+}
+
+// Barriers: only the image barriers without an image go (the rest of the call stays).
+static PFN_vkCmdPipelineBarrier real_CmdPipelineBarrier;
+static VKAPI_ATTR void VKAPI_CALL hook_CmdPipelineBarrier(VkCommandBuffer cb, VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage, VkDependencyFlags flags, uint32_t memoryCount, const VkMemoryBarrier* memory, uint32_t bufferCount, const VkBufferMemoryBarrier* buffers, uint32_t imageCount, const VkImageMemoryBarrier* images)
+{
+    uint32_t i = 0;
+    while (i < imageCount && images[i].image != VK_NULL_HANDLE) i++;
+    if (i == imageCount)
+    {
+        real_CmdPipelineBarrier(cb, srcStage, dstStage, flags, memoryCount, memory, bufferCount, buffers, imageCount, images);
+        return;
+    }
+    VkImageMemoryBarrier kept[64];
+    uint32_t n = 0;
+    for (uint32_t j = 0; j < imageCount && n < 64; j++) if (images[j].image != VK_NULL_HANDLE) kept[n++] = images[j];
+    note_null_image("vkCmdPipelineBarrier");
+    if (memoryCount || bufferCount || n) real_CmdPipelineBarrier(cb, srcStage, dstStage, flags, memoryCount, memory, bufferCount, buffers, n, kept);
+}
+
+static PFN_vkCmdPipelineBarrier2 real_CmdPipelineBarrier2;
+static VKAPI_ATTR void VKAPI_CALL hook_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* info)
+{
+    uint32_t i = 0;
+    while (info && i < info->imageMemoryBarrierCount && info->pImageMemoryBarriers[i].image != VK_NULL_HANDLE) i++;
+    if (!info || i == info->imageMemoryBarrierCount)
+    {
+        real_CmdPipelineBarrier2(cb, info);
+        return;
+    }
+    VkImageMemoryBarrier2 kept[64];
+    uint32_t n = 0;
+    for (uint32_t j = 0; j < info->imageMemoryBarrierCount && n < 64; j++) if (info->pImageMemoryBarriers[j].image != VK_NULL_HANDLE) kept[n++] = info->pImageMemoryBarriers[j];
+    note_null_image("vkCmdPipelineBarrier2");
+    VkDependencyInfo copy = *info;
+    copy.imageMemoryBarrierCount = n;
+    copy.pImageMemoryBarriers = kept;
+    if (copy.memoryBarrierCount || copy.bufferMemoryBarrierCount || n) real_CmdPipelineBarrier2(cb, &copy);
+}
+
 static PFN_vkVoidFunction device_hook(const char* name, PFN_vkVoidFunction real)
 {
 #define HOOK(n) if (strcmp(name, "vk" #n) == 0) { real_##n = (PFN_vk##n)real; return (PFN_vkVoidFunction)hook_##n; }
@@ -1167,11 +1241,16 @@ static PFN_vkVoidFunction device_hook(const char* name, PFN_vkVoidFunction real)
     HOOK(MapMemory)
     HOOK(UnmapMemory)
     HOOK(QueueSubmit)
+    HOOK(CmdCopyBufferToImage)
+    HOOK(CmdCopyImageToBuffer)
     HOOK(QueueSubmit2)
     HOOK(BeginCommandBuffer)
     HOOK(WaitForFences)
 #undef HOOK
-    if (strcmp(name, "vkCmdPipelineBarrier") == 0) g_cmdPipelineBarrier = (PFN_vkCmdPipelineBarrier)real;
+    // The real barrier stays at hand for the Mali barrier at the start of a command buffer (hook_BeginCommandBuffer).
+    if (strcmp(name, "vkCmdPipelineBarrier") == 0) { g_cmdPipelineBarrier = real_CmdPipelineBarrier = (PFN_vkCmdPipelineBarrier)real; return (PFN_vkVoidFunction)hook_CmdPipelineBarrier; }
+    if (strcmp(name, "vkCmdPipelineBarrier2") == 0 || strcmp(name, "vkCmdPipelineBarrier2KHR") == 0) { real_CmdPipelineBarrier2 = (PFN_vkCmdPipelineBarrier2)real; return (PFN_vkVoidFunction)hook_CmdPipelineBarrier2; }
+    if (strcmp(name, "vkCmdBlitImage2") == 0 || strcmp(name, "vkCmdBlitImage2KHR") == 0) { real_CmdBlitImage2 = (PFN_vkCmdBlitImage2)real; return (PFN_vkVoidFunction)hook_CmdBlitImage2; }
     if (strcmp(name, "vkCmdBeginRenderPass2KHR") == 0) { real_CmdBeginRenderPass2 = (PFN_vkCmdBeginRenderPass2)real; return (PFN_vkVoidFunction)hook_CmdBeginRenderPass2; }
     if (strcmp(name, "vkCmdBeginRenderingKHR") == 0) { real_CmdBeginRendering = (PFN_vkCmdBeginRendering)real; return (PFN_vkVoidFunction)hook_CmdBeginRendering; }
     if (strcmp(name, "vkQueueSubmit2KHR") == 0) { real_QueueSubmit2 = (PFN_vkQueueSubmit2)real; return (PFN_vkVoidFunction)hook_QueueSubmit2; }
