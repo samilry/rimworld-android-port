@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Reflection;
@@ -43,7 +44,17 @@ namespace PortMobile
 		private static string lastAsked;
 		private static int nextPoll;
 		private static float scaleAtPoll;
-		private static FieldInfo readoutHeight;
+		private static AccessTools.FieldRef<ResourceReadout, float> readoutHeight;
+		private static AccessTools.FieldRef<WindowStack, List<Window>> stackWindows;
+		// Whether a hole is at the left or the right edge (the readout and the column are looked at only then), and the
+		// column's top for this frame (the alerts' labels are measured for it: once a frame, not once a draw call).
+		private static bool holeLeft, holeRight;
+		private static int columnFrame = -1;
+		private static float columnTop;
+		// mobile.txt cutoutTiming=1: what this costs, logged every 1200 frames.
+		private static readonly bool timing = Settings.Get("cutoutTiming", 0) == 1;
+		private static long windowTicks, partTicks, askTicks, askMaxTicks;
+		private static int asks, timedFrom = -1;
 		// Whether each patched drawing call (in the order they run) opened a group; the finalizer closes it.
 		private static readonly Stack<bool> groups = new Stack<bool>();
 		private static bool movedSaid;
@@ -59,7 +70,8 @@ namespace PortMobile
 				harmony.Patch(AccessTools.Method(typeof(GlobalControls), nameof(GlobalControls.GlobalControlsOnGUI)), prefix: right, finalizer: end);
 				harmony.Patch(AccessTools.Method(typeof(RimWorld.Planet.WorldGlobalControls), nameof(RimWorld.Planet.WorldGlobalControls.WorldGlobalControlsOnGUI)), prefix: right, finalizer: end);
 				harmony.Patch(AccessTools.Method(typeof(AlertsReadout), nameof(AlertsReadout.AlertsReadoutOnGUI)), prefix: right, finalizer: end);
-				readoutHeight = AccessTools.Field(typeof(ResourceReadout), "lastDrawnHeight");
+				readoutHeight = AccessTools.FieldRefAccess<ResourceReadout, float>("lastDrawnHeight");
+				stackWindows = AccessTools.FieldRefAccess<WindowStack, List<Window>>("windows");
 				Console.WriteLine("[mobile] cutout: the interface keeps clear of the camera's hole" + (on ? "" : " (switched off in the options)"));
 			}
 			catch (Exception e)
@@ -81,7 +93,12 @@ namespace PortMobile
 			string raw;
 			try
 			{
+				long asked0 = Stopwatch.GetTimestamp();
 				int length = glfwAndroidCutout(buffer, buffer.Length);
+				long took = Stopwatch.GetTimestamp() - asked0;
+				asks++;
+				askTicks += took;
+				askMaxTicks = Math.Max(askMaxTicks, took);
 				raw = length > 0 ? Encoding.UTF8.GetString(buffer, 0, length) : "";
 			}
 			catch (Exception)
@@ -111,6 +128,8 @@ namespace PortMobile
 					holes.Add(new Rect(left / scale - Margin, top / scale - Margin, (rightEdge - left) / scale + 2f * Margin, (bottom - top) / scale + 2f * Margin));
 				}
 			}
+			holeLeft = holes.Any(h => h.center.x < UI.screenWidth * 0.3f);
+			holeRight = holes.Any(h => h.center.x > UI.screenWidth * 0.7f);
 			Console.WriteLine("[mobile] cutout: " + (holes.Count == 0 ? "no hole" : string.Join(", ", holes.Select(h => "(" + h.xMin.ToString("0") + "," + h.yMin.ToString("0") + ")-(" + h.xMax.ToString("0") + "," + h.yMax.ToString("0") + ")")) + " in interface units of " + UI.screenWidth + "x" + UI.screenHeight));
 		}
 
@@ -173,13 +192,12 @@ namespace PortMobile
 			{
 				return;
 			}
+			long start = timing ? Stopwatch.GetTimestamp() : 0;
 			Poll();
-			if (holes.Count == 0)
+			List<Window> windows = holes.Count > 0 && stackWindows != null ? stackWindows(__instance) : null;
+			for (int i = 0; windows != null && i < windows.Count; i++)
 			{
-				return;
-			}
-			foreach (Window window in __instance.Windows)
-			{
+				Window window = windows[i];
 				Rect rect = window.windowRect;
 				if (KeepClear(ref rect))
 				{
@@ -191,15 +209,21 @@ namespace PortMobile
 					}
 				}
 			}
+			if (timing)
+			{
+				windowTicks += Stopwatch.GetTimestamp() - start;
+				TimingReport();
+			}
 		}
 
 		/// <summary>Prefix of ResourceReadout.ResourceReadoutOnGUI: to the right of a hole at the left edge the list reaches.</summary>
 		public static void BeforeReadout(ResourceReadout __instance)
 		{
+			long start = timing ? Stopwatch.GetTimestamp() : 0;
 			float dx = 0f;
-			if (on && holes.Count > 0)
+			if (on && holeLeft)
 			{
-				float drawn = readoutHeight != null && readoutHeight.GetValue(__instance) is float h ? h : UI.screenHeight;
+				float drawn = readoutHeight != null ? readoutHeight(__instance) : UI.screenHeight;
 				Rect area = new Rect(0f, 0f, 130f, 7f + Mathf.Max(drawn, 30f));
 				foreach (Rect hole in holes)
 				{
@@ -210,6 +234,10 @@ namespace PortMobile
 				}
 			}
 			Push(dx);
+			if (timing)
+			{
+				partTicks += Stopwatch.GetTimestamp() - start;
+			}
 		}
 
 		/// <summary>
@@ -218,17 +246,23 @@ namespace PortMobile
 		/// </summary>
 		public static void BeforeRightColumn()
 		{
+			long start = timing ? Stopwatch.GetTimestamp() : 0;
 			float dx = 0f;
-			if (on && holes.Count > 0 && Current.ProgramState == ProgramState.Playing)
+			if (on && holeRight && Current.ProgramState == ProgramState.Playing)
 			{
-				float top = 0f;
-				try
+				if (columnFrame != Time.frameCount)
 				{
-					top = Find.LetterStack.LastTopY - Find.Alerts.AlertsHeight;
+					columnFrame = Time.frameCount;
+					columnTop = 0f;
+					try
+					{
+						columnTop = Find.LetterStack.LastTopY - Find.Alerts.AlertsHeight;
+					}
+					catch (Exception)
+					{
+					}
 				}
-				catch (Exception)
-				{
-				}
+				float top = columnTop;
 				Rect area = new Rect(UI.screenWidth - 200f, top, 200f, UI.screenHeight - top);
 				foreach (Rect hole in holes)
 				{
@@ -239,6 +273,31 @@ namespace PortMobile
 				}
 			}
 			Push(dx);
+			if (timing)
+			{
+				partTicks += Stopwatch.GetTimestamp() - start;
+			}
+		}
+
+		private static void TimingReport()
+		{
+			int frame = Time.frameCount;
+			if (timedFrom < 0)
+			{
+				timedFrom = frame;
+			}
+			int frames = frame - timedFrom;
+			if (frames < 1200)
+			{
+				return;
+			}
+			double us = 1e6 / Stopwatch.Frequency;
+			Console.WriteLine("[mobile] cutout timing over " + frames + " frames: windows " + (windowTicks * us / frames).ToString("0.0", CultureInfo.InvariantCulture) + " us a frame, readout and column "
+				+ (partTicks * us / frames).ToString("0.0", CultureInfo.InvariantCulture) + " us a frame; " + asks + " asks to the activity, " + (asks > 0 ? (askTicks * us / asks).ToString("0", CultureInfo.InvariantCulture) : "0") + " us each, longest "
+				+ (askMaxTicks * us).ToString("0", CultureInfo.InvariantCulture) + " us");
+			timedFrom = frame;
+			windowTicks = partTicks = askTicks = askMaxTicks = 0;
+			asks = 0;
 		}
 
 		private static void Push(float dx)
