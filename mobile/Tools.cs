@@ -78,8 +78,10 @@ namespace PortMobile
 			}
 		}
 
-		/// <summary>Buildings and drags are placed by a confirm button rather than by the finger lifting.</summary>
-		public static readonly bool PlaceConfirm = Get("placeConfirm", true);
+		/// <summary>Buildings and drags are placed by a confirm button rather than by the finger lifting (not with a mouse: InputMode).</summary>
+		public static bool PlaceConfirm => placeConfirm && !InputMode.Mouse;
+
+		private static readonly bool placeConfirm = Get("placeConfirm", true);
 	}
 
 	/// <summary>

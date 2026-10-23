@@ -56,13 +56,18 @@ namespace PortMobile
 
 		public static void AfterConstructed(Dialog_DefineBinding __instance)
 		{
+			// With a keyboard (InputMode) the game's own dialog: a key press is the answer.
+			if (InputMode.Keyboard)
+			{
+				return;
+			}
 			SizeOf(__instance) = new Vector2(900f, 470f);
 		}
 
 		/// <summary>Instead of the dialog's own contents (whose key handling is kept below).</summary>
 		public static bool BeforeContents(Dialog_DefineBinding __instance, Rect inRect)
 		{
-			if (__instance.GetType() != typeof(Dialog_DefineBinding))
+			if (__instance.GetType() != typeof(Dialog_DefineBinding) || SizeOf(__instance).x < 900f)
 			{
 				return true;
 			}

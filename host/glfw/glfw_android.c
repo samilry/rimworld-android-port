@@ -653,9 +653,8 @@ static int call_activity(const char* name, int value)
     return ok;
 }
 
-// The display cutout (the camera's hole), through the activity's cutoutRects(): "left,top,right,bottom;..." in window
-// pixels for the screen's present turn, "" without one. Copied into out; returns its length (mobile/Cutout.cs).
-API int glfwAndroidCutout(char* out, int size)
+// A method of the activity that takes nothing and returns a String: copied into out (empty when it fails); returns its length.
+static int call_activity_string(const char* name, char* out, int size)
 {
     if (!out || size <= 0) return 0;
     out[0] = 0;
@@ -670,7 +669,7 @@ API int glfwAndroidCutout(char* out, int size)
     }
     jobject activity = g_app->activity->clazz;
     jclass cls = (*env)->GetObjectClass(env, activity);
-    jmethodID method = (*env)->GetMethodID(env, cls, "cutoutRects", "()Ljava/lang/String;");
+    jmethodID method = (*env)->GetMethodID(env, cls, name, "()Ljava/lang/String;");
     if (method)
     {
         jstring text = (jstring)(*env)->CallObjectMethod(env, activity, method);
@@ -689,6 +688,27 @@ API int glfwAndroidCutout(char* out, int size)
     (*env)->DeleteLocalRef(env, cls);
     if (attached) (*vm)->DetachCurrentThread(vm);
     return (int)strlen(out);
+}
+
+// The display cutout (the camera's hole), through the activity's cutoutRects(): "left,top,right,bottom;..." in window
+// pixels for the screen's present turn, "" without one. Copied into out; returns its length (mobile/Cutout.cs).
+API int glfwAndroidCutout(char* out, int size)
+{
+    return call_activity_string("cutoutRects", out, size);
+}
+
+// The external mice and keyboards, through the activity's inputDevices(): "<bits>|<names>", bit 1 a mouse, bit 2 a
+// keyboard (mobile/InputMode.cs). Copied into out; returns its length.
+API int glfwAndroidInputDevices(char* out, int size)
+{
+    return call_activity_string("inputDevices", out, size);
+}
+
+// Whether the soft keyboard is forced up for a text field (1, the default) or left to the input method (0: a hardware
+// keyboard is plugged in), through the activity's softKeyboardForced(boolean).
+API void glfwAndroidKeyboardForced(int forced)
+{
+    if (call_activity("softKeyboardForced", forced)) LOGI("glfw: soft keyboard %s", forced ? "forced up for text fields" : "left to the input method");
 }
 
 // The soft keyboard, through the activity's showKeyboard(boolean): the NDK's ANativeActivity_showSoftInput does nothing

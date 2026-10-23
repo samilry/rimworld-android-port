@@ -25,6 +25,7 @@ namespace PortMobile
 	/// is always tapped with the left). While the ring is closed the button shows what is on. The last key opens the
 	/// setup: keys added from the full list (with Ctrl / Shift / Alt ticked: as combinations), taken out, moved; the
 	/// defaults back; the button back to its place. The button is moved by dragging it.
+	/// Left out while a hardware keyboard is in use (InputMode).
 	/// mobile.txt: keyWheel=0 leaves it out (Options → Interface has the switch); keyWheelKeys=defName,@Shift,@K:Ctrl+Z,...;
 	/// keyWheelAt=X,Y (the button's centre, interface units).
 	/// </summary>
@@ -118,7 +119,8 @@ namespace PortMobile
 		private static bool traced;
 		private static Texture2D disc;
 
-		public static bool Enabled => enabled;
+		/// <summary>Shown: switched on, and no hardware keyboard in use (InputMode), whose keys are all there.</summary>
+		public static bool Enabled => enabled && !InputMode.Keyboard;
 
 		public static void Start()
 		{
@@ -172,7 +174,7 @@ namespace PortMobile
 		/// <summary>Which mouse button a finger on the screen at this point (window pixels) is: the one switched on in the wheel, except on the wheel itself.</summary>
 		internal static int TapButton(Vector2 pixels)
 		{
-			if (mouseButton == MouseLeft || !enabled || Current.ProgramState != ProgramState.Playing || Time.frameCount - drawnFrame > 3)
+			if (mouseButton == MouseLeft || !Enabled || Current.ProgramState != ProgramState.Playing || Time.frameCount - drawnFrame > 3)
 			{
 				return MouseLeft;
 			}
@@ -454,9 +456,16 @@ namespace PortMobile
 		/// <summary>Once a frame: the finger that holds a key or drags the button followed; everything let go when no game is played.</summary>
 		public static void Update()
 		{
-			if (mouseButton != MouseLeft && (!enabled || Current.ProgramState != ProgramState.Playing))
+			if (mouseButton != MouseLeft && (!Enabled || Current.ProgramState != ProgramState.Playing))
 			{
 				mouseButton = MouseLeft;
+			}
+			if (!Enabled && (expanded || touching != NoTouch))
+			{
+				// Put away (a keyboard came): what a finger held on it goes up.
+				expanded = false;
+				touching = NoTouch;
+				ReleaseKey();
 			}
 			if (touching == NoTouch)
 			{
@@ -523,7 +532,7 @@ namespace PortMobile
 		/// <summary>From the end of the play screen's interface, every frame: the button's window, and the keys' while it is open.</summary>
 		public static void OnGui()
 		{
-			if (!enabled || Current.ProgramState != ProgramState.Playing || Current.Game == null || Find.UIRoot == null || LongEventHandler.ShouldWaitForEvent)
+			if (!Enabled || Current.ProgramState != ProgramState.Playing || Current.Game == null || Find.UIRoot == null || LongEventHandler.ShouldWaitForEvent)
 			{
 				return;
 			}
@@ -722,8 +731,8 @@ namespace PortMobile
 		{
 			bool check = enabled;
 			listing.CheckboxLabeled(Texts.Chinese ? "显示自定义按键盘" : "Show the key wheel", ref check, Texts.Chinese
-				? "游戏中屏幕边上的圆形“按键”按钮：点一下展开一圈按键，每个按键上写着它对应的键盘按键或组合键（按住就是按住那个键），再点一下收起；拖动可以移动位置。Ctrl、Shift、Alt 和鼠标左键、中键、右键是开关，点一下打开、再点一下关闭：开着 Ctrl 时，点屏幕和按别的键都带着 Ctrl；开着右键时，在屏幕上点一下就是鼠标右键点击。展开后最后一个按键“设置”可以从游戏快捷键和键盘全部按键里增删按键，勾选 Ctrl / Shift / Alt 可以添加组合键。"
-				: "The round \"Keys\" button at the edge of the screen in a game: a tap opens a ring of keys, each showing the keyboard key or combination it stands for (holding it holds the key); another tap closes it; drag it to move it. Ctrl, Shift, Alt and the left, middle and right mouse buttons are switches, on with a tap and off with another: with Ctrl on, taps on the screen and the other keys come with Ctrl; with the right button on, a tap on the screen is a right click. The last key, \"Setup\", adds and removes keys from the game's key bindings and the whole keyboard; with Ctrl / Shift / Alt ticked it adds combinations.", 30f, 0.6f);
+				? "游戏中屏幕边上的圆形“按键”按钮：点一下展开一圈按键，每个按键上写着它对应的键盘按键或组合键（按住就是按住那个键），再点一下收起；拖动可以移动位置。Ctrl、Shift、Alt 和鼠标左键、中键、右键是开关，点一下打开、再点一下关闭：开着 Ctrl 时，点屏幕和按别的键都带着 Ctrl；开着右键时，在屏幕上点一下就是鼠标右键点击。展开后最后一个按键“设置”可以从游戏快捷键和键盘全部按键里增删按键，勾选 Ctrl / Shift / Alt 可以添加组合键。接着实体键盘时不显示。"
+				: "The round \"Keys\" button at the edge of the screen in a game: a tap opens a ring of keys, each showing the keyboard key or combination it stands for (holding it holds the key); another tap closes it; drag it to move it. Ctrl, Shift, Alt and the left, middle and right mouse buttons are switches, on with a tap and off with another: with Ctrl on, taps on the screen and the other keys come with Ctrl; with the right button on, a tap on the screen is a right click. The last key, \"Setup\", adds and removes keys from the game's key bindings and the whole keyboard; with Ctrl / Shift / Alt ticked it adds combinations. Not shown while a hardware keyboard is connected.", 30f, 0.6f);
 			SetEnabled(check);
 		}
 	}

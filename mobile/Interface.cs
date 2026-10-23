@@ -30,11 +30,14 @@ namespace PortMobile
 	///   down. It is not the game's Enter, which accepts or closes the window the field is in (testers, 2026-10-22: a
 	///   number typed in the caravan's window cancelled it, a search box kept the keyboard, the debug actions' search ran
 	///   the first action). Only a chat's field ("chat_input": Multiplayer's) gets the Enter, which sends.
+	/// With a mouse or a keyboard connected the tooltips, the search boxes' focus and the soft keyboard are the game's
+	/// again (InputMode).
 	/// </summary>
 	internal static class Interface
 	{
 		[System.Runtime.InteropServices.DllImport("glfw")] private static extern void glfwAndroidShowKeyboard(int show);
 		[System.Runtime.InteropServices.DllImport("glfw")] private static extern void glfwAndroidInjectKey(int key, int action, int mods);
+		[System.Runtime.InteropServices.DllImport("glfw")] private static extern void glfwAndroidKeyboardForced(int forced);
 
 		private const int GlfwKeyEnter = 257, GlfwPress = 1, GlfwRelease = 0;
 		private static readonly HashSet<string> EnterFields = new HashSet<string> { "chat_input" };
@@ -206,7 +209,46 @@ namespace PortMobile
 			{
 				keyboardShown = wanted;
 				if (Touch.Verbose) Console.WriteLine("[mobile] soft keyboard " + (wanted ? "wanted" : "not wanted") + " (control " + GUIUtility.keyboardControl + ")");
+				if (wanted)
+				{
+					KeyboardForced(!InputMode.Keyboard);
+				}
 				glfwAndroidShowKeyboard(wanted ? 1 : 0);
+			}
+		}
+
+		private static bool forcedUnknown;
+
+		/// <summary>Whether the soft keyboard is forced up for the field (no hardware keyboard), or left to the input method.</summary>
+		private static void KeyboardForced(bool forced)
+		{
+			if (forcedUnknown)
+			{
+				return;
+			}
+			try
+			{
+				glfwAndroidKeyboardForced(forced ? 1 : 0);
+			}
+			catch (Exception e)
+			{
+				// An older APK: always forced, as before.
+				forcedUnknown = true;
+				Console.WriteLine("[mobile] soft keyboard: always forced up (" + e.GetType().Name + ")");
+			}
+		}
+
+		/// <summary>
+		/// A hardware keyboard came or went (InputMode): a soft keyboard that is up for a field is asked for again the new
+		/// way (without one forced up, with one left to the input method, which usually puts it away).
+		/// </summary>
+		public static void KeyboardModeChanged(bool keyboard)
+		{
+			KeyboardForced(!keyboard);
+			if (keyboardShown)
+			{
+				glfwAndroidShowKeyboard(0);
+				keyboardShown = false;
 			}
 		}
 
@@ -260,7 +302,8 @@ namespace PortMobile
 			}
 			lastFocus = focus;
 			if (Touch.Verbose) Console.WriteLine("[mobile] the keyboard focus is now " + focus + " (" + GUI.GetNameOfFocusedControl() + ", from a finger: " + (focus == tappedFocus) + ")");
-			if (!searchOnlyFromTap || focus == 0 || focus == tappedFocus)
+			// With a hardware keyboard the focus stays where the game puts it, so that typing goes there at once.
+			if (!searchOnlyFromTap || InputMode.Keyboard || focus == 0 || focus == tappedFocus)
 			{
 				return;
 			}
@@ -482,12 +525,13 @@ namespace PortMobile
 		/// <summary>
 		/// Prefix of TooltipHandler.DoTooltipGUI. A tooltip lives only while its region is reported under the mouse on
 		/// every repaint. With no finger down nothing should show (the engine's mouse stays where the last finger
-		/// was), except what a hold showed, which is kept alive here until the next touch.
+		/// was), except what a hold showed, which is kept alive here until the next touch. A real mouse (InputMode)
+		/// shows the tooltips under it as on a PC, unless a finger moved the pointer last.
 		/// </summary>
 		public static void BeforeTooltips()
 		{
 			Event current = Event.current;
-			if (current == null || current.type != EventType.Repaint || FingerDown || ActiveTips.Count == 0)
+			if (current == null || current.type != EventType.Repaint || FingerDown || ActiveTips.Count == 0 || (InputMode.Mouse && !Touch.PointerFromFinger))
 			{
 				return;
 			}

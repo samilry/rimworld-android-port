@@ -11,6 +11,7 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
+import android.hardware.input.InputManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -20,6 +21,7 @@ import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.method.LinkMovementMethod;
 import android.text.style.ClickableSpan;
+import android.view.InputDevice;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -92,6 +94,13 @@ public final class MainActivity extends NativeActivity
         // The view the soft keyboard talks to (TextInputView), one pixel in the corner; the game's own view keeps the touches.
         textInput = new TextInputView(this);
         addContentView(textInput, new ViewGroup.LayoutParams(1, 1));
+        // The mice and keyboards plugged in or paired, for the game to switch to the PC's ways while one is (inputDevices).
+        InputManager inputManager = (InputManager) getSystemService(INPUT_SERVICE);
+        if (inputManager != null)
+        {
+            inputManager.registerInputDeviceListener(inputDeviceListener, null);
+        }
+        noteInputDevices();
         hideSystemBars();
         // A report in Download/Port17 when the last run ended badly, and the "导出日志" shortcut on the icon.
         Diagnostics.onStart(this);
@@ -121,6 +130,84 @@ public final class MainActivity extends NativeActivity
             }
         }
         cutoutRects = text.toString();
+    }
+
+    /** The external mice and keyboards: "<bits>|<names>" (bit 1 a mouse, bit 2 a keyboard), as of the last change. */
+    private volatile String inputDevices = "0|";
+
+    private final InputManager.InputDeviceListener inputDeviceListener = new InputManager.InputDeviceListener()
+    {
+        @Override
+        public void onInputDeviceAdded(int deviceId)
+        {
+            noteInputDevices();
+        }
+
+        @Override
+        public void onInputDeviceRemoved(int deviceId)
+        {
+            noteInputDevices();
+        }
+
+        @Override
+        public void onInputDeviceChanged(int deviceId)
+        {
+            noteInputDevices();
+        }
+    };
+
+    /**
+     * A mouse is a device with the mouse source (a touchpad on a keyboard counts), a keyboard one with letter keys; only
+     * external ones count (plugged in or paired: the phone's own buttons and sensors report themselves as devices too).
+     */
+    private void noteInputDevices()
+    {
+        int bits = 0;
+        StringBuilder names = new StringBuilder();
+        for (int id : InputDevice.getDeviceIds())
+        {
+            InputDevice device = InputDevice.getDevice(id);
+            if (device == null || device.isVirtual() || !isExternal(device))
+            {
+                continue;
+            }
+            boolean mouse = device.supportsSource(InputDevice.SOURCE_MOUSE);
+            boolean keyboard = device.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC;
+            if (!mouse && !keyboard)
+            {
+                continue;
+            }
+            bits |= (mouse ? 1 : 0) | (keyboard ? 2 : 0);
+            names.append(names.length() > 0 ? ", " : "").append(device.getName().replace('|', '/')).append(mouse && keyboard ? " (mouse, keyboard)" : mouse ? " (mouse)" : " (keyboard)");
+        }
+        String now = bits + "|" + names;
+        if (!now.equals(inputDevices))
+        {
+            android.util.Log.i("port17", "input devices: " + now);
+        }
+        inputDevices = now;
+    }
+
+    private static boolean isExternal(InputDevice device)
+    {
+        if (Build.VERSION.SDK_INT >= 29)
+        {
+            return device.isExternal();
+        }
+        try
+        {
+            return (Boolean) InputDevice.class.getMethod("isExternal").invoke(device);
+        }
+        catch (Throwable e)
+        {
+            return true;
+        }
+    }
+
+    /** Called by the native side (glfwAndroidInputDevices, about once a second): the external mice and keyboards, for mobile/InputMode.cs. */
+    public String inputDevices()
+    {
+        return inputDevices;
     }
 
     /**
@@ -778,6 +865,11 @@ public final class MainActivity extends NativeActivity
         {
         }
         by += "; tasks: " + (tasks.length() > 0 ? tasks : "none");
+        InputManager inputManager = (InputManager) getSystemService(INPUT_SERVICE);
+        if (inputManager != null)
+        {
+            inputManager.unregisterInputDeviceListener(inputDeviceListener);
+        }
         if (importing && !isChangingConfigurations())
         {
             endImport(this, "the activity went away during the import" + by);
@@ -1770,9 +1862,22 @@ public final class MainActivity extends NativeActivity
         });
     }
 
+    /**
+     * Whether showKeyboard forces the soft keyboard up (the default), or only gives the field to the input method, which
+     * shows it if the player wants it with a hardware keyboard (set by the game: mobile/InputMode.cs, with a keyboard
+     * plugged in). The input method still gets the keys of the hardware keyboard either way (pinyin on it, for one).
+     */
+    private volatile boolean softKeyboardForced = true;
+
+    public void softKeyboardForced(boolean forced)
+    {
+        softKeyboardForced = forced;
+    }
+
     /** Shows or hides the soft keyboard; called from the native side (the GLFW shim) when a text field takes or loses the focus. */
     public void showKeyboard(final boolean show)
     {
+        final boolean forced = softKeyboardForced;
         runOnUiThread(new Runnable()
         {
             @Override
@@ -1786,7 +1891,11 @@ public final class MainActivity extends NativeActivity
                 if (show)
                 {
                     textInput.setActive(true);
-                    if (!imm.showSoftInput(textInput, InputMethodManager.SHOW_FORCED))
+                    if (!forced)
+                    {
+                        imm.showSoftInput(textInput, 0);
+                    }
+                    else if (!imm.showSoftInput(textInput, InputMethodManager.SHOW_FORCED))
                     {
                         imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
                     }

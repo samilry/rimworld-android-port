@@ -105,6 +105,8 @@ namespace PortMobile
 					Settings.Set("showCounters", on ? "1" : "0");
 					Show(on);
 				}
+				// Touch, or the game's mouse and keyboard handling.
+				InputMode.OptionRow(listing);
 				// The key wheel's switch, in the same place.
 				KeyWheel.OptionRow(listing);
 				// And whether the interface keeps clear of the camera's hole.

@@ -326,6 +326,7 @@ namespace PortMobile
 			{
 				Button(Right, false);
 			}
+			InputMode.Update();
 			pressedThisFrame = pendingPress >= 0;
 			if (pressedThisFrame)
 			{

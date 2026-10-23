@@ -46,7 +46,7 @@ namespace PortMobile
 		/// <summary>Once a frame, after the game's interface (Entry): the bar, while the keyboard covers the field.</summary>
 		public static void OnGui()
 		{
-			if (!Interface.KeyboardShown || GUIUtility.keyboardControl == 0 || Time.frameCount - fieldFrame > 3 || fieldOnScreen.yMax < Screen.height * CoveredFrom)
+			if (!Interface.KeyboardShown || InputMode.Keyboard || GUIUtility.keyboardControl == 0 || Time.frameCount - fieldFrame > 3 || fieldOnScreen.yMax < Screen.height * CoveredFrom)
 			{
 				return;
 			}

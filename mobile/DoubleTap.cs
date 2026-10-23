@@ -79,7 +79,8 @@ namespace PortMobile
 
 		public static void After(MouseButton button, bool pressed, System.Numerics.Vector2 position, bool __state)
 		{
-			if (!__state || !pressed || button != MouseButton.Left || eventsThisFrame.Count == 0)
+			// A real mouse's press (no touch going on) keeps the engine's count.
+			if (!__state || !pressed || button != MouseButton.Left || eventsThisFrame.Count == 0 || !Touch.TouchInProgress)
 			{
 				return;
 			}

@@ -93,9 +93,13 @@ namespace PortMobile
 			return text != null && float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float value) && value >= 0f ? value : fallback;
 		}
 
-		/// <summary>Postfix of FloatMenuOption.VerticalMargin: the space above and below a row's text.</summary>
+		/// <summary>Postfix of FloatMenuOption.VerticalMargin: the space above and below a row's text (the game's with a mouse: InputMode).</summary>
 		public static void AfterMenuMargin(FloatMenuOption __instance, ref float __result)
 		{
+			if (InputMode.Mouse)
+			{
+				return;
+			}
 			float least = (FloatMenuSizeMode)SizeMode.GetValue(__instance) == FloatMenuSizeMode.Normal ? menuMargin : menuTinyMargin;
 			if (__result < least)
 			{
@@ -106,7 +110,7 @@ namespace PortMobile
 		/// <summary>Postfix of the thing filter tree's constructor.</summary>
 		public static void AfterFilterTree(Listing_TreeThingFilter __instance)
 		{
-			if (__instance.verticalSpacing < filterGap)
+			if (__instance.verticalSpacing < filterGap && !InputMode.Mouse)
 			{
 				__instance.verticalSpacing = filterGap;
 			}
