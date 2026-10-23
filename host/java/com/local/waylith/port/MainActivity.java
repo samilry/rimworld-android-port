@@ -74,6 +74,20 @@ public final class MainActivity extends NativeActivity
             attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
         }
         getWindow().setAttributes(attributes);
+        if (Build.VERSION.SDK_INT >= 28)
+        {
+            // Where the camera's hole is, for the game to keep its interface clear of it (cutoutRects): the insets come
+            // again whenever the screen turns (sensorLandscape puts the hole on the other side).
+            getWindow().getDecorView().setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener()
+            {
+                @Override
+                public android.view.WindowInsets onApplyWindowInsets(View view, android.view.WindowInsets insets)
+                {
+                    noteCutout(insets);
+                    return view.onApplyWindowInsets(insets);
+                }
+            });
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         // The view the soft keyboard talks to (TextInputView), one pixel in the corner; the game's own view keeps the touches.
         textInput = new TextInputView(this);
@@ -87,6 +101,39 @@ public final class MainActivity extends NativeActivity
             Toast.makeText(this, "手机的开发者选项里开着「不保留活动」（有的手机叫「不保留 activity」）：切到别的应用或打开文件选择器时，游戏会被系统关掉。请先关掉这个选项。", Toast.LENGTH_LONG).show();
         }
         GameService.start(this);
+    }
+
+    /** The display cutout's rectangles in window pixels, "left,top,right,bottom;..." ("" without one), as of the last insets. */
+    private volatile String cutoutRects = "";
+
+    private void noteCutout(android.view.WindowInsets insets)
+    {
+        android.view.DisplayCutout cutout = Build.VERSION.SDK_INT >= 28 && insets != null ? insets.getDisplayCutout() : null;
+        StringBuilder text = new StringBuilder();
+        if (cutout != null)
+        {
+            for (android.graphics.Rect rect : cutout.getBoundingRects())
+            {
+                if (!rect.isEmpty())
+                {
+                    text.append(text.length() > 0 ? ";" : "").append(rect.left).append(',').append(rect.top).append(',').append(rect.right).append(',').append(rect.bottom);
+                }
+            }
+        }
+        cutoutRects = text.toString();
+    }
+
+    /**
+     * Called by the native side (the GLFW shim's glfwAndroidCutout, about once a second): where the camera's hole is now,
+     * for mobile/Cutout.cs. Before the first insets arrive they are asked for here.
+     */
+    public String cutoutRects()
+    {
+        if (cutoutRects.isEmpty() && Build.VERSION.SDK_INT >= 28)
+        {
+            noteCutout(getWindow().getDecorView().getRootWindowInsets());
+        }
+        return cutoutRects;
     }
 
     @Override

@@ -107,6 +107,8 @@ namespace PortMobile
 				}
 				// The key wheel's switch, in the same place.
 				KeyWheel.OptionRow(listing);
+				// And whether the interface keeps clear of the camera's hole.
+				Cutout.OptionRow(listing);
 			}
 			catch (Exception e)
 			{

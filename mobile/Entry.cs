@@ -48,6 +48,7 @@ namespace PortMobile
 			MemTrim.Start(harmony);
 			BakeDepth.Start(harmony);
 			Temporaries.Start(harmony);
+			Cutout.Start(harmony);
 			ColdTextures.Start(harmony);
 			AtlasSeams.Start(harmony);
 			PlainIcons.Start(harmony);

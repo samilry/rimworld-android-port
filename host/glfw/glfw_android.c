@@ -653,6 +653,44 @@ static int call_activity(const char* name, int value)
     return ok;
 }
 
+// The display cutout (the camera's hole), through the activity's cutoutRects(): "left,top,right,bottom;..." in window
+// pixels for the screen's present turn, "" without one. Copied into out; returns its length (mobile/Cutout.cs).
+API int glfwAndroidCutout(char* out, int size)
+{
+    if (!out || size <= 0) return 0;
+    out[0] = 0;
+    if (!g_app || !g_app->activity || !g_app->activity->vm) return 0;
+    JavaVM* vm = g_app->activity->vm;
+    JNIEnv* env = NULL;
+    int attached = 0;
+    if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK)
+    {
+        if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return 0;
+        attached = 1;
+    }
+    jobject activity = g_app->activity->clazz;
+    jclass cls = (*env)->GetObjectClass(env, activity);
+    jmethodID method = (*env)->GetMethodID(env, cls, "cutoutRects", "()Ljava/lang/String;");
+    if (method)
+    {
+        jstring text = (jstring)(*env)->CallObjectMethod(env, activity, method);
+        if (text && !(*env)->ExceptionCheck(env))
+        {
+            const char* chars = (*env)->GetStringUTFChars(env, text, NULL);
+            if (chars)
+            {
+                snprintf(out, (size_t)size, "%s", chars);
+                (*env)->ReleaseStringUTFChars(env, text, chars);
+            }
+        }
+        if (text) (*env)->DeleteLocalRef(env, text);
+    }
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); out[0] = 0; }
+    (*env)->DeleteLocalRef(env, cls);
+    if (attached) (*vm)->DetachCurrentThread(vm);
+    return (int)strlen(out);
+}
+
 // The soft keyboard, through the activity's showKeyboard(boolean): the NDK's ANativeActivity_showSoftInput does nothing
 // on this phone.
 API void glfwAndroidShowKeyboard(int show)
