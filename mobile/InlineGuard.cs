@@ -67,6 +67,12 @@ namespace PortMobile
 					updateWrapper = null;
 					return;
 				}
+				if (Settings.Get("inlineGuardTest", 0) == 1)
+				{
+					// As a mod would have done: GUI.ProcessPendingWindows patched before the port, by someone else.
+					new Harmony("port17.test.mod").Patch(AccessTools.Method(typeof(UnityEngine.GUI), nameof(UnityEngine.GUI.ProcessPendingWindows)), postfix: new HarmonyMethod(typeof(InlineGuard), nameof(Nothing)));
+					Console.WriteLine("[mobile] inline guard: test: GUI.ProcessPendingWindows patched first, as a mod would");
+				}
 				int count = 0;
 				lock (sync)
 				{
@@ -113,6 +119,24 @@ namespace PortMobile
 			{
 				batch = deferred;
 				deferred = null;
+			}
+			// The port's small methods that a mod had patched first were not new to the watch and so not in the batch: on a
+			// tester's vivo (35 mods, 2026-10-23) none of them was, the engine's interface dispatch kept its own copy of
+			// GUI.ProcessPendingWindows without the port's postfix, and no list ever scrolled under a finger. Every small
+			// method the port has patched is taken, whoever patched it first.
+			int noted = batch.Count;
+			// mobile.txt inlineGuardOwners=0: the batch alone, as before (to compare, with inlineGuardTest=1).
+			foreach (MethodBase method in Settings.Get("inlineGuardOwners", 1) == 1 ? Harmony.GetAllPatchedMethods() : Enumerable.Empty<MethodBase>())
+			{
+				Patches info = Harmony.GetPatchInfo(method);
+				if (info != null && info.Owners.Any(owner => owner.StartsWith("port17.mobile", StringComparison.Ordinal)) && Inlinable(method))
+				{
+					batch.Add(method);
+				}
+			}
+			if (batch.Count > noted)
+			{
+				Console.WriteLine("[mobile] inline guard: " + (batch.Count - noted) + " small methods the port patched had been patched before it, by mods");
 			}
 			Rebuild(batch, "the port's patches");
 			RebuildEngineCallers(batch);

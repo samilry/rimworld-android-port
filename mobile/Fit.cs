@@ -64,6 +64,7 @@ namespace PortMobile
 			harmony.Patch(AccessTools.Method(typeof(Window), nameof(Window.WindowOnGUI)), prefix: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.Before)), finalizer: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.After)));
 			harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.DrawShadowAround)), prefix: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.BeforeShadow)));
 			GizmoFit.Start(harmony);
+			harmony.Patch(AccessTools.Method(typeof(UI), nameof(UI.RotateAroundPivot)), prefix: new HarmonyMethod(typeof(RotateInFit), nameof(RotateInFit.Before)));
 			try
 			{
 				Type backend = AccessTools.TypeByName("RimWorldWaylith.Imgui.ImGuiGuiBackend");
@@ -389,6 +390,29 @@ namespace PortMobile
 			Vector2 moved = (__instance.windowRect.position - passed.position) * factor;
 			design.position += moved;
 			__instance.windowRect = design;
+		}
+	}
+
+	/// <summary>
+	/// A turned icon inside something drawn smaller (GizmoFit's grid, WindowFit's window) turned about the wrong point
+	/// (a tester, 2026-10-23: in the shrunk Architect menu the trims, steps and other icons the game draws turned went
+	/// off their buttons, further the further right and down they were). UI.RotateAroundPivot hands GUIUtility the pivot
+	/// times Prefs.UIScale, as an offset in screen pixels from where the group starts; that is the scale of GUI.matrix
+	/// only while nothing else scales it. The pivot is now multiplied by the scale GUI.matrix really has: the same as the
+	/// game's where nothing is drawn smaller.
+	/// </summary>
+	internal static class RotateInFit
+	{
+		public static bool Before(float angle, Vector2 center)
+		{
+			Matrix4x4 m = GUI.matrix;
+			float scale = new Vector2(m.m00, m.m10).magnitude;
+			if (Mathf.Abs(scale - Prefs.UIScale) < 0.0001f)
+			{
+				return true;
+			}
+			GUIUtility.RotateAroundPivot(angle, center * scale);
+			return false;
 		}
 	}
 
