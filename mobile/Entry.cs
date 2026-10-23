@@ -99,6 +99,31 @@ namespace PortMobile
 			}
 		}
 
+		/// <summary>
+		/// mobile.txt avTest=1: List.Add on an object reference that points nowhere, inside a try, the way a 1.6 mod's patch
+		/// did it (Shella Backgrounds, in the options window: "Fatal error. System.AccessViolationException ... List`1.Add").
+		/// The log says whether the runtime let the catch have it (host.c: legacyCorruptedStateExceptionsPolicy) or the
+		/// process ends here.
+		/// </summary>
+		private static void AccessViolationTest()
+		{
+			if (Settings.Get("avTest", 0) != 1)
+			{
+				return;
+			}
+			try
+			{
+				IntPtr nowhere = new IntPtr(0x5A5A5A5A0000);
+				System.Collections.Generic.List<object> list = System.Runtime.CompilerServices.Unsafe.As<IntPtr, System.Collections.Generic.List<object>>(ref nowhere);
+				list.Add(null);
+				Console.WriteLine("[mobile] access violation test: no fault");
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] access violation test: caught " + e.GetType().FullName);
+			}
+		}
+
 		public static void AfterUIRootOnGUI()
 		{
 			KeyWheel.OnGui();
@@ -110,6 +135,7 @@ namespace PortMobile
 				Console.WriteLine("[mobile] main menu " + SecondsSinceProcessStart().ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + " s after the runtime started");
 				Console.WriteLine("[mobile] of that: " + WhereTheStartWent());
 				Temporaries.Test();
+				AccessViolationTest();
 				MemTrim.AtMainMenu();
 				PortHooks.JitProfile.AtMainMenu();
 				PortHooks.InlineWatch.Report("main menu", Harmony.GetAllPatchedMethods());

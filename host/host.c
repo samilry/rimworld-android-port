@@ -548,6 +548,12 @@ static void* run_runtime(void* arg)
     // frame (76 % against 73-74 % at 60 fps). Removing the 100 ms call counting delay instead (TC_CallCountingDelayMs=0)
     // shortened the dip as much but let the optimised code in during the mods' patching: 89 such places.
     setenv("DOTNET_TieredPGO", "0", 1);
+    // A memory fault in managed code (an access violation that is no null reference) is an exception the game's own
+    // try/catch gets, as with Ludeon's runtime (WaylithClr.CatchableAccessViolations in the PC game's runtimeconfig); the
+    // stock runtime ends the process instead ("Fatal error. System.AccessViolationException"). A 1.6 mod (Shella
+    // Backgrounds) does List.Add through a wrong reference in the options window: on the PC the window logs an error, on
+    // a tester's vivo the game closed every time. Tried with mobile.txt avTest=1 (Entry.AccessViolationTest).
+    setenv("DOTNET_legacyCorruptedStateExceptionsPolicy", "1", 1);
     {
         const char* lines[32];
         static char storage[4096];
