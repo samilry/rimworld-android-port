@@ -31,6 +31,10 @@ namespace PortMobile
 	///     translation key system (TKeySystem.keys and treatAsList), for working out a table that this version of the game
 	///     no longer works out (it brings the table ready-made). Nothing reads the lists after that, but through them
 	///     the whole document stays alive: with 106 mods 2.6 million XML objects, well over 100 MiB.
+	/// The collections are left out when much of the process is in swap ("trimSwapLimit" in mobile.txt, 512 MiB): they
+	/// visit every live object, and the system has to read the swapped-out ones back first. Measured on a vivo short of
+	/// memory (352 mods, 2 GB of the game swapped out): the collections after a load took 11 s, twice, with the map on
+	/// the screen and nothing answering; on a phone that had it all in memory, 1.8 s for the same heap.
 	/// mobile.txt: trimAfterLoad=0 switches all of it off.
 	/// </summary>
 	internal static class MemTrim
@@ -42,6 +46,7 @@ namespace PortMobile
 		[DllImport("libc")] private static extern int mallopt(int parameter, int value);
 
 		private static bool enabled;
+		private static long swapLimitKb = 512 * 1024;
 		// A game was loaded and the trim has not been done yet; it is done a few frames after the load's last piece of work,
 		// when what the load itself and the first frames still held has been let go ("trimFrames" in mobile.txt, 3).
 		private static string loaded;
@@ -64,6 +69,7 @@ namespace PortMobile
 			// The defs loaded again without a restart (another language chosen): the same leftovers as after the start.
 			harmony.Patch(AccessTools.Method(typeof(PlayDataLoader), nameof(PlayDataLoader.LoadAllPlayData)), postfix: new HarmonyMethod(typeof(MemTrim), nameof(AfterPlayDataLoaded)));
 			trimFrames = Settings.Get("trimFrames", 3);
+			swapLimitKb = Settings.Get("trimSwapLimit", 512) * 1024L;
 			string probes = Settings.Get("trimProbe", "");
 			if (probes.Length > 0)
 			{
@@ -130,15 +136,16 @@ namespace PortMobile
 			}
 		}
 
-		private static long ResidentKb()
+		/// <summary>A size line of /proc/self/status ("VmRSS:", "VmSwap:") in kB.</summary>
+		private static long StatusKb(string key)
 		{
 			try
 			{
 				foreach (string line in File.ReadLines("/proc/self/status"))
 				{
-					if (line.StartsWith("VmRSS:", StringComparison.Ordinal))
+					if (line.StartsWith(key, StringComparison.Ordinal))
 					{
-						return long.Parse(line.Substring(6).Replace("kB", "").Trim(), CultureInfo.InvariantCulture);
+						return long.Parse(line.Substring(key.Length).Replace("kB", "").Trim(), CultureInfo.InvariantCulture);
 					}
 				}
 			}
@@ -153,26 +160,35 @@ namespace PortMobile
 			try
 			{
 				Stopwatch watch = Stopwatch.StartNew();
-				long residentBefore = ResidentKb();
+				long residentBefore = StatusKb("VmRSS:");
+				long swapped = StatusKb("VmSwap:");
 				GCMemoryInfo before = GC.GetGCMemoryInfo();
 				int xmlNodes = DropXmlLeftovers();
 				int pooled = EmptyArrayPools();
-				// Twice with the finalizers in between: what a finalizer still held goes with the second one, which is the one that moves the large objects.
-				GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, false);
-				GC.WaitForPendingFinalizers();
-				// "Aggressive": everything is compacted, the large objects too, and the collector gives back all the memory it does
-				// not need now. (A forced compacting collection alone leaves it holding several hundred MiB of emptied regions
-				// against the next large allocations, sized by what the load needed.)
-				GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
-				GCMemoryInfo collected = GC.GetGCMemoryInfo();
-				double collectMs = watch.Elapsed.TotalMilliseconds;
+				string collection;
+				if (swapped < swapLimitKb)
+				{
+					// Twice with the finalizers in between: what a finalizer still held goes with the second one, which is the one that moves the large objects.
+					GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, false);
+					GC.WaitForPendingFinalizers();
+					// "Aggressive": everything is compacted, the large objects too, and the collector gives back all the memory it does
+					// not need now. (A forced compacting collection alone leaves it holding several hundred MiB of emptied regions
+					// against the next large allocations, sized by what the load needed.)
+					GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
+					GCMemoryInfo collected = GC.GetGCMemoryInfo();
+					collection = "the collector's heap " + (before.HeapSizeBytes >> 20) + " -> " + (collected.HeapSizeBytes >> 20) + " MiB (committed " + (before.TotalCommittedBytes >> 20) + " -> "
+						+ (collected.TotalCommittedBytes >> 20) + ", large objects " + (before.GenerationInfo[3].SizeAfterBytes >> 20) + " -> " + (collected.GenerationInfo[3].SizeAfterBytes >> 20) + ") in " + watch.Elapsed.TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture) + " ms";
+				}
+				else
+				{
+					collection = "no collection: " + (swapped >> 10) + " MiB of the process is in swap (the collector's heap " + (before.HeapSizeBytes >> 20) + " MiB, committed " + (before.TotalCommittedBytes >> 20) + ")";
+				}
 				mallopt(M_PURGE_ALL, 0);
 				long textures = ColdTextures.AfterLoad();
 				long packBytes = LetGoOfPackPages();
-				long residentAfter = ResidentKb();
-				Console.WriteLine("[mobile] after " + after + ": the collector's heap " + (before.HeapSizeBytes >> 20) + " -> " + (collected.HeapSizeBytes >> 20) + " MiB (committed " + (before.TotalCommittedBytes >> 20) + " -> "
-					+ (collected.TotalCommittedBytes >> 20) + ", large objects " + (before.GenerationInfo[3].SizeAfterBytes >> 20) + " -> " + (collected.GenerationInfo[3].SizeAfterBytes >> 20) + ") in " + collectMs.ToString("0", CultureInfo.InvariantCulture)
-					+ " ms, " + pooled + " pooled arrays let go" + (xmlNodes > 0 ? ", the defs' XML released (" + xmlNodes + " nodes were held)" : "") + "; " + (packBytes >> 20) + " MiB of asset pack mappings let go" + (textures > 0 ? ", " + textures + " MiB of textures that were never drawn" : "") + "; resident " + (residentBefore >> 10) + " -> " + (residentAfter >> 10) + " MiB; " + watch.Elapsed.TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture) + " ms in all");
+				long residentAfter = StatusKb("VmRSS:");
+				Console.WriteLine("[mobile] after " + after + ": " + collection + ", " + pooled + " pooled arrays let go" + (xmlNodes > 0 ? ", the defs' XML released (" + xmlNodes + " nodes were held)" : "") + "; " + (packBytes >> 20) + " MiB of asset pack mappings let go"
+					+ (textures > 0 ? ", " + textures + " MiB of textures that were never drawn" : "") + "; resident " + (residentBefore >> 10) + " -> " + (residentAfter >> 10) + " MiB; " + watch.Elapsed.TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture) + " ms in all");
 			}
 			catch (Exception e)
 			{

@@ -47,6 +47,7 @@ namespace PortMobile
 			Counters.Start(harmony);
 			MemTrim.Start(harmony);
 			BakeDepth.Start(harmony);
+			Temporaries.Start(harmony);
 			ColdTextures.Start(harmony);
 			AtlasSeams.Start(harmony);
 			PlainIcons.Start(harmony);
@@ -108,6 +109,7 @@ namespace PortMobile
 				menuTimed = true;
 				Console.WriteLine("[mobile] main menu " + SecondsSinceProcessStart().ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + " s after the runtime started");
 				Console.WriteLine("[mobile] of that: " + WhereTheStartWent());
+				Temporaries.Test();
 				MemTrim.AtMainMenu();
 				PortHooks.JitProfile.AtMainMenu();
 			}
