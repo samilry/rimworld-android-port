@@ -39,6 +39,10 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+// The lines that say what the driver gave the engine also go to the game's stderr (logs/stderr.txt, which the crash
+// report takes): some phones let an app read none of its own logcat (a tester's Honor, 2026-10-23), and then a crash
+// during the start had nothing to tell which Vulkan call was missing.
+#define LOGK(...) do { __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__); fprintf(stderr, "vulkan interposer: "); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } while (0)
 #define API __attribute__((visibility("default")))
 
 static void* g_real;
@@ -1006,7 +1010,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateInstance(const VkInstanceCreate
         strncat(layers, info->ppEnabledLayerNames[i], sizeof layers - strlen(layers) - 2);
         strncat(layers, " ", sizeof layers - strlen(layers) - 1);
     }
-    LOGI("vulkan: instance created (%s), api 0x%x, extensions: %s; layers: %s", result_name(r), info->pApplicationInfo ? info->pApplicationInfo->apiVersion : 0u, ext, layers[0] ? layers : "none");
+    LOGK("vulkan: instance created (%s), api 0x%x, extensions: %s; layers: %s", result_name(r), info->pApplicationInfo ? info->pApplicationInfo->apiVersion : 0u, ext, layers[0] ? layers : "none");
     return r;
 }
 
@@ -1061,7 +1065,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice pd, con
         PFN_vkGetPhysicalDeviceProperties getProps = (PFN_vkGetPhysicalDeviceProperties)g_gipa(g_instance, "vkGetPhysicalDeviceProperties");
         if (getProps) getProps(pd, &props);
         g_barriers = opt_barriers >= 0 ? opt_barriers : props.vendorID == 0x13B5;
-        LOGI("vulkan: GPU \"%s\" (vendor 0x%x): %s", props.deviceName, props.vendorID,
+        LOGK("vulkan: GPU \"%s\" (vendor 0x%x): %s", props.deviceName, props.vendorID,
              g_barriers ? "every command buffer opens with a full barrier" : "command buffers as the engine records them");
     }
     char ext[2048] = "";
@@ -1070,7 +1074,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice pd, con
         strncat(ext, info->ppEnabledExtensionNames[i], sizeof ext - strlen(ext) - 2);
         strncat(ext, " ", sizeof ext - strlen(ext) - 1);
     }
-    LOGI("vulkan: device created (%s), extensions: %s", result_name(r), ext);
+    LOGK("vulkan: device created (%s), extensions: %s", result_name(r), ext);
     return r;
 }
 
@@ -1139,10 +1143,24 @@ static VKAPI_ATTR void VKAPI_CALL noop_QueueEndLabel(VkQueue queue) { (void)queu
 static VKAPI_ATTR VkResult VKAPI_CALL noop_SetObjectName(VkDevice device, const VkDebugUtilsObjectNameInfoEXT* info) { (void)device; (void)info; return VK_SUCCESS; }
 static VKAPI_ATTR VkResult VKAPI_CALL noop_SetObjectTag(VkDevice device, const VkDebugUtilsObjectTagInfoEXT* info) { (void)device; (void)info; return VK_SUCCESS; }
 
+// The messenger the same way (a driver that names VK_EXT_debug_utils for the instance but hands out no function for it
+// would otherwise get the engine to call address 0 as the graphics device is made).
+static VKAPI_ATTR VkResult VKAPI_CALL noop_CreateMessenger(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* info, const VkAllocationCallbacks* alloc, VkDebugUtilsMessengerEXT* out)
+{
+    (void)instance; (void)info; (void)alloc;
+    if (out) *out = (VkDebugUtilsMessengerEXT)(uintptr_t)1;
+    return VK_SUCCESS;
+}
+static VKAPI_ATTR void VKAPI_CALL noop_DestroyMessenger(VkInstance instance, VkDebugUtilsMessengerEXT messenger, const VkAllocationCallbacks* alloc) { (void)instance; (void)messenger; (void)alloc; }
+static VKAPI_ATTR void VKAPI_CALL noop_SubmitMessage(VkInstance instance, VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT types, const VkDebugUtilsMessengerCallbackDataEXT* data) { (void)instance; (void)severity; (void)types; (void)data; }
+
 static PFN_vkVoidFunction debug_utils_noop(const char* name)
 {
     PFN_vkVoidFunction noop = NULL;
-    if (strcmp(name, "vkCmdBeginDebugUtilsLabelEXT") == 0 || strcmp(name, "vkCmdInsertDebugUtilsLabelEXT") == 0) noop = (PFN_vkVoidFunction)noop_CmdLabel;
+    if (strcmp(name, "vkCreateDebugUtilsMessengerEXT") == 0) noop = (PFN_vkVoidFunction)noop_CreateMessenger;
+    else if (strcmp(name, "vkDestroyDebugUtilsMessengerEXT") == 0) noop = (PFN_vkVoidFunction)noop_DestroyMessenger;
+    else if (strcmp(name, "vkSubmitDebugUtilsMessageEXT") == 0) noop = (PFN_vkVoidFunction)noop_SubmitMessage;
+    else if (strcmp(name, "vkCmdBeginDebugUtilsLabelEXT") == 0 || strcmp(name, "vkCmdInsertDebugUtilsLabelEXT") == 0) noop = (PFN_vkVoidFunction)noop_CmdLabel;
     else if (strcmp(name, "vkCmdEndDebugUtilsLabelEXT") == 0) noop = (PFN_vkVoidFunction)noop_CmdEndLabel;
     else if (strcmp(name, "vkQueueBeginDebugUtilsLabelEXT") == 0 || strcmp(name, "vkQueueInsertDebugUtilsLabelEXT") == 0) noop = (PFN_vkVoidFunction)noop_QueueLabel;
     else if (strcmp(name, "vkQueueEndDebugUtilsLabelEXT") == 0) noop = (PFN_vkVoidFunction)noop_QueueEndLabel;
@@ -1151,7 +1169,13 @@ static PFN_vkVoidFunction debug_utils_noop(const char* name)
     if (noop)
     {
         static int logged;
-        if (logged++ < 8) LOGI("vulkan: %s is missing (no VK_EXT_debug_utils); a stand-in that does nothing is used", name);
+        if (logged++ < 12) LOGK("vulkan: %s is missing (no VK_EXT_debug_utils); a stand-in that does nothing is used", name);
+    }
+    else
+    {
+        // Which call would crash at address 0 if the engine used it (most such lookups are for extensions it never calls).
+        static int missing;
+        if (missing++ < 2000) LOGK("vulkan: the driver has no %s (the engine gets none)", name);
     }
     return noop;
 }
@@ -1199,6 +1223,7 @@ static void send_test_messages(VkInstance instance)
 static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDebugUtilsMessenger(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* info, const VkAllocationCallbacks* alloc, VkDebugUtilsMessengerEXT* out)
 {
     // Kept for the messenger's life (the engine makes one, and destroys it only with the instance).
+    if (!real_CreateDebugUtilsMessenger) return noop_CreateMessenger(instance, info, alloc, out);
     MessengerTarget* target = info && info->pfnUserCallback ? (MessengerTarget*)malloc(sizeof *target) : NULL;
     if (!target) return real_CreateDebugUtilsMessenger(instance, info, alloc, out);
     target->callback = info->pfnUserCallback;
