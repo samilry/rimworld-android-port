@@ -422,20 +422,44 @@ namespace PortMobile
 	/// is short: with many mods' buildings in one Architect category the rows went past its top (the user, 2026-10-22: the
 	/// Storage category, 8 rows where 7 fit). A grid that does not fit is drawn smaller, from its bottom-left corner, and the
 	/// room it gains on the right takes more of it in each row.
+	///
+	/// The commands of what is selected (GizmoGridDrawer.DrawGizmoGridFor, on the map and the world) covered the middle of
+	/// the screen in a fight (the user, 2026-10-23: a mechanitor's mech, four rows of commands, its shield, weapon and
+	/// bandwidth). Two choices on the interface page of the options, for that grid only (the Architect's is left alone):
+	/// its size ("gizmoScale" in mobile.txt, percent, 100 / 85 / 70) and at most how many rows it may take before it is
+	/// drawn smaller still ("gizmoRows", 2 / 3, 0 for no limit; never below RowsSmallest, so that it can still be tapped).
+	///
+	/// Some gizmos draw part of themselves in an immediate window (WindowStack.ImmediateWindow, at a rect from where they
+	/// are drawn): a mod weapon's ammunition box (the user, 2026-10-23, at 70%: full size over its neighbours). The engine
+	/// draws windows after everything else, with the matrix of the moment GUI.Window was called, so such a window kept
+	/// its full size at the unscaled place. Asked for inside a smaller grid, it is moved and sized as the grid is (that
+	/// rect is what the window stack sees: clicks, the shadow) and drawn with the grid's factor around its top-left corner.
 	/// </summary>
 	internal static class GizmoFit
 	{
-		private const float Smallest = 0.5f, RowHeight = 75f + 14f, ColumnSpacing = 5f, RightColumn = 147f, BottomBar = 35f, TopMargin = 4f;
+		private const float Smallest = 0.5f, RowsSmallest = 0.6f, RowHeight = 75f + 14f, ColumnSpacing = 5f, RightColumn = 147f, BottomBar = 35f, TopMargin = 4f;
 
 		private sealed class Fit
 		{
-			public int count = -1, screenWidth, screenHeight;
-			public float factor = 1f;
+			public int count = -1, screenWidth, screenHeight, rows;
+			public float factor = 1f, size = 1f;
 		}
+
+		// The selection's commands: the size chosen and the most rows (0: any), and whether they are being drawn now.
+		private static int sizePercent = Mathf.Clamp(Settings.Get("gizmoScale", 100), 50, 100);
+		private static int maxRows = Mathf.Clamp(Settings.Get("gizmoRows", 2), 0, 9);
+		private static bool selection;
+
+		// While a smaller grid is drawn: its factor (0: none) and the point that stays where it is. The immediate windows
+		// asked for inside one, by ID, with the factor they are drawn at.
+		private static float gridFactor;
+		private static Vector2 gridCorner;
+		private static readonly Dictionary<int, float> scaledWindows = new Dictionary<int, float>();
 
 		// By where the grid starts (the Architect's and a selection's apart).
 		private static readonly Dictionary<int, Fit> fits = new Dictionary<int, Fit>();
-		private static readonly List<Gizmo> all = new List<Gizmo>(), groups = new List<Gizmo>();
+		private static readonly List<Gizmo> all = new List<Gizmo>(), firsts = new List<Gizmo>(), groups = new List<Gizmo>();
+		private static readonly List<Command> shrinkables = new List<Command>();
 
 		public struct State
 		{
@@ -444,9 +468,101 @@ namespace PortMobile
 			public int width;
 		}
 
+		public struct WindowState
+		{
+			public float factor;
+			public Matrix4x4 matrix;
+		}
+
 		public static void Start(Harmony harmony)
 		{
 			harmony.Patch(AccessTools.Method(typeof(GizmoGridDrawer), nameof(GizmoGridDrawer.DrawGizmoGrid)), prefix: new HarmonyMethod(typeof(GizmoFit), nameof(Before)), finalizer: new HarmonyMethod(typeof(GizmoFit), nameof(After)));
+			harmony.Patch(AccessTools.Method(typeof(GizmoGridDrawer), nameof(GizmoGridDrawer.DrawGizmoGridFor)), prefix: new HarmonyMethod(typeof(GizmoFit), nameof(BeforeSelection)), finalizer: new HarmonyMethod(typeof(GizmoFit), nameof(AfterSelection)));
+			harmony.Patch(AccessTools.Method(typeof(WindowStack), nameof(WindowStack.ImmediateWindow)), prefix: new HarmonyMethod(typeof(GizmoFit), nameof(BeforeImmediateWindow)));
+			harmony.Patch(AccessTools.Method(typeof(Window), nameof(Window.WindowOnGUI)), prefix: new HarmonyMethod(typeof(GizmoFit), nameof(BeforeWindow)), finalizer: new HarmonyMethod(typeof(GizmoFit), nameof(AfterWindow)));
+			harmony.Patch(AccessTools.Method(typeof(Window), "InnerWindowOnGUI"), prefix: new HarmonyMethod(typeof(GizmoFit), nameof(BeforeWindowInside)), finalizer: new HarmonyMethod(typeof(GizmoFit), nameof(AfterWindowInside)));
+		}
+
+		/// <summary>Prefix of WindowStack.ImmediateWindow: inside a smaller grid, the rect as it shows on the screen.</summary>
+		public static void BeforeImmediateWindow(int ID, ref Rect rect)
+		{
+			int id = -Math.Abs(ID);
+			if (gridFactor <= 0f)
+			{
+				if (scaledWindows.Count > 0)
+				{
+					scaledWindows.Remove(id);
+				}
+				return;
+			}
+			float f = gridFactor;
+			rect = new Rect(gridCorner.x + (rect.x - gridCorner.x) * f, gridCorner.y + (rect.y - gridCorner.y) * f, rect.width * f, rect.height * f);
+			scaledWindows[id] = f;
+		}
+
+		/// <summary>
+		/// Prefix of Window.WindowOnGUI: such a window goes to GUI.Window at its full size, from its top-left corner on the
+		/// screen, with the matrix that draws it f times smaller around that corner. The finalizer puts back its rect.
+		/// </summary>
+		public static void BeforeWindow(Window __instance, out WindowState __state)
+		{
+			__state = default(WindowState);
+			if (scaledWindows.Count == 0 || !(__instance is ImmediateWindow) || !scaledWindows.TryGetValue(__instance.ID, out float f))
+			{
+				return;
+			}
+			Rect rect = __instance.windowRect;
+			__state.factor = f;
+			__state.matrix = GUI.matrix;
+			GUI.matrix = __state.matrix * Matrix4x4.TRS(new Vector3(rect.x * (1f - f), rect.y * (1f - f), 0f), Quaternion.identity, new Vector3(f, f, 1f));
+			__instance.windowRect = new Rect(rect.x, rect.y, rect.width / f, rect.height / f);
+		}
+
+		public static void AfterWindow(Window __instance, WindowState __state)
+		{
+			if (__state.factor <= 0f)
+			{
+				return;
+			}
+			GUI.matrix = __state.matrix;
+			Rect rect = __instance.windowRect;
+			__instance.windowRect = new Rect(rect.x, rect.y, rect.width * __state.factor, rect.height * __state.factor);
+		}
+
+		/// <summary>
+		/// Prefix and finalizer of Window.InnerWindowOnGUI (run later, by the engine): its background and contents are laid
+		/// out at the full size too, inside the smaller matrix.
+		/// </summary>
+		public static void BeforeWindowInside(Window __instance, out float __state)
+		{
+			__state = 0f;
+			if (scaledWindows.Count == 0 || !(__instance is ImmediateWindow) || !scaledWindows.TryGetValue(__instance.ID, out float f))
+			{
+				return;
+			}
+			__state = f;
+			Rect rect = __instance.windowRect;
+			__instance.windowRect = new Rect(rect.x, rect.y, rect.width / f, rect.height / f);
+		}
+
+		public static void AfterWindowInside(Window __instance, float __state)
+		{
+			if (__state > 0f)
+			{
+				Rect rect = __instance.windowRect;
+				__instance.windowRect = new Rect(rect.x, rect.y, rect.width * __state, rect.height * __state);
+			}
+		}
+
+		/// <summary>Prefix and finalizer of GizmoGridDrawer.DrawGizmoGridFor: the grid drawn inside is the selection's.</summary>
+		public static void BeforeSelection()
+		{
+			selection = true;
+		}
+
+		public static void AfterSelection()
+		{
+			selection = false;
 		}
 
 		/// <summary>Prefix of GizmoGridDrawer.DrawGizmoGrid: a grid that does not fit is laid out in units f times smaller, as wide as the screen in them.</summary>
@@ -457,7 +573,7 @@ namespace PortMobile
 			{
 				return;
 			}
-			float f = FactorFor(gizmos, startX);
+			float f = selection ? FactorFor(gizmos, startX, sizePercent / 100f, maxRows) : FactorFor(gizmos, startX, 1f, 0);
 			if (f > 0.999f)
 			{
 				return;
@@ -469,6 +585,8 @@ namespace PortMobile
 			float cornerY = UI.screenHeight - BottomBar;
 			GUI.matrix = __state.matrix * Matrix4x4.TRS(new Vector3(startX * (1f - f), cornerY * (1f - f), 0f), Quaternion.identity, new Vector3(f, f, 1f));
 			UI.screenWidth = Mathf.FloorToInt(startX + RightColumn + (UI.screenWidth - RightColumn - startX) / f);
+			gridFactor = f;
+			gridCorner = new Vector2(startX, cornerY);
 		}
 
 		/// <summary>Finalizer: the screen as it was.</summary>
@@ -478,14 +596,16 @@ namespace PortMobile
 			{
 				GUI.matrix = __state.matrix;
 				UI.screenWidth = __state.width;
+				gridFactor = 0f;
 			}
 		}
 
 		/// <summary>
-		/// The largest factor at which the grid fits between the bottom bar and the top of the screen, its gizmos grouped and
-		/// laid out as the game does. Worked out again when their number or the screen changes.
+		/// The largest factor, size at the most, at which the grid fits between the bottom bar and the top of the screen and
+		/// (rows > 0) takes no more than rows rows, its gizmos grouped and laid out as the game does (LaidOutHeight). Worked
+		/// out again when their number, the screen or the choices change.
 		/// </summary>
-		private static float FactorFor(IEnumerable<Gizmo> gizmos, float startX)
+		private static float FactorFor(IEnumerable<Gizmo> gizmos, float startX, float size, int rows)
 		{
 			all.Clear();
 			all.AddRange(gizmos);
@@ -494,51 +614,49 @@ namespace PortMobile
 			{
 				fits[key] = fit = new Fit();
 			}
-			if (fit.count == all.Count && fit.screenWidth == UI.screenWidth && fit.screenHeight == UI.screenHeight)
+			if (fit.count == all.Count && fit.screenWidth == UI.screenWidth && fit.screenHeight == UI.screenHeight && fit.size == size && fit.rows == rows)
 			{
 				return fit.factor;
 			}
 			fit.count = all.Count;
 			fit.screenWidth = UI.screenWidth;
 			fit.screenHeight = UI.screenHeight;
-			// One of each group, as the game groups them (Gizmo.GroupsWith; nothing is merged here).
+			fit.size = size;
+			fit.rows = rows;
+			// In the game's order (a stable sort by Gizmo.Order) and groups (Gizmo.GroupsWith with the first of a group; nothing
+			// is merged here), each group shown by its first gizmo that is not disabled.
+			for (int i = 1; i < all.Count; i++)
+			{
+				Gizmo gizmo = all[i];
+				int j = i - 1;
+				for (; j >= 0 && all[j].Order > gizmo.Order; j--)
+				{
+					all[j + 1] = all[j];
+				}
+				all[j + 1] = gizmo;
+			}
+			firsts.Clear();
 			groups.Clear();
 			foreach (Gizmo gizmo in all)
 			{
-				if (!gizmo.Visible)
+				int group = firsts.FindIndex(first => first.GroupsWith(gizmo));
+				if (group < 0)
 				{
-					continue;
-				}
-				bool grouped = false;
-				foreach (Gizmo first in groups)
-				{
-					if (first.GroupsWith(gizmo))
-					{
-						grouped = true;
-						break;
-					}
-				}
-				if (!grouped)
-				{
+					firsts.Add(gizmo);
 					groups.Add(gizmo);
+				}
+				else if (groups[group].Disabled && !gizmo.Disabled)
+				{
+					groups[group] = gizmo;
 				}
 			}
 			float room = UI.screenHeight - BottomBar - TopMargin, factor = Smallest;
-			for (float f = 1f; f > Smallest; f -= 0.01f)
+			for (float f = size; f > Smallest; f -= 0.01f)
 			{
-				float rowWidth = (UI.screenWidth - RightColumn - startX) / f, x = 0f;
-				int rows = 1;
-				foreach (Gizmo gizmo in groups)
-				{
-					float width = gizmo.GetWidth(rowWidth);
-					if (x > 0f && x + width > rowWidth)
-					{
-						x = 0f;
-						rows++;
-					}
-					x += width + ColumnSpacing;
-				}
-				if (rows * RowHeight * f <= room)
+				float height = LaidOutHeight(startX, f);
+				int taken = Mathf.CeilToInt(height / RowHeight - 0.01f);
+				// Too many rows: smaller, but only down to RowsSmallest; below it the rows are as many as they are.
+				if (height * f <= room && (rows <= 0 || taken <= rows || f <= RowsSmallest))
 				{
 					factor = f;
 					break;
@@ -546,10 +664,123 @@ namespace PortMobile
 			}
 			if (Mathf.Abs(factor - fit.factor) > 0.001f)
 			{
-				Console.WriteLine("[mobile] gizmo grid at x " + key + ": " + groups.Count + " gizmos, drawn at " + factor.ToString("F2"));
+				Console.WriteLine("[mobile] gizmo grid at x " + key + ": " + groups.Count + " gizmos, drawn at " + factor.ToString("F2") + (rows > 0 || size < 1f ? " (size " + size.ToString("F2") + ", at most " + rows + " rows)" : ""));
 			}
 			fit.factor = factor;
 			return factor;
+		}
+
+		/// <summary>
+		/// How high above the bottom bar the groups are drawn at factor f, in the grid's own units, as
+		/// GizmoGridDrawer.DrawGizmoGrid lays them out (1.7): rows wrapped at the right-hand column; when a first count
+		/// over every group makes three rows or more, the shrinkable commands (two or more) leave the rows and come after
+		/// them as small icons, along the top row (its lower half, then its upper half), then upwards from the left.
+		/// </summary>
+		private static float LaidOutHeight(float startX, float f)
+		{
+			float right = startX + (UI.screenWidth - RightColumn - startX) / f, maxWidth = right - startX, x = startX;
+			int wraps = 0;
+			shrinkables.Clear();
+			foreach (Gizmo gizmo in groups)
+			{
+				if (gizmo is Command command && command.shrinkable && command.Visible)
+				{
+					shrinkables.Add(command);
+				}
+				float width = gizmo.GetWidth(maxWidth);
+				if (x + width > right)
+				{
+					x = startX;
+					wraps++;
+				}
+				x += width + ColumnSpacing;
+			}
+			bool shrunk = wraps > 1 && shrinkables.Count > 1;
+			int rows = 1;
+			x = startX;
+			foreach (Gizmo gizmo in groups)
+			{
+				if (!gizmo.Visible || shrunk && gizmo is Command command && shrinkables.Contains(command))
+				{
+					continue;
+				}
+				float width = gizmo.GetWidth(maxWidth);
+				if (x + width > right)
+				{
+					x = startX;
+					rows++;
+				}
+				x += width + ColumnSpacing;
+			}
+			float height = rows * RowHeight;
+			if (shrunk)
+			{
+				// y: where the small icons' line is, from the top row's top (upwards negative); each is drawn a line lower.
+				float lineX = x, y = 0f;
+				int lines = 0;
+				foreach (Command command in shrinkables)
+				{
+					float iconSize = command.GetShrunkSize;
+					if (x + iconSize > right)
+					{
+						if (++lines > 1)
+						{
+							lineX = startX;
+						}
+						x = lineX;
+						y -= iconSize + 3f;
+					}
+					height = Mathf.Max(height, rows * RowHeight - (y + iconSize + 3f));
+					x += iconSize + 3f;
+				}
+			}
+			return height;
+		}
+
+		/// <summary>The two rows on the interface page of the options (after the counters', the key wheel's and the cutout's).</summary>
+		public static void OptionRows(Listing_Standard listing)
+		{
+			if (listing.ButtonTextLabeledPct(Texts.Chinese ? "命令图标大小" : "Command icon size", sizePercent + "%", 0.6f, TextAnchor.MiddleLeft, null, Texts.Chinese
+				? "选中小人、机械族或物品时，屏幕下方那一片命令图标的大小（建筑栏不变）。"
+				: "The size of the commands at the bottom of the screen for what is selected (the Architect's menu stays as it is)."))
+			{
+				var choices = new List<FloatMenuOption>();
+				foreach (int percent in new[] { 100, 85, 70 })
+				{
+					int chosen = percent;
+					choices.Add(new FloatMenuOption(chosen + "%", delegate
+					{
+						sizePercent = chosen;
+						Settings.Set("gizmoScale", chosen.ToString());
+					}));
+				}
+				Find.WindowStack.Add(new FloatMenu(choices));
+			}
+			if (listing.ButtonTextLabeledPct(Texts.Chinese ? "命令图标多时自动缩小" : "Many commands: smaller", RowsName(maxRows), 0.6f, TextAnchor.MiddleLeft, null, Texts.Chinese
+				? "命令图标超过这么多行时，自动缩小到放得下（最小缩到 60%，再多就照常多排几行）。"
+				: "When the commands take more rows than this, they are drawn smaller until they fit (down to 60%; beyond that they take more rows as usual)."))
+			{
+				var choices = new List<FloatMenuOption>();
+				foreach (int count in new[] { 0, 2, 3 })
+				{
+					int chosen = count;
+					choices.Add(new FloatMenuOption(RowsName(chosen), delegate
+					{
+						maxRows = chosen;
+						Settings.Set("gizmoRows", chosen.ToString());
+					}));
+				}
+				Find.WindowStack.Add(new FloatMenu(choices));
+			}
+		}
+
+		private static string RowsName(int rows)
+		{
+			if (rows <= 0)
+			{
+				return Texts.Chinese ? "关" : "Off";
+			}
+			return Texts.Chinese ? "最多" + (rows == 2 ? "两" : rows == 3 ? "三" : rows.ToString()) + "行" : "At most " + rows + " rows";
 		}
 	}
 }

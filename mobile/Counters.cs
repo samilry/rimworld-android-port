@@ -109,6 +109,8 @@ namespace PortMobile
 				KeyWheel.OptionRow(listing);
 				// And whether the interface keeps clear of the camera's hole.
 				Cutout.OptionRow(listing);
+				// And the size of the selection's commands.
+				GizmoFit.OptionRows(listing);
 			}
 			catch (Exception e)
 			{
