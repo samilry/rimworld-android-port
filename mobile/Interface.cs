@@ -94,6 +94,11 @@ namespace PortMobile
 			harmony.Patch(AccessTools.Method(typeof(SteamDeck), nameof(SteamDeck.HandleTouchScreenScrollViewScroll)), prefix: new HarmonyMethod(typeof(Interface), nameof(FingerScroll)));
 			harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.BeginScrollView), new[] { typeof(Rect), typeof(Vector2).MakeByRefType(), typeof(Rect), typeof(bool) }), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeScrollView)));
 			harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.EndScrollView)), postfix: new HarmonyMethod(typeof(Interface), nameof(AfterScrollView)));
+			// The developer tools' windows (debug actions, the log, tweak values) have scroll views of their own: they call the
+			// finger scrolling above but were not noted as lists, so a swipe dragged instead (a tester, 2026-10-24: "开发者选项有些
+			// 在下面划不动"; he swiped at the scrollbar on the screen's right edge).
+			harmony.Patch(AccessTools.Method(typeof(LudeonTK.DevGUI), nameof(LudeonTK.DevGUI.BeginScrollView)), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeScrollView)));
+			harmony.Patch(AccessTools.Method(typeof(LudeonTK.DevGUI), nameof(LudeonTK.DevGUI.EndScrollView)), postfix: new HarmonyMethod(typeof(Interface), nameof(AfterScrollView)));
 			harmony.Patch(AccessTools.Method(typeof(Root), nameof(Root.OnGUI)), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeGui)));
 			// The engine hands a mouse event to the window under the mouse before the game's OnGUI sees it.
 			harmony.Patch(AccessTools.Method(typeof(GUI), nameof(GUI.DispatchInputToWindows)), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeGui)));
@@ -324,11 +329,13 @@ namespace PortMobile
 
 		/// <summary>
 		/// A search box by the name it was given: the game's QuickSearchWidget, and the mods' own (Dubs Mint Menus focuses
-		/// "Search", "BuildSearch", "BenchSearch", "ReSearch" when its windows open).
+		/// "Search", "BuildSearch", "BenchSearch", "ReSearch" when its windows open), and filter boxes (the debug actions'
+		/// "DebugFilter", focused when the window opens: the soft keyboard covered half of it).
 		/// </summary>
 		private static bool IsSearchBox(string name)
 		{
-			return name != null && (name.StartsWith("QuickSearchWidget_", StringComparison.Ordinal) || name.IndexOf("search", StringComparison.OrdinalIgnoreCase) >= 0);
+			return name != null && (name.StartsWith("QuickSearchWidget_", StringComparison.Ordinal) || name.IndexOf("search", StringComparison.OrdinalIgnoreCase) >= 0
+				|| name.IndexOf("filter", StringComparison.OrdinalIgnoreCase) >= 0);
 		}
 
 		public static bool FingerDown => Touch.TouchInProgress;
