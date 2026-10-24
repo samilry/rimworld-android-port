@@ -340,7 +340,7 @@ namespace PortMobile
 	/// </summary>
 	/// <summary>
 	/// Picking a spot on the map for something to land (a shuttle's landing spot, drop pods' destination, any targeting
-	/// that draws a ghost of what will come down) in two steps, like placing a building (the user, 2026-10-23: "穿梭机无法
+	/// of locations that draws a ghost of what will come down; not one that picks a thing) in two steps, like placing a building (the user, 2026-10-23: "穿梭机无法
 	/// 在降落的时候旋转，没有旋转按钮", "降落也没有确定键"; a tap landed the shuttle at once). A tap marks the cell: the
 	/// targeting's ghost stays there whatever the finger does next, a tap elsewhere moves it. "Confirm" lands there (the
 	/// game's own checks, e.g. "blocked by a tree", still say no), "cancel" ends the targeting. A targeting that turns its
@@ -376,12 +376,16 @@ namespace PortMobile
 			{
 				return false;
 			}
-			if (Highlight(targeter) != null)
-			{
-				return true;
-			}
+			// A spot on the ground only: a targeting that picks a thing is the game's tap. The Anomaly holding platforms'
+			// "transfer" (TargetingParameters.ForBuilding, with a highlight) was marked as a cell, and "confirm" then gave its
+			// validator a cell, not a platform: nothing happened (a tester, 2026-10-24: "收容平台没法换").
 			TargetingParameters p = Params(targeter);
-			return p != null && p.canTargetLocations && !p.canTargetPawns && !p.canTargetBuildings && !p.canTargetItems;
+			if (p == null || !p.canTargetLocations)
+			{
+				return false;
+			}
+			// A ghost of what comes down (the shuttle's ForCell leaves canTargetPawns on), or nothing but locations.
+			return Highlight(targeter) != null || (!p.canTargetPawns && !p.canTargetBuildings && !p.canTargetItems);
 		}
 
 		private static bool IsMarked(Targeter targeter)
