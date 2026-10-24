@@ -145,7 +145,8 @@ namespace PortMobile
 					return;
 				}
 				DesignatorManager tools = Find.DesignatorManager;
-				bool placing = tools.SelectedDesignator != null && tools.SelectedStyle == null;
+				// A tool that reads the mouse button itself gets the press now, as from a mouse (RawMouseTools).
+				bool placing = tools.SelectedDesignator != null && tools.SelectedStyle == null && !RawMouseTools.Is(tools.SelectedDesignator);
 				bool targeting = tools.SelectedDesignator == null && Find.Targeter.IsTargeting;
 				if (tools.SelectedDesignator != null && tools.SelectedStyle != null)
 				{
@@ -807,6 +808,81 @@ namespace PortMobile
 	}
 
 	/// <summary>
+	/// A mod's tool that reads the mouse button itself every frame, in its SelectedUpdate or in what that calls in the mod
+	/// (Input.GetMouseButton, GetMouseButtonDown, GetMouseButtonUp): God Hands' grab, wrench, poke, cleaning... pick up a
+	/// pawn under the pressed button, carry it while the button is held and throw it when it is let go. Such a tool gets
+	/// the mouse as on the PC: the press at once, the mouse under the finger while it drags (not the map moving), the
+	/// release when it lifts, and no confirm step (MapTools, DragConfirm.KeepsOwnDrag). A tester, 2026-10-24: "神之手mod不
+	/// 适配手机操作" — a tool without a drawing style was held back like placing a building, and a moving finger panned.
+	/// Two fingers still move the map.
+	/// </summary>
+	internal static class RawMouseTools
+	{
+		private const int Depth = 6;
+		private static readonly Dictionary<Type, bool> known = new Dictionary<Type, bool>();
+
+		public static bool Is(Designator designator)
+		{
+			if (designator == null)
+			{
+				return false;
+			}
+			Type type = designator.GetType();
+			if (!known.TryGetValue(type, out bool raw))
+			{
+				try
+				{
+					var seen = new HashSet<System.Reflection.MethodBase>();
+					for (Type t = type; t != null && t != typeof(Designator) && !raw; t = t.BaseType)
+					{
+						// The game's own tools never poll the mouse: only a mod's types are looked into.
+						if (t.Assembly == typeof(Designator).Assembly)
+						{
+							break;
+						}
+						System.Reflection.MethodInfo update = t.GetMethod(nameof(Designator.SelectedUpdate), System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly, null, Type.EmptyTypes, null);
+						raw = update != null && ReadsMouse(update, type.Assembly, 0, seen);
+					}
+				}
+				catch (Exception e)
+				{
+					Console.WriteLine("[mobile] tools: could not look into " + type.FullName + ": " + e.Message);
+				}
+				known[type] = raw;
+				if (raw)
+				{
+					Console.WriteLine("[mobile] tools: " + type.FullName + " reads the mouse button itself: a mouse's press, drag and release");
+				}
+			}
+			return raw;
+		}
+
+		private static bool ReadsMouse(System.Reflection.MethodBase method, System.Reflection.Assembly mod, int depth, HashSet<System.Reflection.MethodBase> seen)
+		{
+			if (!seen.Add(method) || method.GetMethodBody() == null)
+			{
+				return false;
+			}
+			foreach (KeyValuePair<System.Reflection.Emit.OpCode, object> instruction in PatchProcessor.ReadMethodBody(method))
+			{
+				if (!(instruction.Value is System.Reflection.MethodBase called))
+				{
+					continue;
+				}
+				if (called.DeclaringType?.FullName == "UnityEngine.Input" && called.Name.StartsWith("GetMouseButton", StringComparison.Ordinal))
+				{
+					return true;
+				}
+				if (depth < Depth && called.DeclaringType?.Assembly == mod && ReadsMouse(called, mod, depth + 1, seen))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+	}
+
+	/// <summary>
 	/// Designating by dragging (mining, cancelling, cutting plants, zones, walls, floors and every other tool with a
 	/// drawing style) in two steps, like placing a building. A drag only marks its cells: they stay highlighted,
 	/// further drags add to them, and a "confirm" button next to the tool's own controls designates them all at
@@ -871,6 +947,10 @@ namespace PortMobile
 			if (designator == null)
 			{
 				return false;
+			}
+			if (RawMouseTools.Is(designator))
+			{
+				return true;
 			}
 			Type type = designator.GetType();
 			if (!ownDrag.TryGetValue(type, out bool own))
