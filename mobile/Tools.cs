@@ -966,6 +966,14 @@ namespace PortMobile
 					}
 				}
 			}
+			else
+			{
+				// Nothing there the tool takes: what the game does on a release (Designator.Finalize), the failure sound and
+				// the reason ("already in storage", "must designate haulable things"). Without it a drag over things already
+				// stored or already marked left nothing and said nothing, and "confirm" asked for a drag (a tester,
+				// 2026-10-24: "批量搬运不能用").
+				selected.Finalize(false);
+			}
 			dragger.EndDrag();
 			return true;
 		}
