@@ -93,6 +93,9 @@ static int opt_coherentOnly = 1;
 static int opt_flush = 0;
 static int opt_logFrames = 5;
 static int opt_barriers = -1; // "barriers=1": a full barrier opens every command buffer; "barriers=0": never; default: on ARM Mali
+static int opt_depth24 = -1; // "depth24=1": the engine's D32_SFLOAT_S8_UINT is always D24_UNORM_S8_UINT; "depth24=0": never; default: where the driver cannot use it
+static VkFormat g_depthFrom, g_depthTo; // the depth format below (choose_depth_format)
+static VkFormat depth_format(VkFormat format);
 static int opt_noDebugUtils; // "debugutils=0": VK_EXT_debug_utils is hidden from the engine (to try the stand-ins below on a driver that has it)
 static int opt_debugTest; // "debugtest=1": a driver advice and an ordinary message go to the engine's messenger as it is made (see filter_DebugMessage)
 static int opt_dropDebugTest; // "dropdebug=1": VK_EXT_debug_utils counts as missing when the instance is made (to try hook_CreateInstance's leaving out on a driver that has it)
@@ -533,6 +536,7 @@ static void read_options(void)
         else if (strcmp(tok, "debugtest") == 0) opt_debugTest = v;
         else if (strcmp(tok, "dropdebug") == 0) opt_dropDebugTest = v;
         else if (strcmp(tok, "barriers") == 0) opt_barriers = v;
+        else if (strcmp(tok, "depth24") == 0) opt_depth24 = v;
     }
 }
 
@@ -827,7 +831,31 @@ static VKAPI_ATTR void VKAPI_CALL hook_CmdSetScissor(VkCommandBuffer cb, uint32_
 
 static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateGraphicsPipelines(VkDevice device, VkPipelineCache cache, uint32_t count, const VkGraphicsPipelineCreateInfo* infos, const VkAllocationCallbacks* alloc, VkPipeline* out)
 {
+    // The engine's own structures, changed for the call and put back after it (the depth format above).
+    VkPipelineRenderingCreateInfo* changed[16];
+    VkFormat was[16][2];
+    int changes = 0;
+    for (uint32_t i = 0; g_depthTo != VK_FORMAT_UNDEFINED && infos && i < count && changes < 16; i++)
+    {
+        for (VkBaseOutStructure* next = (VkBaseOutStructure*)infos[i].pNext; next && changes < 16; next = next->pNext)
+        {
+            if (next->sType != VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO) continue;
+            VkPipelineRenderingCreateInfo* rendering = (VkPipelineRenderingCreateInfo*)next;
+            if (rendering->depthAttachmentFormat != g_depthFrom && rendering->stencilAttachmentFormat != g_depthFrom) continue;
+            changed[changes] = rendering;
+            was[changes][0] = rendering->depthAttachmentFormat;
+            was[changes][1] = rendering->stencilAttachmentFormat;
+            rendering->depthAttachmentFormat = depth_format(rendering->depthAttachmentFormat);
+            rendering->stencilAttachmentFormat = depth_format(rendering->stencilAttachmentFormat);
+            changes++;
+        }
+    }
     VkResult r = real_CreateGraphicsPipelines(device, cache, count, infos, alloc, out);
+    for (int i = 0; i < changes; i++)
+    {
+        changed[i]->depthAttachmentFormat = was[i][0];
+        changed[i]->stencilAttachmentFormat = was[i][1];
+    }
     g_pipelinesCreated += count;
     if (r != VK_SUCCESS) { g_pipelineFailures++; LOGW("vulkan: vkCreateGraphicsPipelines (%u): %s", count, result_name(r)); }
     return r;
@@ -1096,6 +1124,111 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_BeginCommandBuffer(VkCommandBuffer cb
     return r;
 }
 
+// ---- depth format ----
+// The engine makes every depth buffer D32_SFLOAT_S8_UINT (EngineApplicationOptions.DepthFormat, the window's depth with
+// SAMPLED | DEPTH_STENCIL_ATTACHMENT, optimal tiling) without asking whether the driver can. A tester's Mali-G57 MC3
+// (Dimensity 720, Vulkan 1.1.117, driver r21p0, 2026-10-24) refused it: "VMA failed to allocate image
+// 'RenderContext.Depth[0]' ... ErrorInitializationFailed", and the game closed before its first frame. Where the driver
+// lacks either use for that format, it becomes D24_UNORM_S8_UINT (24-bit depth, the same 8-bit stencil) everywhere it
+// is named: images, views, render passes, and the formats a pipeline for dynamic rendering is made for.
+static VkFormat g_depthFrom = VK_FORMAT_UNDEFINED, g_depthTo = VK_FORMAT_UNDEFINED;
+static PFN_vkCreateImage real_CreateImage;
+static PFN_vkCreateImageView real_CreateImageView;
+static PFN_vkCreateRenderPass real_CreateRenderPass;
+static PFN_vkCreateRenderPass2 real_CreateRenderPass2;
+static long g_depthImages;
+
+static void choose_depth_format(VkPhysicalDevice pd)
+{
+    PFN_vkGetPhysicalDeviceFormatProperties getFormat = (PFN_vkGetPhysicalDeviceFormatProperties)g_gipa(g_instance, "vkGetPhysicalDeviceFormatProperties");
+    if (!getFormat) return;
+    VkFormatProperties d32, d24;
+    memset(&d32, 0, sizeof d32);
+    memset(&d24, 0, sizeof d24);
+    getFormat(pd, VK_FORMAT_D32_SFLOAT_S8_UINT, &d32);
+    getFormat(pd, VK_FORMAT_D24_UNORM_S8_UINT, &d24);
+    const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+    int can32 = (d32.optimalTilingFeatures & need) == need, can24 = (d24.optimalTilingFeatures & need) == need;
+    int swap = can24 && (opt_depth24 == 1 || (opt_depth24 < 0 && !can32));
+    if (swap)
+    {
+        g_depthFrom = VK_FORMAT_D32_SFLOAT_S8_UINT;
+        g_depthTo = VK_FORMAT_D24_UNORM_S8_UINT;
+    }
+    LOGK("vulkan: depth D32_SFLOAT_S8_UINT features 0x%x, D24_UNORM_S8_UINT 0x%x: %s", d32.optimalTilingFeatures, d24.optimalTilingFeatures,
+         swap ? "the engine's D32_SFLOAT_S8_UINT is made D24_UNORM_S8_UINT" : can32 ? "as the engine asks" : "as the engine asks (no format with both uses)");
+}
+
+static VkFormat depth_format(VkFormat format)
+{
+    return g_depthTo != VK_FORMAT_UNDEFINED && format == g_depthFrom ? g_depthTo : format;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateImage(VkDevice device, const VkImageCreateInfo* info, const VkAllocationCallbacks* alloc, VkImage* out)
+{
+    if (info && g_depthTo != VK_FORMAT_UNDEFINED && info->format == g_depthFrom)
+    {
+        VkImageCreateInfo copy = *info;
+        copy.format = g_depthTo;
+        if (g_depthImages++ < 3) LOGK("vulkan: a %ux%u depth image made D24_UNORM_S8_UINT", info->extent.width, info->extent.height);
+        return real_CreateImage(device, &copy, alloc, out);
+    }
+    return real_CreateImage(device, info, alloc, out);
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateImageView(VkDevice device, const VkImageViewCreateInfo* info, const VkAllocationCallbacks* alloc, VkImageView* out)
+{
+    if (info && g_depthTo != VK_FORMAT_UNDEFINED && info->format == g_depthFrom)
+    {
+        VkImageViewCreateInfo copy = *info;
+        copy.format = g_depthTo;
+        return real_CreateImageView(device, &copy, alloc, out);
+    }
+    return real_CreateImageView(device, info, alloc, out);
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateRenderPass(VkDevice device, const VkRenderPassCreateInfo* info, const VkAllocationCallbacks* alloc, VkRenderPass* out)
+{
+    if (info && g_depthTo != VK_FORMAT_UNDEFINED && info->attachmentCount > 0 && info->attachmentCount <= 32)
+    {
+        VkAttachmentDescription attachments[32];
+        int changed = 0;
+        for (uint32_t i = 0; i < info->attachmentCount; i++)
+        {
+            attachments[i] = info->pAttachments[i];
+            if (attachments[i].format == g_depthFrom) { attachments[i].format = g_depthTo; changed = 1; }
+        }
+        if (changed)
+        {
+            VkRenderPassCreateInfo copy = *info;
+            copy.pAttachments = attachments;
+            return real_CreateRenderPass(device, &copy, alloc, out);
+        }
+    }
+    return real_CreateRenderPass(device, info, alloc, out);
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateRenderPass2(VkDevice device, const VkRenderPassCreateInfo2* info, const VkAllocationCallbacks* alloc, VkRenderPass* out)
+{
+    if (info && g_depthTo != VK_FORMAT_UNDEFINED && info->attachmentCount > 0 && info->attachmentCount <= 32)
+    {
+        VkAttachmentDescription2 attachments[32];
+        int changed = 0;
+        for (uint32_t i = 0; i < info->attachmentCount; i++)
+        {
+            attachments[i] = info->pAttachments[i];
+            if (attachments[i].format == g_depthFrom) { attachments[i].format = g_depthTo; changed = 1; }
+        }
+        if (changed)
+        {
+            VkRenderPassCreateInfo2 copy = *info;
+            copy.pAttachments = attachments;
+            return real_CreateRenderPass2(device, &copy, alloc, out);
+        }
+    }
+    return real_CreateRenderPass2(device, info, alloc, out);
+}
+
 static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice pd, const VkDeviceCreateInfo* info, const VkAllocationCallbacks* alloc, VkDevice* out)
 {
     VkResult r = real_CreateDevice(pd, info, alloc, out);
@@ -1115,6 +1248,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice pd, con
         g_barriers = opt_barriers >= 0 ? opt_barriers : props.vendorID == 0x13B5;
         LOGK("vulkan: GPU \"%s\" (vendor 0x%x): %s", props.deviceName, props.vendorID,
              g_barriers ? "every command buffer opens with a full barrier" : "command buffers as the engine records them");
+        choose_depth_format(pd);
     }
     char ext[2048] = "";
     for (uint32_t i = 0; i < info->enabledExtensionCount && strlen(ext) < 1900; i++)
@@ -1246,12 +1380,17 @@ static PFN_vkVoidFunction device_hook(const char* name, PFN_vkVoidFunction real)
     HOOK(QueueSubmit2)
     HOOK(BeginCommandBuffer)
     HOOK(WaitForFences)
+    HOOK(CreateImage)
+    HOOK(CreateImageView)
+    HOOK(CreateRenderPass)
+    HOOK(CreateRenderPass2)
 #undef HOOK
     // The real barrier stays at hand for the Mali barrier at the start of a command buffer (hook_BeginCommandBuffer).
     if (strcmp(name, "vkCmdPipelineBarrier") == 0) { g_cmdPipelineBarrier = real_CmdPipelineBarrier = (PFN_vkCmdPipelineBarrier)real; return (PFN_vkVoidFunction)hook_CmdPipelineBarrier; }
     if (strcmp(name, "vkCmdPipelineBarrier2") == 0 || strcmp(name, "vkCmdPipelineBarrier2KHR") == 0) { real_CmdPipelineBarrier2 = (PFN_vkCmdPipelineBarrier2)real; return (PFN_vkVoidFunction)hook_CmdPipelineBarrier2; }
     if (strcmp(name, "vkCmdBlitImage2") == 0 || strcmp(name, "vkCmdBlitImage2KHR") == 0) { real_CmdBlitImage2 = (PFN_vkCmdBlitImage2)real; return (PFN_vkVoidFunction)hook_CmdBlitImage2; }
     if (strcmp(name, "vkCmdBeginRenderPass2KHR") == 0) { real_CmdBeginRenderPass2 = (PFN_vkCmdBeginRenderPass2)real; return (PFN_vkVoidFunction)hook_CmdBeginRenderPass2; }
+    if (strcmp(name, "vkCreateRenderPass2KHR") == 0) { real_CreateRenderPass2 = (PFN_vkCreateRenderPass2)real; return (PFN_vkVoidFunction)hook_CreateRenderPass2; }
     if (strcmp(name, "vkCmdBeginRenderingKHR") == 0) { real_CmdBeginRendering = (PFN_vkCmdBeginRendering)real; return (PFN_vkVoidFunction)hook_CmdBeginRendering; }
     if (strcmp(name, "vkQueueSubmit2KHR") == 0) { real_QueueSubmit2 = (PFN_vkQueueSubmit2)real; return (PFN_vkVoidFunction)hook_QueueSubmit2; }
     return NULL;
