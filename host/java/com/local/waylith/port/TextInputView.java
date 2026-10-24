@@ -33,6 +33,12 @@ public final class TextInputView extends View
         setFocusableInTouchMode(false);
     }
 
+    /** Whether a text field in the game has the focus (the view has it then). */
+    public boolean isActive()
+    {
+        return active;
+    }
+
     /** Takes or gives up the focus (called on the UI thread by the activity). */
     public void setActive(boolean on)
     {

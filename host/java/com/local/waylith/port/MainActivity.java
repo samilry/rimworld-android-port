@@ -1913,7 +1913,18 @@ public final class MainActivity extends NativeActivity
                 }
                 if (show)
                 {
+                    boolean was = textInput.isActive();
                     textInput.setActive(true);
+                    // Android does not start the input method afresh when the view that lost the focus takes it again:
+                    // the input method keeps what it was given. When its process was restarted meanwhile (the system kills
+                    // it for memory while the game runs), it was given this window without an editor, and kept that:
+                    // everything typed went nowhere until a floating window or a screen recording took the window's focus
+                    // away and back (2026-10-24: Chinese swallowed after playing a while; Baidu IME killed by hand repeats it). So a field that takes
+                    // the focus, or a keyboard asked for again while the input method has no editor, starts it afresh.
+                    if (!was || !imm.isAcceptingText())
+                    {
+                        imm.restartInput(textInput);
+                    }
                     if (!forced)
                     {
                         imm.showSoftInput(textInput, 0);
