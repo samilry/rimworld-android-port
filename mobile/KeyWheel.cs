@@ -25,6 +25,8 @@ namespace PortMobile
 	/// is always tapped with the left). While the ring is closed the button shows what is on. The last key opens the
 	/// setup: keys added from the full list (with Ctrl / Shift / Alt ticked: as combinations), taken out, moved; the
 	/// defaults back; the button back to its place. The button is moved by dragging it.
+	/// A key can be given a text of the player's own, shown on it instead of the key (the user, 2026-10-24: with many keys
+	/// one forgets what each is for): "改名" in the setup, kept in mobile.txt as keyWheelLabel.&lt;key's name&gt;=text.
 	/// Left out while a hardware keyboard is in use (InputMode).
 	/// mobile.txt: keyWheel=0 leaves it out (Options → Interface has the switch); keyWheelKeys=defName,@Shift,@K:Ctrl+Z,...;
 	/// keyWheelAt=X,Y (the button's centre, interface units).
@@ -109,6 +111,8 @@ namespace PortMobile
 		private static Vector2 shownCenter = new Vector2(-1f, -1f);
 		private static List<string> names = new List<string>();
 		private static List<WheelKey> keys;
+		// The players' texts for keys, by the key's name ("": none), read from mobile.txt as they are first asked for.
+		private static readonly Dictionary<string, string> labels = new Dictionary<string, string>();
 		private static readonly List<Vector2> slotCenters = new List<Vector2>();
 		private static int drawnFrame = -100;
 		private static int mouseButton = MouseLeft;
@@ -165,6 +169,24 @@ namespace PortMobile
 				}
 				return keys;
 			}
+		}
+
+		/// <summary>The player's text for a key ("" when it has none).</summary>
+		internal static string CustomLabel(WheelKey key)
+		{
+			if (!labels.TryGetValue(key.Name, out string text))
+			{
+				labels[key.Name] = text = Settings.Get("keyWheelLabel." + key.Name, "");
+			}
+			return text;
+		}
+
+		/// <summary>Sets the player's text for a key (empty: back to the key itself) and keeps it.</summary>
+		internal static void SetLabel(WheelKey key, string text)
+		{
+			text = (text ?? "").Replace('\n', ' ').Replace('\r', ' ').Trim();
+			labels[key.Name] = text;
+			Settings.Set("keyWheelLabel." + key.Name, text);
 		}
 
 		internal static void SetKeys(List<WheelKey> wheelKeys)
@@ -704,8 +726,20 @@ namespace PortMobile
 					string modifiers = ModifierText(key.RawMods);
 					label = modifiers.TrimEnd('+').Replace("+", "\n") + "\n" + key.RawShown.Substring(modifiers.Length);
 				}
+				string custom = CustomLabel(key);
+				if (custom.Length > 0)
+				{
+					// The player's text, and the key itself small and grey under it.
+					string keyText = key.IsRaw ? key.RawShown : KeyText(key).Replace("\n", "");
+					bool both = keyText.Length > 0 && keyText != custom;
+					DrawRound(rect, fill, both ? custom + "\n<color=#b4b4b4>" + keyText + "</color>" : custom, !both && custom.Length <= 3 ? GameFont.Small : GameFont.Tiny);
+					label = null;
+				}
 			}
-			DrawRound(rect, fill, label, label.Length <= 5 ? GameFont.Small : GameFont.Tiny);
+			if (label != null)
+			{
+				DrawRound(rect, fill, label, label.Length <= 5 ? GameFont.Small : GameFont.Tiny);
+			}
 			if (Event.current.type == EventType.MouseDown && Event.current.button == 0 && Mouse.IsOver(rect))
 			{
 				touching = index;
@@ -735,7 +769,7 @@ namespace PortMobile
 		{
 			bool check = enabled;
 			listing.CheckboxLabeled(Texts.Chinese ? "显示自定义按键盘" : "Show the key wheel", ref check, Texts.Chinese
-				? "游戏中屏幕边上的圆形“按键”按钮：点一下展开一圈按键，每个按键上写着它对应的键盘按键或组合键（按住就是按住那个键），再点一下收起；拖动可以移动位置。Ctrl、Shift、Alt 和鼠标左键、中键、右键是开关，点一下打开、再点一下关闭：开着 Ctrl 时，点屏幕和按别的键都带着 Ctrl；开着右键时，在屏幕上点一下就是鼠标右键点击。展开后最后一个按键“设置”可以从游戏快捷键和键盘全部按键里增删按键，勾选 Ctrl / Shift / Alt 可以添加组合键。接着实体键盘时不显示。"
+				? "游戏中屏幕边上的圆形“按键”按钮：点一下展开一圈按键，每个按键上写着它对应的键盘按键或组合键（按住就是按住那个键），再点一下收起；拖动可以移动位置。Ctrl、Shift、Alt 和鼠标左键、中键、右键是开关，点一下打开、再点一下关闭：开着 Ctrl 时，点屏幕和按别的键都带着 Ctrl；开着右键时，在屏幕上点一下就是鼠标右键点击。展开后最后一个按键“设置”可以从游戏快捷键和键盘全部按键里增删按键，勾选 Ctrl / Shift / Alt 可以添加组合键，点“改名”给按键起个名字（比如“征召”），显示在按键上。接着实体键盘时不显示。"
 				: "The round \"Keys\" button at the edge of the screen in a game: a tap opens a ring of keys, each showing the keyboard key or combination it stands for (holding it holds the key); another tap closes it; drag it to move it. Ctrl, Shift, Alt and the left, middle and right mouse buttons are switches, on with a tap and off with another: with Ctrl on, taps on the screen and the other keys come with Ctrl; with the right button on, a tap on the screen is a right click. The last key, \"Setup\", adds and removes keys from the game's key bindings and the whole keyboard; with Ctrl / Shift / Alt ticked it adds combinations. Not shown while a hardware keyboard is connected.", 30f, 0.6f);
 			SetEnabled(check);
 		}
@@ -794,8 +828,13 @@ namespace PortMobile
 				{
 					Widgets.DrawLightHighlight(row);
 				}
-				Widgets.Label(new Rect(row.x + 6f, row.y, row.width - 140f, rowH), keys[i].Label + "  <color=#999999>" + Bound(keys[i], chinese) + "</color>");
+				string custom = KeyWheel.CustomLabel(keys[i]);
+				Widgets.Label(new Rect(row.x + 6f, row.y, row.width - 196f, rowH), (custom.Length > 0 ? "<color=#f2c14e>「" + custom + "」</color> " : "") + keys[i].Label + "  <color=#999999>" + Bound(keys[i], chinese) + "</color>");
 				float x = row.xMax - 132f;
+				if (Widgets.ButtonText(new Rect(x - 56f, row.y + 4f, 52f, rowH - 8f), chinese ? "改名" : "Name"))
+				{
+					Find.WindowStack.Add(new Dialog_KeyLabel(keys[i]));
+				}
 				if (i > 0 && Widgets.ButtonText(new Rect(x, row.y + 4f, 40f, rowH - 8f), "↑"))
 				{
 					WheelKey d = keys[i];
@@ -968,6 +1007,74 @@ namespace PortMobile
 	/// A key of the wheel: one of the game's key bindings (Def), a keyboard key with its modifiers (RawKey, RawMods), or
 	/// one of the phone's own switches (KeyWheel.Specials).
 	/// </summary>
+	/// <summary>The text a key of the wheel shows: the player's own (KeyWheel.SetLabel).</summary>
+	internal sealed class Dialog_KeyLabel : Window
+	{
+		private const string FieldName = "KeyWheelLabelField";
+		private const int MaxLength = 12;
+		private readonly WheelKey key;
+		private string text;
+		private bool focused;
+
+		public Dialog_KeyLabel(WheelKey key)
+		{
+			this.key = key;
+			text = KeyWheel.CustomLabel(key);
+			doCloseX = true;
+			closeOnClickedOutside = true;
+			absorbInputAroundWindow = true;
+			forcePause = true;
+		}
+
+		public override Vector2 InitialSize => new Vector2(560f, 260f);
+
+		public override void DoWindowContents(Rect inRect)
+		{
+			bool chinese = Texts.Chinese;
+			Text.Font = GameFont.Medium;
+			Widgets.Label(new Rect(inRect.x, inRect.y, inRect.width - 40f, 36f), chinese ? "按键上显示的文字" : "Text on the key");
+			Text.Font = GameFont.Small;
+			string keyText = key.IsRaw ? key.RawShown : KeyWheel.KeyText(key).Replace("\n", "");
+			Widgets.Label(new Rect(inRect.x, inRect.y + 40f, inRect.width, 50f), (chinese ? "按键：" : "Key: ") + key.Label + (keyText.Length > 0 ? "  <color=#999999>" + keyText + "</color>" : "")
+				+ "\n<color=#999999>" + (chinese ? "建议 2～4 个字，比如“征召”“暂停”。留空就显示原来的按键。" : "Two to four characters fit best. Empty: the key itself.") + "</color>");
+			GUI.SetNextControlName(FieldName);
+			text = Widgets.TextField(new Rect(inRect.x, inRect.y + 98f, inRect.width, 36f), text);
+			if (text.Length > MaxLength)
+			{
+				text = text.Substring(0, MaxLength);
+			}
+			if (!focused)
+			{
+				focused = true;
+				GUI.FocusControl(FieldName);
+			}
+			float bw = 160f, y = inRect.yMax - 38f;
+			if (Widgets.ButtonText(new Rect(inRect.x, y, bw, 36f), chinese ? "用功能名" : "Its function"))
+			{
+				text = key.Label.Length > MaxLength ? key.Label.Substring(0, MaxLength) : key.Label;
+			}
+			if (Widgets.ButtonText(new Rect(inRect.x + bw + 10f, y, bw, 36f), chinese ? "清除" : "Clear"))
+			{
+				text = "";
+			}
+			if (Widgets.ButtonText(new Rect(inRect.xMax - bw, y, bw, 36f), chinese ? "确定" : "OK"))
+			{
+				Save();
+			}
+		}
+
+		public override void OnAcceptKeyPressed()
+		{
+			Save();
+		}
+
+		private void Save()
+		{
+			KeyWheel.SetLabel(key, text);
+			Close();
+		}
+	}
+
 	internal sealed class WheelKey
 	{
 		public readonly string Name;
