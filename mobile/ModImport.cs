@@ -40,14 +40,14 @@ namespace PortMobile
 		[DllImport("glfw")] private static extern int glfwAndroidRestart();
 		[DllImport("glfw")] private static extern void glfwAndroidPrepareExit();
 
-		private static string Say(string chinese, string english)
+		internal static string Say(string chinese, string english)
 		{
 			return Texts.Chinese ? chinese : english;
 		}
 
 		// files/ModImport and files/ModImport.state, next to the game folder (the activity writes both).
 		private static string FilesDir => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, ".."));
-		private static string Staging => Path.Combine(FilesDir, "ModImport");
+		internal static string Staging => Path.Combine(FilesDir, "ModImport");
 		private static string StateFile => Path.Combine(FilesDir, "ModImport.state");
 
 		public static void Start(Harmony harmony)
@@ -349,17 +349,23 @@ namespace PortMobile
 			Find.WindowStack.Add(new FloatMenu(options));
 		}
 
+		/// <summary>The system's chooser, its copies going to Staging (also for SaveImport): throws when it cannot be opened.</summary>
+		internal static void OpenChooser(bool folder)
+		{
+			CleanUp();
+			Directory.CreateDirectory(Staging);
+			File.Delete(StateFile);
+			if (glfwAndroidPickFiles(folder ? 1 : 0) == 0)
+			{
+				throw new InvalidOperationException(Say("活动没有响应", "the activity did not answer"));
+			}
+		}
+
 		private static void Pick(bool folder)
 		{
 			try
 			{
-				CleanUp();
-				Directory.CreateDirectory(Staging);
-				File.Delete(StateFile);
-				if (glfwAndroidPickFiles(folder ? 1 : 0) == 0)
-				{
-					throw new InvalidOperationException(Say("活动没有响应", "the activity did not answer"));
-				}
+				OpenChooser(folder);
 				Find.WindowStack.Add(new Progress());
 			}
 			catch (Exception e)
@@ -370,7 +376,7 @@ namespace PortMobile
 		}
 
 		/// <summary>What the activity last wrote to the state file: "state count bytes" and, from the second line on, a message.</summary>
-		private static bool ReadState(out int state, out int files, out long bytes, out string message)
+		internal static bool ReadState(out int state, out int files, out long bytes, out string message)
 		{
 			state = 0;
 			files = 0;
@@ -517,7 +523,7 @@ namespace PortMobile
 			}
 		}
 
-		private static void CleanUp()
+		internal static void CleanUp()
 		{
 			try
 			{

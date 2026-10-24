@@ -411,6 +411,29 @@ public final class MainActivity extends NativeActivity
                             {
                                 unpack(uri, new File(target, safeName(name.substring(0, name.length() - 4))));
                             }
+                            else if (name.toLowerCase().endsWith(".rws"))
+                            {
+                                // A save (mobile/SaveImport.cs puts it with the saves): copied as it is. A file a file
+                                // manager put into the saves folder may not be readable by the game (a tester's vivo).
+                                DocumentReader reader = new DocumentReader(getContentResolver(), uri);
+                                InputStream in;
+                                try
+                                {
+                                    in = reader.open(uri);
+                                }
+                                finally
+                                {
+                                    reader.close();
+                                }
+                                try
+                                {
+                                    write(in, new File(target, safeName(name)));
+                                }
+                                finally
+                                {
+                                    in.close();
+                                }
+                            }
                             else
                             {
                                 leftOut.append(name).append('\n');
