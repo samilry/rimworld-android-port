@@ -347,6 +347,9 @@ namespace PortMobile
 		private static Vector2 currentScrollViewStartMousePos, scrollViewVelocity;
 		private static bool scrollMouseTraveledEnoughDist;
 		private static int consumeAllMouseUpEventsOnFrame = -1;
+		// The frame whose coasting step is done; the scroll view the last BeginScrollView was for (its end, for Clamp).
+		private static int coastFrame = -1;
+		private static Rect lastOutRect, lastViewRect;
 
 		/// <summary>
 		/// Stands in for SteamDeck.HandleTouchScreenScrollViewScroll (the game calls it from every scroll view and
@@ -376,14 +379,12 @@ namespace PortMobile
 							scrollVelocityRecords.RemoveRange(0, 40);
 						}
 						scrollVelocityRecords.Add((Time.time, -moved));
-						Clamp(ref scrollPosition);
+						Clamp(outRect, ref scrollPosition);
 					}
 				}
-				else if (Event.current.type == EventType.Repaint)
+				else if (coastFrame != Time.frameCount)
 				{
-					scrollPosition += scrollViewVelocity;
-					scrollViewVelocity = Vector2.MoveTowards(scrollViewVelocity, default(Vector2), Time.deltaTime * 90f);
-					Clamp(ref scrollPosition);
+					Coast(outRect, ref scrollPosition);
 					coasting = scrollViewVelocity != default(Vector2);
 				}
 				return false;
@@ -415,7 +416,7 @@ namespace PortMobile
 					Vector2 delta = UnityGUIBugsFixer.CurrentEventDelta;
 					scrollPosition -= delta;
 					scrollVelocityRecords.Add((Time.time, -delta));
-					Clamp(ref scrollPosition);
+					Clamp(outRect, ref scrollPosition);
 				}
 			}
 			else if (!Input.GetMouseButton(0) && currentScrollView == outRect)
@@ -435,11 +436,9 @@ namespace PortMobile
 				}
 				currentScrollView = null;
 			}
-			if (Event.current.type == EventType.Repaint && scrollViewWithVelocity.HasValue && scrollViewWithVelocity.Value == outRect && scrollViewVelocity != default(Vector2))
+			if (coastFrame != Time.frameCount && scrollViewWithVelocity.HasValue && scrollViewWithVelocity.Value == outRect && scrollViewVelocity != default(Vector2))
 			{
-				scrollPosition += scrollViewVelocity;
-				scrollViewVelocity = Vector2.MoveTowards(scrollViewVelocity, default(Vector2), Time.deltaTime * 90f);
-				Clamp(ref scrollPosition);
+				Coast(outRect, ref scrollPosition);
 			}
 			if (consumeAllMouseUpEventsOnFrame == Time.frameCount && Event.current.type == EventType.MouseUp)
 			{
@@ -448,15 +447,49 @@ namespace PortMobile
 			return false;
 		}
 
-		private static void Clamp(ref Vector2 pos)
+		/// <summary>
+		/// A list that keeps the speed of the finger moves on: once a frame, in the frame's first pass (its layout), before
+		/// the list decides which rows it draws. In the repaint (as the game does it on a Steam Deck) the step came after
+		/// that: the rows it brought in stayed blank for the frame, a band at the bottom while the list slid (a tester,
+		/// 2026-10-24: a storage filter "very long" and blank while it slid on, and a tap on the blank opened the card of an
+		/// item: Dubs Mint Menus puts an invisible button on every row's name). The speed is the distance of 1/60 s, as on
+		/// a Deck, and the step follows the frame's length: at 120 frames a fling went twice as fast and as far.
+		/// </summary>
+		private static void Coast(Rect outRect, ref Vector2 scrollPosition)
+		{
+			coastFrame = Time.frameCount;
+			scrollPosition += scrollViewVelocity * Mathf.Min(Time.deltaTime * 60f, 4f);
+			scrollViewVelocity = Vector2.MoveTowards(scrollViewVelocity, default(Vector2), Time.deltaTime * 90f);
+			Vector2 before = scrollPosition;
+			Clamp(outRect, ref scrollPosition);
+			// At an end it stops.
+			if (scrollPosition.x != before.x)
+			{
+				scrollViewVelocity.x = 0f;
+			}
+			if (scrollPosition.y != before.y)
+			{
+				scrollViewVelocity.y = 0f;
+			}
+		}
+
+		/// <summary>Keeps a scroll position in its list: from 0 to the end the engine's scroll view clamps it to, when the list's size is known (the same BeginScrollView call).</summary>
+		private static void Clamp(Rect outRect, ref Vector2 pos)
 		{
 			if (pos.x < 0f) pos.x = 0f;
 			if (pos.y < 0f) pos.y = 0f;
+			if (outRect == lastOutRect)
+			{
+				pos.x = Mathf.Min(pos.x, Mathf.Max(0f, lastViewRect.width - outRect.width));
+				pos.y = Mathf.Min(pos.y, Mathf.Max(0f, lastViewRect.height - outRect.height));
+			}
 		}
 
 		/// <summary>Prefix of Widgets.BeginScrollView: remembers whether the press landed in a list with something to scroll.</summary>
 		public static void BeforeScrollView(Rect outRect, Rect viewRect)
 		{
+			lastOutRect = outRect;
+			lastViewRect = viewRect;
 			Event current = Event.current;
 			if (current == null)
 			{
