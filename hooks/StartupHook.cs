@@ -421,6 +421,8 @@ internal static class StartupHook
 	{
 		PortHooks.PortPlatform.StartedAtTick = Environment.TickCount64;
 		PortHooks.PortLog.Start();
+		// Before anything of Harmony's runs: a kernel that names its CPU oddly left MonoMod without detours (a Kirin 8000).
+		PortHooks.MonoModArch.Check();
 		PortHooks.JitProfile.Start();
 		PortHooks.InlineWatch.Start();
 		AssemblyLoadContext.Default.Resolving += Resolve;

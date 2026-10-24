@@ -15,7 +15,7 @@ mkdir -p build
   # The engine's texture service and Vulkan types, for hooks/Textures.cs and hooks/Astc.cs, and the hash Astc.cs keys its
   # cache with (System.IO.Hashing, which the game brings); the game's own copies at run time.
   for f in Waylith Brutal.Vulkan Brutal.Core.Common System.IO.Hashing; do echo "-r:\"$(cygpath -w "build/game/$f.dll")\""; done
-  echo "hooks/StartupHook.cs hooks/PortDiag.cs hooks/WaylithClr.cs hooks/ModPrepHost.cs hooks/HarmonyCompat.cs hooks/Textures.cs hooks/Astc.cs hooks/JitProfile.cs hooks/InlineWatch.cs hooks/UiDescriptors.cs hooks/PortLog.cs hooks/ModFolders.cs patch/ModPrep.cs"
+  echo "hooks/StartupHook.cs hooks/PortDiag.cs hooks/WaylithClr.cs hooks/ModPrepHost.cs hooks/HarmonyCompat.cs hooks/Textures.cs hooks/Astc.cs hooks/JitProfile.cs hooks/InlineWatch.cs hooks/UiDescriptors.cs hooks/PortLog.cs hooks/ModFolders.cs hooks/MonoModArch.cs patch/ModPrep.cs"
 } > build/hooks.rsp
 dotnet /d/Harness/rimworld/tools/roslyn/pkg/tasks/netcore/bincore/csc.dll @build/hooks.rsp
 # Into the game folder too, as mobile/build.sh does: the APKs take it from there (the tester APKs of 2026-10-20
