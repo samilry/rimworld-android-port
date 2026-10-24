@@ -57,6 +57,7 @@ namespace PortMobile
 			FactionList.Start(harmony);
 			WinterShadow.Start(harmony);
 			MultiplayerFiles.Start(harmony);
+			VideoUrls.Start(harmony);
 			// The atlases are baked by now (once, a second at most; then by cache key).
 			AtlasCheck.Start(harmony);
 			// Last: the mods' replacements that hold their own copy of a method patched above.
