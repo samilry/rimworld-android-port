@@ -316,6 +316,7 @@ namespace PortMobile
 				case "menu": return MenuAt(args);
 				case "research": return FinishResearch(args);
 				case "spawn": return SpawnThing(args);
+				case "monolith": return MonolithLevel(args);
 				case "makepawn": return MakePawn(args);
 				case "heal": return HealPawn(args);
 				case "kill": return KillThings(args);
@@ -1166,6 +1167,23 @@ namespace PortMobile
 			}
 			Finish(target);
 			return Answer(w => { w.WriteStartArray("finished"); foreach (string d in done) w.WriteStringValue(d); w.WriteEndArray(); });
+		}
+
+		/// <summary>Anomaly: sets the monolith's level (args: level; entities are studied and captured from 1 on).</summary>
+		private static string MonolithLevel(JsonElement args)
+		{
+			if (!Playing || !ModsConfig.AnomalyActive || Find.Anomaly == null)
+			{
+				return Failure("no game with Anomaly");
+			}
+			int level = Int(args, "level", 1);
+			MonolithLevelDef def = DefDatabase<MonolithLevelDef>.AllDefs.FirstOrDefault(d => d.level == level);
+			if (def == null)
+			{
+				return Failure("no monolith level " + level);
+			}
+			Find.Anomaly.SetLevel(def, true);
+			return Answer(w => { w.WriteNumber("level", Find.Anomaly.Level); w.WriteNumber("highest", Find.Anomaly.HighestLevelReached); });
 		}
 
 		/// <summary>Spawns a thing on the current map (args: def, stuff, count, x, z, rot 0-3). A building is the colony's and complete. Without def: the def names that hold args.query.</summary>

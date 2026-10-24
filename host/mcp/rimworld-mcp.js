@@ -430,6 +430,10 @@ tool('rw_spawn', 'TEST GAMES ONLY: spawns a thing at a cell (def, stuff, count, 
   { def: str(''), stuff: str(''), count: num(''), x: num(''), z: num(''), rot: num(''), query: str('') }, [],
   async args => textResult(await agent('spawn', args)));
 
+tool('rw_monolith', 'TEST GAMES ONLY: sets the Anomaly monolith level (entities can be studied and captured from level 1).',
+  { level: num('') }, [],
+  async args => textResult(await agent('monolith', args)));
+
 tool('rw_makepawn', 'TEST GAMES ONLY: makes a pawn (kind, faction = player/hostile/none/FactionDef, x, z, downed).',
   { kind: str(''), faction: str(''), x: num(''), z: num(''), downed: { type: 'boolean' } }, [],
   async args => textResult(await agent('makepawn', args)));
