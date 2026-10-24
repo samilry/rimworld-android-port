@@ -6,6 +6,7 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Reflection.Emit;
 using System.Text;
 using HarmonyLib;
 using RimWorld;
@@ -32,7 +33,10 @@ namespace PortMobile
 	///     pane's tabs (immediate windows at x 0). The user, 2026-10-23: the menu moved, the first commands were under
 	///     it, and the info box stayed at the edge. The resource readout goes behind the moved info box with them;
 	///   - an immediate window asked for while the windows are drawn (the inspect pane's tab), which the move of the
-	///     windows comes too early for: when it is asked for.
+	///     windows comes too early for: when it is asked for;
+	///   - the inspect pane's row of tabs, with the pane; and the fill the game draws in that row from the screen's edge
+	///     to the first tab while a tab is open (it joins the tab's window to the row) begins where that window is. The
+	///     user, 2026-10-24: with the tab moved off a hole at the left, the fill stayed at the edge as a black bar.
 	/// Nothing on the map moves: the game and the mods place labels there by the camera's screen position.
 	/// A black band beside the hole (the window kept clear of it, LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER) was tried first and
 	/// turned down by the user ("太难看了").
@@ -72,6 +76,9 @@ namespace PortMobile
 		// moved, and whether a grid of commands is being drawn (its immediate windows are the grid's: GizmoFit).
 		private static float tabShift;
 		private static int gridDepth;
+		// Where the open inspect tab's window begins (after it was kept clear), and the shift of the row of tabs being drawn.
+		private const int InspectTabWindowId = 235086;
+		private static float openTabX, tabsShift;
 
 		public static void Start(Harmony harmony)
 		{
@@ -90,6 +97,7 @@ namespace PortMobile
 				// Before GizmoFit's prefix, which lays the grid out from where it begins.
 				harmony.Patch(AccessTools.Method(typeof(GizmoGridDrawer), nameof(GizmoGridDrawer.DrawGizmoGrid)), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeGrid)) { priority = Priority.First }, finalizer: new HarmonyMethod(typeof(Cutout), nameof(AfterGrid)));
 				harmony.Patch(AccessTools.Method(typeof(WindowStack), nameof(WindowStack.ImmediateWindow)), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeImmediateWindow)) { priority = Priority.Last });
+				harmony.Patch(AccessTools.Method(typeof(InspectPaneUtility), "DoTabs"), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeTabs)), finalizer: end, transpiler: new HarmonyMethod(typeof(Cutout), nameof(TabFillerTranspiler)));
 				readoutHeight = AccessTools.FieldRefAccess<ResourceReadout, float>("lastDrawnHeight");
 				stackWindows = AccessTools.FieldRefAccess<WindowStack, List<Window>>("windows");
 				Console.WriteLine("[mobile] cutout: the interface keeps clear of the camera's hole" + (on ? "" : " (switched off in the options)"));
@@ -319,7 +327,7 @@ namespace PortMobile
 		/// window keeps clear of the holes itself: one asked for while the window stack draws (a window's ExtraOnGUI: the
 		/// inspect pane's tab, a selection's commands) is drawn right after, before BeforeWindows could see it.
 		/// </summary>
-		public static void BeforeImmediateWindow(ref Rect rect)
+		public static void BeforeImmediateWindow(int ID, ref Rect rect)
 		{
 			if (tabShift > 0f && gridDepth == 0)
 			{
@@ -328,6 +336,54 @@ namespace PortMobile
 			if (on && holes.Count > 0)
 			{
 				KeepClear(ref rect);
+			}
+			if (ID == InspectTabWindowId)
+			{
+				openTabX = rect.x;
+			}
+		}
+
+		/// <summary>Prefix of InspectPaneUtility.DoTabs (the finalizer is EndShift): the row of tabs goes with a moved pane.</summary>
+		public static void BeforeTabs()
+		{
+			tabsShift = tabShift;
+			openTabX = 0f;
+			Push(tabShift);
+		}
+
+		/// <summary>Transpiler of InspectPaneUtility.DoTabs: its one GUI.DrawTexture, the fill left of the tabs, is DrawTabFiller.</summary>
+		public static IEnumerable<CodeInstruction> TabFillerTranspiler(IEnumerable<CodeInstruction> instructions)
+		{
+			MethodInfo draw = AccessTools.Method(typeof(GUI), nameof(GUI.DrawTexture), new[] { typeof(Rect), typeof(Texture) });
+			MethodInfo filler = AccessTools.Method(typeof(Cutout), nameof(DrawTabFiller));
+			int replaced = 0;
+			foreach (CodeInstruction instruction in instructions)
+			{
+				if (instruction.Calls(draw))
+				{
+					instruction.opcode = OpCodes.Call;
+					instruction.operand = filler;
+					replaced++;
+				}
+				yield return instruction;
+			}
+			if (replaced != 1)
+			{
+				Console.WriteLine("[mobile] cutout: the inspect pane's tab row has " + replaced + " texture draws where 1 was expected");
+			}
+		}
+
+		/// <summary>The fill from the screen's edge to the first tab, from where the open tab's window begins.</summary>
+		public static void DrawTabFiller(Rect rect, Texture image)
+		{
+			float from = openTabX - tabsShift;
+			if (from > rect.xMin)
+			{
+				rect.xMin = Mathf.Min(from, rect.xMax);
+			}
+			if (rect.width > 0f)
+			{
+				GUI.DrawTexture(rect, image);
 			}
 		}
 
