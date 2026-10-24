@@ -54,6 +54,7 @@ namespace PortMobile
 			public float originX, originY;     // where its own rectangle begins on the screen: what it is known by
 			public int window;
 			public bool vertical, horizontal;  // the directions it has something to scroll in
+			public int end;                    // the controls noted before it ended (-1: it did not end in the pass); later ones are drawn over it
 		}
 
 		private static ListView[] drawingLists = new ListView[64], shownLists = new ListView[64];
@@ -252,12 +253,15 @@ namespace PortMobile
 			return OnScreen(rect, false, out _, out x, out y, out _, out _);
 		}
 
-		/// <summary>Told by Interface before every scroll view of the game: one that has more in it than it shows is a list a finger scrolls.</summary>
-		public static void NoteList(Rect outRect, bool vertical, bool horizontal)
+		/// <summary>
+		/// Told by Interface before every scroll view of the game: one that has more in it than it shows is a list a finger
+		/// scrolls. Its number in the pass (for EndList), -1 when it was not noted.
+		/// </summary>
+		public static int NoteList(Rect outRect, bool vertical, bool horizontal)
 		{
 			if (!OnScreen(outRect, true, out object backend, out float x0, out float y0, out float x1, out float y1))
 			{
-				return;
+				return -1;
 			}
 			NewPassIfNewFrame();
 			float originX = x0, originY = y0;
@@ -275,7 +279,7 @@ namespace PortMobile
 			}
 			if (x1 - x0 < 3f || y1 - y0 < 3f)
 			{
-				return;
+				return -1;
 			}
 			if (drawingListCount == drawingLists.Length)
 			{
@@ -291,6 +295,17 @@ namespace PortMobile
 			list.window = WindowDepth(backend) > 0 ? WindowRects(backend).Count - 1 : -1;
 			list.vertical = vertical;
 			list.horizontal = horizontal;
+			list.end = -1;
+			return drawingListCount - 1;
+		}
+
+		/// <summary>Told by Interface after the scroll view NoteList noted (its number): the controls noted from here on are drawn over it.</summary>
+		public static void EndList(int index)
+		{
+			if (index >= 0 && index < drawingListCount && drawingFrame == Time.frameCount)
+			{
+				drawingLists[index].end = drawingCount;
+			}
 		}
 
 		/// <summary>
@@ -312,10 +327,34 @@ namespace PortMobile
 				ref ListView list = ref shownLists[i];
 				if (list.window == under && finger.x >= list.x0 && finger.x <= list.x1 && finger.y >= list.y0 && finger.y <= list.y1)
 				{
+					if (CoveredAfter(list.end, under, finger))
+					{
+						// Something drawn after the list lies over it here (the inspect pane's tabs over the resource
+						// readout, which reaches down to 200 units above the bottom): the finger is on that, not the list.
+						return false;
+					}
 					vertical = list.vertical;
 					horizontal = list.horizontal;
 					originX = list.originX;
 					originY = list.originY;
+					return true;
+				}
+			}
+			return false;
+		}
+
+		/// <summary>Whether a control noted after the given point of the pass, in the same window (or outside windows), is under the finger.</summary>
+		private static bool CoveredAfter(int from, int window, Vector2 finger)
+		{
+			if (from < 0)
+			{
+				return false;
+			}
+			for (int t = from; t < shownCount; t++)
+			{
+				ref Target target = ref shown[t];
+				if (target.window == window && finger.x >= target.x0 && finger.x <= target.x1 && finger.y >= target.y0 && finger.y <= target.y1)
+				{
 					return true;
 				}
 			}

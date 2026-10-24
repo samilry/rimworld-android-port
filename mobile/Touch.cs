@@ -115,6 +115,7 @@ namespace PortMobile
 		// The list the current touch began in: the directions it scrolls in, and where it begins on the screen.
 		private static bool listDown, listAcross;
 		private static float listX, listY;
+		private static bool touchInList;
 		// The touch caught a list that was still moving: lifting the finger then clicks nothing.
 		private static bool caughtList;
 		// The touch began with a drafted squad selected (Squad): a tap on the map orders, a hold selects.
@@ -136,6 +137,12 @@ namespace PortMobile
 
 		/// <summary>A touch is being delivered to the game: a finger is down, or the press of a finger that already lifted (a quick tap) is still on its way.</summary>
 		public static bool TouchInProgress => fingers.Count > 0 || leftDown;
+
+		/// <summary>Whether the touch going on began in this list (a scroll view, by where it begins on the screen).</summary>
+		public static bool BeganInList(Rect outRect)
+		{
+			return touchInList && TouchInProgress && TapAssist.ScreenOrigin(outRect, out float x, out float y) && Mathf.Abs(x - listX) <= 1.5f && Mathf.Abs(y - listY) <= 1.5f;
+		}
 
 		/// <summary>The engine's mouse is where a finger put it: a real mouse (which moves it without this class) has not moved it since.</summary>
 		public static bool PointerFromFinger
@@ -410,6 +417,8 @@ namespace PortMobile
 					Recorder.TouchMode("quick tap");
 					Recorder.TouchEnded(quickTap.pos);
 					Vector2 at = TapAssist.Adjust(quickTap.pos);
+					// Its press is in a list as a slower tap's would be (the list keeps a press nothing in it used).
+					touchInList = Interface.ListTouch && TapAssist.ListAt(at, out listDown, out listAcross, out listX, out listY);
 					Interface.FingerLanded(at);
 					Cursor(at);
 					int button = KeyWheel.TapButton(at);
@@ -452,6 +461,7 @@ namespace PortMobile
 			{
 				// A new touch: the press goes to the game at once, so that the interface responds like to a mouse.
 				mode = Mode.Pending;
+				touchInList = false;
 				squadTouch = Squad.Active;
 				Interface.TouchBegan();
 				first.seen = true;
@@ -482,6 +492,7 @@ namespace PortMobile
 					return;
 				}
 				bool inList = Interface.ListTouch && TapAssist.ListAt(pressAt, out listDown, out listAcross, out listX, out listY);
+				touchInList = inList;
 				caughtList = Interface.StopCoasting(inList ? listX : float.NaN, inList ? listY : float.NaN);
 				if (inList)
 				{

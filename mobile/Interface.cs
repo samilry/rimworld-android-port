@@ -86,6 +86,8 @@ namespace PortMobile
 
 		// The lists being drawn in the current press event (they nest): whether the press landed in each.
 		private static readonly List<bool> open = new List<bool>();
+		// The scroll views being drawn in the current repaint (they nest): the number TapAssist gave each (-1: not noted).
+		private static readonly List<int> drawn = new List<int>();
 
 		public static void Start(Harmony harmony)
 		{
@@ -201,6 +203,7 @@ namespace PortMobile
 		{
 			// A press that a control in a list used is no longer seen as a press when the list ends: nothing is carried over.
 			open.Clear();
+			drawn.Clear();
 			LetGoOfGivenSearchFocus();
 			bool wanted = UnityStubs.Internal.TextFocus.CapturesText;
 			bool again = askKeyboardAgain && wanted;
@@ -454,15 +457,17 @@ namespace PortMobile
 			}
 			bool down = viewRect.height > outRect.height + 1f, across = viewRect.width > outRect.width + 1f;
 			bool scrolls = down || across;
-			if (scrolls && listTouch && current.rawType == EventType.Repaint)
+			if (current.rawType == EventType.Repaint)
 			{
-				TapAssist.NoteList(outRect, down, across);
+				drawn.Add(scrolls && listTouch ? TapAssist.NoteList(outRect, down, across) : -1);
 			}
 			if (current.rawType != EventType.MouseDown)
 			{
 				return;
 			}
-			open.Add(scrolls && current.type == EventType.MouseDown && current.button == 0 && FingerDown && Mouse.IsOver(outRect));
+			// Only the list the touch began in (Touch) keeps the press: a list that something drawn after it covers there (the
+			// resource readout under the inspect pane's tabs) took the tab's press (a tester, 2026-10-24: "日志" did nothing).
+			open.Add(scrolls && current.type == EventType.MouseDown && current.button == 0 && FingerDown && Mouse.IsOver(outRect) && Touch.BeganInList(outRect));
 		}
 
 		/// <summary>
@@ -472,6 +477,11 @@ namespace PortMobile
 		public static void AfterScrollView()
 		{
 			Event current = Event.current;
+			if (current != null && current.rawType == EventType.Repaint && drawn.Count > 0)
+			{
+				TapAssist.EndList(drawn[drawn.Count - 1]);
+				drawn.RemoveAt(drawn.Count - 1);
+			}
 			if (current == null || current.rawType != EventType.MouseDown || open.Count == 0)
 			{
 				return;
