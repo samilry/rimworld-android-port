@@ -210,6 +210,8 @@ namespace PortMobile
 		}
 
 		/// <summary>The same for the world: picking a tile acts when the button goes down, so the first touch of a drag across the globe would be the choice.</summary>
+		private static readonly AccessTools.FieldRef<WorldTargeter, Action> WorldTargeterUpdate = AccessTools.FieldRefAccess<WorldTargeter, Action>("onUpdate");
+
 		public static void BeforeWorldTargeter(WorldTargeter __instance)
 		{
 			Event current = Event.current;
@@ -222,6 +224,12 @@ namespace PortMobile
 				deferred = deferredOnWorld = false;
 				if (!__instance.IsTargeting || !Touch.TouchInProgress || !Settings.PlaceConfirm)
 				{
+					return;
+				}
+				if (RawMouseTools.Reads(WorldTargeterUpdate(__instance)))
+				{
+					// A targeting that watches the held button itself (God Hands' axis fall charges while it is held on a
+					// tile): the press now, as from a mouse, and no second tap.
 					return;
 				}
 				deferred = deferredOnWorld = true;
@@ -814,7 +822,8 @@ namespace PortMobile
 	/// the mouse as on the PC: the press at once, the mouse under the finger while it drags (not the map moving), the
 	/// release when it lifts, and no confirm step (MapTools, DragConfirm.KeepsOwnDrag). A tester, 2026-10-24: "神之手mod不
 	/// 适配手机操作" — a tool without a drawing style was held back like placing a building, and a moving finger panned.
-	/// Two fingers still move the map.
+	/// Two fingers still move the map. The same for a world targeting whose update reads the button (Reads; God Hands'
+	/// axis fall: the button held on a tile for 1.8 s, which the two taps on the world never gave it).
 	/// </summary>
 	internal static class RawMouseTools
 	{
@@ -852,6 +861,35 @@ namespace PortMobile
 				if (raw)
 				{
 					Console.WriteLine("[mobile] tools: " + type.FullName + " reads the mouse button itself: a mouse's press, drag and release");
+				}
+			}
+			return raw;
+		}
+
+		private static readonly Dictionary<System.Reflection.MethodInfo, bool> knownMethods = new Dictionary<System.Reflection.MethodInfo, bool>();
+
+		/// <summary>A mod's delegate (a targeting's update) that reads the mouse button, as Is does for a tool.</summary>
+		public static bool Reads(Delegate callback)
+		{
+			System.Reflection.MethodInfo method = callback?.Method;
+			if (method == null || method.DeclaringType == null || method.DeclaringType.Assembly == typeof(Designator).Assembly)
+			{
+				return false;
+			}
+			if (!knownMethods.TryGetValue(method, out bool raw))
+			{
+				try
+				{
+					raw = ReadsMouse(method, method.DeclaringType.Assembly, 0, new HashSet<System.Reflection.MethodBase>());
+				}
+				catch (Exception e)
+				{
+					Console.WriteLine("[mobile] tools: could not look into " + method.DeclaringType.FullName + "." + method.Name + ": " + e.Message);
+				}
+				knownMethods[method] = raw;
+				if (raw)
+				{
+					Console.WriteLine("[mobile] tools: " + method.DeclaringType.FullName + "." + method.Name + " reads the mouse button itself: a mouse's press and hold");
 				}
 			}
 			return raw;
