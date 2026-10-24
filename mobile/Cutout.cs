@@ -4,9 +4,9 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Reflection;
+using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Reflection.Emit;
 using System.Text;
 using HarmonyLib;
 using RimWorld;
@@ -36,7 +36,10 @@ namespace PortMobile
 	///     windows comes too early for: when it is asked for;
 	///   - the inspect pane's row of tabs, with the pane; and the fill the game draws in that row from the screen's edge
 	///     to the first tab while a tab is open (it joins the tab's window to the row) begins where that window is. The
-	///     user, 2026-10-24: with the tab moved off a hole at the left, the fill stayed at the edge as a black bar.
+	///     user, 2026-10-24: with the tab moved off a hole at the left, the fill stayed at the edge as a black bar. Where
+	///     that window is drawn counts: RimHUD's taller tab window, above the screen's top, is drawn smaller and centred
+	///     on itself (WindowFit). RimHUD draws the row itself, in a prefix of DoTabs that skips the game's: its method is
+	///     rewritten the same way when it is there.
 	/// Nothing on the map moves: the game and the mods place labels there by the camera's screen position.
 	/// A black band beside the hole (the window kept clear of it, LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER) was tried first and
 	/// turned down by the user ("太难看了").
@@ -79,6 +82,11 @@ namespace PortMobile
 		// Where the open inspect tab's window begins (after it was kept clear), and the shift of the row of tabs being drawn.
 		private const int InspectTabWindowId = 235086;
 		private static float openTabX, tabsShift;
+		// The texture of the fill left of the tabs (the game's, which RimHUD reuses), and whether RimHUD's row of tabs was
+		// looked for (it is loaded after the port starts).
+		private static Texture tabFill;
+		private static Harmony patcher;
+		private static bool modRowsLooked;
 
 		public static void Start(Harmony harmony)
 		{
@@ -97,7 +105,9 @@ namespace PortMobile
 				// Before GizmoFit's prefix, which lays the grid out from where it begins.
 				harmony.Patch(AccessTools.Method(typeof(GizmoGridDrawer), nameof(GizmoGridDrawer.DrawGizmoGrid)), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeGrid)) { priority = Priority.First }, finalizer: new HarmonyMethod(typeof(Cutout), nameof(AfterGrid)));
 				harmony.Patch(AccessTools.Method(typeof(WindowStack), nameof(WindowStack.ImmediateWindow)), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeImmediateWindow)) { priority = Priority.Last });
-				harmony.Patch(AccessTools.Method(typeof(InspectPaneUtility), "DoTabs"), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeTabs)), finalizer: end, transpiler: new HarmonyMethod(typeof(Cutout), nameof(TabFillerTranspiler)));
+				// First: before a mod's prefix that draws the row in the game's place (RimHUD) and skips the rest.
+				patcher = harmony;
+				harmony.Patch(AccessTools.Method(typeof(InspectPaneUtility), "DoTabs"), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeTabs)) { priority = Priority.First }, finalizer: end, transpiler: new HarmonyMethod(typeof(Cutout), nameof(TabFillerTranspiler)));
 				readoutHeight = AccessTools.FieldRefAccess<ResourceReadout, float>("lastDrawnHeight");
 				stackWindows = AccessTools.FieldRefAccess<WindowStack, List<Window>>("windows");
 				Console.WriteLine("[mobile] cutout: the interface keeps clear of the camera's hole" + (on ? "" : " (switched off in the options)"));
@@ -339,20 +349,46 @@ namespace PortMobile
 			}
 			if (ID == InspectTabWindowId)
 			{
-				openTabX = rect.x;
+				// Where it is drawn: a window above the screen's top is drawn smaller (RimHUD's tab, under its taller pane).
+				openTabX = WindowFit.Drawn(rect).x;
 			}
 		}
 
 		/// <summary>Prefix of InspectPaneUtility.DoTabs (the finalizer is EndShift): the row of tabs goes with a moved pane.</summary>
 		public static void BeforeTabs()
 		{
+			if (!modRowsLooked)
+			{
+				modRowsLooked = true;
+				PatchModRows();
+			}
 			tabsShift = tabShift;
 			openTabX = 0f;
 			Push(tabShift);
 		}
 
-		/// <summary>Transpiler of InspectPaneUtility.DoTabs: its one GUI.DrawTexture, the fill left of the tabs, is DrawTabFiller.</summary>
-		public static IEnumerable<CodeInstruction> TabFillerTranspiler(IEnumerable<CodeInstruction> instructions)
+		/// <summary>The rows of tabs mods draw in the game's place: RimHUD's (InspectPaneTabs.Draw, from its prefix of DoTabs).</summary>
+		private static void PatchModRows()
+		{
+			try
+			{
+				tabFill = AccessTools.Field(typeof(InspectPaneUtility), "InspectTabButtonFillTex")?.GetValue(null) as Texture;
+				Type rimHud = AccessTools.TypeByName("RimHUD.Interface.Screen.InspectPaneTabs");
+				MethodInfo draw = rimHud != null ? AccessTools.Method(rimHud, "Draw") : null;
+				if (draw != null)
+				{
+					patcher.Patch(draw, transpiler: new HarmonyMethod(typeof(Cutout), nameof(TabFillerTranspiler)));
+					Console.WriteLine("[mobile] cutout: RimHUD's row of tabs fills from the open tab's window too");
+				}
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] cutout: a mod's row of tabs left as it is: " + e.Message);
+			}
+		}
+
+		/// <summary>Transpiler of a row of tabs (the game's DoTabs, RimHUD's): its GUI.DrawTexture calls are DrawTabFiller.</summary>
+		public static IEnumerable<CodeInstruction> TabFillerTranspiler(IEnumerable<CodeInstruction> instructions, MethodBase original)
 		{
 			MethodInfo draw = AccessTools.Method(typeof(GUI), nameof(GUI.DrawTexture), new[] { typeof(Rect), typeof(Texture) });
 			MethodInfo filler = AccessTools.Method(typeof(Cutout), nameof(DrawTabFiller));
@@ -369,17 +405,20 @@ namespace PortMobile
 			}
 			if (replaced != 1)
 			{
-				Console.WriteLine("[mobile] cutout: the inspect pane's tab row has " + replaced + " texture draws where 1 was expected");
+				Console.WriteLine("[mobile] cutout: " + original?.DeclaringType?.Name + "." + original?.Name + " has " + replaced + " texture draws where 1 was expected");
 			}
 		}
 
-		/// <summary>The fill from the screen's edge to the first tab, from where the open tab's window begins.</summary>
+		/// <summary>The fill from the screen's edge to the first tab, from where the open tab's window is drawn.</summary>
 		public static void DrawTabFiller(Rect rect, Texture image)
 		{
-			float from = openTabX - tabsShift;
-			if (from > rect.xMin)
+			if (tabFill == null || (object)image == tabFill)
 			{
-				rect.xMin = Mathf.Min(from, rect.xMax);
+				float from = openTabX - tabsShift;
+				if (from > rect.xMin)
+				{
+					rect.xMin = Mathf.Min(from, rect.xMax);
+				}
 			}
 			if (rect.width > 0f)
 			{

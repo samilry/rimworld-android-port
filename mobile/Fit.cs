@@ -289,16 +289,26 @@ namespace PortMobile
 		/// <summary>Where a window that does not fit the screen is drawn, smaller by f; false when it is drawn as it is.</summary>
 		private static bool Fitted(Window window, out Rect fitted, out float f)
 		{
+			return Fitted(window.windowRect, window.draggable || window.resizeable, out fitted, out f);
+		}
+
+		/// <summary>Where a window at this rectangle that the player cannot move (an immediate window) is drawn.</summary>
+		public static Rect Drawn(Rect rect)
+		{
+			return Fitted(rect, false, out Rect fitted, out _) ? fitted : rect;
+		}
+
+		private static bool Fitted(Rect rect, bool movable, out Rect fitted, out float f)
+		{
 			fitted = default(Rect);
 			f = 1f;
-			Rect rect = window.windowRect;
 			float width = UI.screenWidth, height = UI.screenHeight;
 			if (rect.width < 1f || rect.height < 1f)
 			{
 				return false;
 			}
 			bool sizeFits = rect.width <= width + 0.5f && rect.height <= height + 0.5f;
-			if (sizeFits && (window.draggable || window.resizeable))
+			if (sizeFits && movable)
 			{
 				return false; // the player may have moved it there
 			}
