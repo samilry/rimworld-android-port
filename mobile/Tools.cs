@@ -375,6 +375,23 @@ namespace PortMobile
 		{
 			harmony.Patch(AccessTools.Method(typeof(Targeter), "CurrentTargetUnderMouse"), prefix: new HarmonyMethod(typeof(LandingConfirm), nameof(MarkedTarget)));
 			harmony.Patch(AccessTools.Method(typeof(Targeter), nameof(Targeter.TargeterOnGUI)), postfix: new HarmonyMethod(typeof(LandingConfirm), nameof(Controls)));
+			// A new targeting starts unmarked. The mark belongs to the targeting's action, and a mod that passes the same
+			// method every time (Monolyn Race's "relocate", CompTeleport.OnTargetSelected: equal delegates) began the next
+			// relocation of that building with the last spot already marked.
+			foreach (System.Reflection.MethodInfo begin in AccessTools.GetDeclaredMethods(typeof(Targeter)))
+			{
+				if (begin.Name == nameof(Targeter.BeginTargeting))
+				{
+					harmony.Patch(begin, postfix: new HarmonyMethod(typeof(LandingConfirm), nameof(Unmark)));
+				}
+			}
+		}
+
+		/// <summary>Postfix of Targeter.BeginTargeting: nothing is marked yet.</summary>
+		public static void Unmark()
+		{
+			marked = LocalTargetInfo.Invalid;
+			markedFor = null;
 		}
 
 		/// <summary>The targeting picks a landing spot on the map.</summary>
@@ -422,7 +439,8 @@ namespace PortMobile
 			if (toldFor != markedFor)
 			{
 				toldFor = markedFor;
-				Messages.Message(Texts.Chinese ? "点左下角的“确定”在这里降落（点别处换位置；能旋转的用旋转按钮）" : "Tap Confirm (bottom left) to land here (tap elsewhere to move it; rotate with the arrows where it turns)", MessageTypeDefOf.SilentInput, false);
+				// Not only landings: mods move and build things this way (Monolyn Race's relocate and transform).
+				Messages.Message(Texts.Chinese ? "点左下角的“确定”选定这个位置（点别处换位置；能旋转的用旋转按钮）" : "Tap Confirm (bottom left) to choose this spot (tap elsewhere to move it; rotate with the arrows where it turns)", MessageTypeDefOf.SilentInput, false);
 			}
 			return true;
 		}
@@ -480,7 +498,7 @@ namespace PortMobile
 			Targeter targeter = Find.Targeter;
 			if (!Applies(targeter) || !IsMarked(targeter))
 			{
-				Messages.Message(Texts.Chinese ? "先在地图上点一下降落的位置。" : "Tap the map where it should land first.", MessageTypeDefOf.RejectInput, false);
+				Messages.Message(Texts.Chinese ? "先在地图上点一下要选的位置。" : "Tap the spot on the map first.", MessageTypeDefOf.RejectInput, false);
 				return;
 			}
 			LocalTargetInfo target = marked;
