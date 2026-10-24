@@ -327,7 +327,7 @@ namespace PortMobile
 				ref ListView list = ref shownLists[i];
 				if (list.window == under && finger.x >= list.x0 && finger.x <= list.x1 && finger.y >= list.y0 && finger.y <= list.y1)
 				{
-					if (CoveredAfter(list.end, under, finger))
+					if (CoveredAfter(ref list, under, finger))
 					{
 						// Something drawn after the list lies over it here (the inspect pane's tabs over the resource
 						// readout, which reaches down to 200 units above the bottom): the finger is on that, not the list.
@@ -343,17 +343,23 @@ namespace PortMobile
 			return false;
 		}
 
-		/// <summary>Whether a control noted after the given point of the pass, in the same window (or outside windows), is under the finger.</summary>
-		private static bool CoveredAfter(int from, int window, Vector2 finger)
+		/// <summary>
+		/// Whether a control noted after the list ended, in the same window (or outside windows), is under the finger. One
+		/// that takes in the whole list is a background, not something over it: the mod page's invisible button over the
+		/// whole page that clears the selection, drawn after its two lists (the user, 2026-10-24: a swipe there moved mods
+		/// instead of scrolling).
+		/// </summary>
+		private static bool CoveredAfter(ref ListView list, int window, Vector2 finger)
 		{
-			if (from < 0)
+			if (list.end < 0)
 			{
 				return false;
 			}
-			for (int t = from; t < shownCount; t++)
+			for (int t = list.end; t < shownCount; t++)
 			{
 				ref Target target = ref shown[t];
-				if (target.window == window && finger.x >= target.x0 && finger.x <= target.x1 && finger.y >= target.y0 && finger.y <= target.y1)
+				if (target.window == window && finger.x >= target.x0 && finger.x <= target.x1 && finger.y >= target.y0 && finger.y <= target.y1
+					&& !(target.x0 <= list.x0 + 1f && target.y0 <= list.y0 + 1f && target.x1 >= list.x1 - 1f && target.y1 >= list.y1 - 1f))
 				{
 					return true;
 				}
