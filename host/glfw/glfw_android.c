@@ -156,9 +156,25 @@ static void record_touch(int type, int id, float x, float y)
 static struct android_app* g_app;
 static ANativeWindow* g_window;      // the activity's current window, NULL between TERM and INIT
 static int g_width, g_height;        // its size in pixels
+// The size the game renders at (the options' Resolution on a phone: 1080p, 720p), 0 for the window's own. The engine is
+// told this size for its window and framebuffer; the Vulkan interposer gives it as the surface's current extent, and
+// Android scales the smaller swapchain to the window. Fingers, mice and the camera hole come in the window's pixels and
+// are scaled to it (g_scaleX / g_scaleY: the glue thread reads them for input, which it also handles).
+static int g_renderWidth, g_renderHeight;
+static double g_scaleX = 1.0, g_scaleY = 1.0;
 static int g_focused = 1;
 static int g_destroyed;
 static float g_density = 1.0f;
+
+// The size the engine is told (under g_lock): the render size when one is set, else the window's.
+static int engine_width_locked(void) { return g_renderWidth > 0 ? g_renderWidth : g_width; }
+static int engine_height_locked(void) { return g_renderHeight > 0 ? g_renderHeight : g_height; }
+
+static void update_scale_locked(void)
+{
+    g_scaleX = g_width > 0 ? (double)engine_width_locked() / g_width : 1.0;
+    g_scaleY = g_height > 0 ? (double)engine_height_locked() / g_height : 1.0;
+}
 
 // Engine-thread state (no lock needed; only the polling thread touches it).
 static int g_initialized;
@@ -253,7 +269,8 @@ static void on_app_cmd(struct android_app* app, int32_t cmd)
         g_width = ANativeWindow_getWidth(app->window);
         g_height = ANativeWindow_getHeight(app->window);
         if (app->config) g_density = AConfiguration_getDensity(app->config) / 160.0f;
-        LOGI("glfw: window %dx%d (density %.2f)", g_width, g_height, g_density);
+        update_scale_locked();
+        LOGI("glfw: window %dx%d (density %.2f)%s", g_width, g_height, g_density, g_renderWidth > 0 ? ", rendering smaller" : "");
         if (g_surfaceCreated && g_vulkan)
         {
             // A new window after the surface was made on the old one: the Vulkan interposer (our libvulkan.so) makes the
@@ -261,7 +278,7 @@ static void on_app_cmd(struct android_app* app, int32_t cmd)
             void (*changed)(void) = (void (*)(void))dlsym(g_vulkan, "port17_vulkan_window_changed");
             if (changed) changed();
         }
-        Event e = { EV_WINDOW_INIT, g_width, g_height, 0, 0, 0, 0 };
+        Event e = { EV_WINDOW_INIT, engine_width_locked(), engine_height_locked(), g_width, g_height, 0, 0 };
         push_locked(&e);
         pthread_mutex_unlock(&g_lock);
         break;
@@ -286,8 +303,9 @@ static void on_app_cmd(struct android_app* app, int32_t cmd)
             {
                 g_width = w;
                 g_height = h;
+                update_scale_locked();
                 LOGI("glfw: window resized %dx%d", w, h);
-                Event r = { EV_RESIZE, w, h, 0, 0, 0, 0 };
+                Event r = { EV_RESIZE, engine_width_locked(), engine_height_locked(), w, h, 0, 0 };
                 push_locked(&r);
             }
             pthread_mutex_unlock(&g_lock);
@@ -436,6 +454,9 @@ static int g_primaryPointerId = -1;   // the finger that is the cursor
 static int g_secondaryPointerId = -1; // a second finger: right button
 static int g_mouseButtonState;
 
+#define TX(e, i) ((double)AMotionEvent_getX((e), (i)) * g_scaleX)
+#define TY(e, i) ((double)AMotionEvent_getY((e), (i)) * g_scaleY)
+
 static int32_t on_input_event(struct android_app* app, AInputEvent* event)
 {
     (void)app;
@@ -476,7 +497,7 @@ static int32_t on_input_event(struct android_app* app, AInputEvent* event)
 
     if (isMouse)
     {
-        double x = AMotionEvent_getX(event, 0), y = AMotionEvent_getY(event, 0);
+        double x = TX(event, 0), y = TY(event, 0);
         switch (masked)
         {
         case AMOTION_EVENT_ACTION_HOVER_MOVE:
@@ -517,12 +538,12 @@ static int32_t on_input_event(struct android_app* app, AInputEvent* event)
     // Raw finger events for the managed touch layer (every pointer of the event).
     switch (masked)
     {
-    case AMOTION_EVENT_ACTION_DOWN: record_touch(1, AMotionEvent_getPointerId(event, 0), AMotionEvent_getX(event, 0), AMotionEvent_getY(event, 0)); break;
-    case AMOTION_EVENT_ACTION_POINTER_DOWN: if (index < count) record_touch(1, AMotionEvent_getPointerId(event, index), AMotionEvent_getX(event, index), AMotionEvent_getY(event, index)); break;
-    case AMOTION_EVENT_ACTION_MOVE: for (size_t i = 0; i < count; i++) record_touch(2, AMotionEvent_getPointerId(event, i), AMotionEvent_getX(event, i), AMotionEvent_getY(event, i)); break;
-    case AMOTION_EVENT_ACTION_POINTER_UP: if (index < count) record_touch(3, AMotionEvent_getPointerId(event, index), AMotionEvent_getX(event, index), AMotionEvent_getY(event, index)); break;
-    case AMOTION_EVENT_ACTION_UP: record_touch(3, AMotionEvent_getPointerId(event, 0), AMotionEvent_getX(event, 0), AMotionEvent_getY(event, 0)); break;
-    case AMOTION_EVENT_ACTION_CANCEL: for (size_t i = 0; i < count; i++) record_touch(4, AMotionEvent_getPointerId(event, i), AMotionEvent_getX(event, i), AMotionEvent_getY(event, i)); break;
+    case AMOTION_EVENT_ACTION_DOWN: record_touch(1, AMotionEvent_getPointerId(event, 0), TX(event, 0), TY(event, 0)); break;
+    case AMOTION_EVENT_ACTION_POINTER_DOWN: if (index < count) record_touch(1, AMotionEvent_getPointerId(event, index), TX(event, index), TY(event, index)); break;
+    case AMOTION_EVENT_ACTION_MOVE: for (size_t i = 0; i < count; i++) record_touch(2, AMotionEvent_getPointerId(event, i), TX(event, i), TY(event, i)); break;
+    case AMOTION_EVENT_ACTION_POINTER_UP: if (index < count) record_touch(3, AMotionEvent_getPointerId(event, index), TX(event, index), TY(event, index)); break;
+    case AMOTION_EVENT_ACTION_UP: record_touch(3, AMotionEvent_getPointerId(event, 0), TX(event, 0), TY(event, 0)); break;
+    case AMOTION_EVENT_ACTION_CANCEL: for (size_t i = 0; i < count; i++) record_touch(4, AMotionEvent_getPointerId(event, i), TX(event, i), TY(event, i)); break;
     default: break;
     }
     if (g_touchManaged) return 1;
@@ -533,7 +554,7 @@ static int32_t on_input_event(struct android_app* app, AInputEvent* event)
     case AMOTION_EVENT_ACTION_DOWN:
     {
         g_primaryPointerId = AMotionEvent_getPointerId(event, 0);
-        double x = AMotionEvent_getX(event, 0), y = AMotionEvent_getY(event, 0);
+        double x = TX(event, 0), y = TY(event, 0);
         push(EV_CURSOR, 0, 0, 0, 0, x, y);
         push(EV_BUTTON, 0, GLFW_PRESS, mods, 0, x, y);
         break;
@@ -543,7 +564,7 @@ static int32_t on_input_event(struct android_app* app, AInputEvent* event)
         if (g_secondaryPointerId < 0 && index < count)
         {
             g_secondaryPointerId = AMotionEvent_getPointerId(event, index);
-            double x = AMotionEvent_getX(event, index), y = AMotionEvent_getY(event, index);
+            double x = TX(event, index), y = TY(event, index);
             push(EV_CURSOR, 0, 0, 0, 0, x, y);
             push(EV_BUTTON, 1, GLFW_PRESS, mods, 0, x, y);
         }
@@ -555,7 +576,7 @@ static int32_t on_input_event(struct android_app* app, AInputEvent* event)
         {
             if (AMotionEvent_getPointerId(event, i) == g_primaryPointerId)
             {
-                push(EV_CURSOR, 0, 0, 0, 0, AMotionEvent_getX(event, i), AMotionEvent_getY(event, i));
+                push(EV_CURSOR, 0, 0, 0, 0, TX(event, i), TY(event, i));
                 break;
             }
         }
@@ -566,7 +587,7 @@ static int32_t on_input_event(struct android_app* app, AInputEvent* event)
         if (index < count)
         {
             int id = AMotionEvent_getPointerId(event, index);
-            double x = AMotionEvent_getX(event, index), y = AMotionEvent_getY(event, index);
+            double x = TX(event, index), y = TY(event, index);
             if (id == g_secondaryPointerId)
             {
                 push(EV_CURSOR, 0, 0, 0, 0, x, y);
@@ -585,7 +606,7 @@ static int32_t on_input_event(struct android_app* app, AInputEvent* event)
     case AMOTION_EVENT_ACTION_UP:
     case AMOTION_EVENT_ACTION_CANCEL:
     {
-        double x = AMotionEvent_getX(event, 0), y = AMotionEvent_getY(event, 0);
+        double x = TX(event, 0), y = TY(event, 0);
         if (masked == AMOTION_EVENT_ACTION_UP) push(EV_CURSOR, 0, 0, 0, 0, x, y);
         if (g_secondaryPointerId >= 0) push(EV_BUTTON, 1, GLFW_RELEASE, mods, 0, x, y);
         if (g_primaryPointerId >= 0) push(EV_BUTTON, 0, GLFW_RELEASE, mods, 0, x, y);
@@ -694,7 +715,75 @@ static int call_activity_string(const char* name, char* out, int size)
 // pixels for the screen's present turn, "" without one. Copied into out; returns its length (mobile/Cutout.cs).
 API int glfwAndroidCutout(char* out, int size)
 {
-    return call_activity_string("cutoutRects", out, size);
+    char window[512];
+    if (!out || size <= 0) return 0;
+    out[0] = 0;
+    if (call_activity_string("cutoutRects", window, sizeof window) <= 0) return 0;
+    pthread_mutex_lock(&g_lock);
+    double sx = g_scaleX, sy = g_scaleY;
+    pthread_mutex_unlock(&g_lock);
+    // In the pixels the game draws in (the activity gives the window's).
+    int length = 0;
+    char* rest = NULL;
+    for (char* rect = strtok_r(window, ";", &rest); rect && length < size - 1; rect = strtok_r(NULL, ";", &rest))
+    {
+        int l, t, r, b;
+        if (sscanf(rect, "%d,%d,%d,%d", &l, &t, &r, &b) != 4) continue;
+        length += snprintf(out + length, (size_t)(size - length), "%s%d,%d,%d,%d", length > 0 ? ";" : "",
+                           (int)(l * sx), (int)(t * sy), (int)(r * sx + 0.999), (int)(b * sy + 0.999));
+    }
+    if (length >= size) length = size - 1;
+    return length;
+}
+
+// The window's own size: the screen's resolution, whatever the game renders at.
+API void glfwAndroidViewSize(int* width, int* height)
+{
+    pthread_mutex_lock(&g_lock);
+    if (width) *width = g_width;
+    if (height) *height = g_height;
+    pthread_mutex_unlock(&g_lock);
+}
+
+// The engine sets a resolution (the options' Resolution, Screen.SetResolution): on the phone that is the size the game
+// renders at. Only sizes of the window's shape, smaller than it, are taken; the window's own size goes back to it. Anything
+// else (a PC's 1920x1080 from old prefs, the engine's default) leaves it as it is.
+static void request_render_size(int width, int height)
+{
+    pthread_mutex_lock(&g_lock);
+    int ww = g_width, wh = g_height;
+    pthread_mutex_unlock(&g_lock);
+    if (width <= 0 || height <= 0 || ww <= 0 || wh <= 0) return;
+    int rw = 0, rh = 0;
+    if (width != ww || height != wh)
+    {
+        double shape = (double)width / height, screen = (double)ww / wh;
+        if (width > ww || height > wh || shape < screen * 0.98 || shape > screen * 1.02)
+        {
+            LOGI("glfw: resolution %dx%d not taken (the window is %dx%d)", width, height, ww, wh);
+            return;
+        }
+        rw = width;
+        rh = height;
+    }
+    pthread_mutex_lock(&g_lock);
+    if (rw == g_renderWidth && rh == g_renderHeight)
+    {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
+    g_renderWidth = rw;
+    g_renderHeight = rh;
+    update_scale_locked();
+    if (g_vulkan)
+    {
+        void (*told)(uint32_t, uint32_t) = (void (*)(uint32_t, uint32_t))dlsym(g_vulkan, "port17_vulkan_render_size");
+        if (told) told((uint32_t)rw, (uint32_t)rh);
+    }
+    LOGI("glfw: rendering at %dx%d for a window of %dx%d", engine_width_locked(), engine_height_locked(), g_width, g_height);
+    Event r = { EV_RESIZE, engine_width_locked(), engine_height_locked(), g_width, g_height, 0, 0 };
+    push_locked(&r);
+    pthread_mutex_unlock(&g_lock);
 }
 
 // The external mice and keyboards, through the activity's inputDevices(): "<bits>|<names>", bit 1 a mouse, bit 2 a
@@ -919,8 +1008,8 @@ static void dispatch(const Event* e)
         {
             g_reportedWidth = e->a;
             g_reportedHeight = e->b;
-            g_vidmode.width = e->a;
-            g_vidmode.height = e->b;
+            g_vidmode.width = e->c > 0 ? e->c : e->a;
+            g_vidmode.height = e->d > 0 ? e->d : e->b;
             if (g_windowCreated)
             {
                 // Like GLFW when a window is shown: the size and the framebuffer size are announced. The managed
@@ -1035,8 +1124,8 @@ API int glfwInit(void)
         clock_gettime(CLOCK_MONOTONIC, &g_start);
         g_initialized = 1;
         pthread_mutex_lock(&g_lock);
-        g_reportedWidth = g_width;
-        g_reportedHeight = g_height;
+        g_reportedWidth = engine_width_locked();
+        g_reportedHeight = engine_height_locked();
         g_reportedFocused = g_focused;
         if (g_width > 0) { g_vidmode.width = g_width; g_vidmode.height = g_height; }
         pthread_mutex_unlock(&g_lock);
@@ -1101,8 +1190,8 @@ API GLFWwindow* glfwCreateWindow(int width, int height, const char* title, GLFWm
     int have = wait_for_window_locked(20.0);
     if (have)
     {
-        g_reportedWidth = g_width;
-        g_reportedHeight = g_height;
+        g_reportedWidth = engine_width_locked();
+        g_reportedHeight = engine_height_locked();
         g_vidmode.width = g_width;
         g_vidmode.height = g_height;
         g_reportedFocused = g_focused;
@@ -1133,7 +1222,7 @@ API void glfwSetWindowPos(GLFWwindow* w, int x, int y) { (void)w; (void)x; (void
 API void glfwGetWindowSize(GLFWwindow* w, int* width, int* height) { (void)w; if (width) *width = g_reportedWidth; if (height) *height = g_reportedHeight; }
 API void glfwSetWindowSizeLimits(GLFWwindow* w, int a, int b, int c, int d) { (void)w; (void)a; (void)b; (void)c; (void)d; }
 API void glfwSetWindowAspectRatio(GLFWwindow* w, int n, int d) { (void)w; (void)n; (void)d; }
-API void glfwSetWindowSize(GLFWwindow* w, int width, int height) { (void)w; (void)width; (void)height; }
+API void glfwSetWindowSize(GLFWwindow* w, int width, int height) { (void)w; request_render_size(width, height); }
 API void glfwGetFramebufferSize(GLFWwindow* w, int* width, int* height) { (void)w; if (width) *width = g_reportedWidth; if (height) *height = g_reportedHeight; }
 API void glfwGetWindowFrameSize(GLFWwindow* w, int* l, int* t, int* r, int* b) { (void)w; if (l) *l = 0; if (t) *t = 0; if (r) *r = 0; if (b) *b = 0; }
 API void glfwGetWindowContentScale(GLFWwindow* w, float* x, float* y) { (void)w; if (x) *x = 1.0f; if (y) *y = 1.0f; }
@@ -1147,7 +1236,7 @@ API void glfwHideWindow(GLFWwindow* w) { (void)w; }
 API void glfwFocusWindow(GLFWwindow* w) { (void)w; }
 API void glfwRequestWindowAttention(GLFWwindow* w) { (void)w; }
 API GLFWmonitor* glfwGetWindowMonitor(GLFWwindow* w) { (void)w; return &g_monitorObject; }
-API void glfwSetWindowMonitor(GLFWwindow* w, GLFWmonitor* m, int x, int y, int width, int height, int rate) { (void)w; (void)m; (void)x; (void)y; (void)width; (void)height; (void)rate; }
+API void glfwSetWindowMonitor(GLFWwindow* w, GLFWmonitor* m, int x, int y, int width, int height, int rate) { (void)w; (void)m; (void)x; (void)y; (void)rate; request_render_size(width, height); }
 
 API int glfwGetWindowAttrib(GLFWwindow* w, int attrib)
 {

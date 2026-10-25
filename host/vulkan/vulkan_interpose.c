@@ -583,6 +583,18 @@ static const char* result_name(VkResult r)
 }
 
 // ---- surface / swapchain ----
+// The size the game renders at (the options' Resolution on a phone, through the GLFW shim's glfwSetWindowSize), 0 for the
+// window's own. Given as the surface's current extent, the engine makes its swapchain that size; Android scales a
+// swapchain of another size to the window (the swapchain is made with SCALE_TO_WINDOW), so the GPU draws fewer pixels.
+static volatile uint32_t g_renderWidth, g_renderHeight;
+
+API void port17_vulkan_render_size(uint32_t width, uint32_t height)
+{
+    g_renderWidth = width;
+    g_renderHeight = height;
+    LOGI("vulkan: the surface's current extent is %ux%u from now on", width, height);
+}
+
 static void fix_caps(VkSurfaceCapabilitiesKHR* caps, const char* who)
 {
     static int logged;
@@ -598,6 +610,19 @@ static void fix_caps(VkSurfaceCapabilitiesKHR* caps, const char* who)
     {
         caps->currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
         caps->supportedTransforms |= VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    }
+    uint32_t rw = g_renderWidth, rh = g_renderHeight;
+    if (rw > 0 && rh > 0 && caps->currentExtent.width != 0xFFFFFFFFu)
+    {
+        // The window is landscape; a surface reported turned (90 or 270 degrees) has its extent the other way round.
+        int turned = (caps->currentExtent.width < caps->currentExtent.height) != (rw < rh);
+        uint32_t w = turned ? rh : rw, h = turned ? rw : rh;
+        if (w < caps->minImageExtent.width) w = caps->minImageExtent.width;
+        if (h < caps->minImageExtent.height) h = caps->minImageExtent.height;
+        if (w > caps->maxImageExtent.width) w = caps->maxImageExtent.width;
+        if (h > caps->maxImageExtent.height) h = caps->maxImageExtent.height;
+        caps->currentExtent.width = w;
+        caps->currentExtent.height = h;
     }
 }
 

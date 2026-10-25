@@ -391,6 +391,12 @@ namespace PortMobile
 
 		private static void Rect(Utf8JsonWriter w, string name, float x0, float y0, float x1, float y1)
 		{
+			// In the screen's pixels (adb taps them) when the game renders at a lower resolution (ResolutionChoice).
+			float k = ResolutionChoice.ToScreen;
+			x0 *= k;
+			y0 *= k;
+			x1 *= k;
+			y1 *= k;
 			w.WriteStartArray(name);
 			w.WriteNumberValue(Mathf.Round(x0));
 			w.WriteNumberValue(Mathf.Round(y0));
@@ -610,7 +616,11 @@ namespace PortMobile
 			Vector2 ui = world.MapToUIPosition();
 			x = ui.x * Prefs.UIScale;
 			y = ui.y * Prefs.UIScale;
-			return x >= 0f && y >= 0f && x < Screen.width && y < Screen.height;
+			bool on = x >= 0f && y >= 0f && x < Screen.width && y < Screen.height;
+			float k = ResolutionChoice.ToScreen;
+			x *= k;
+			y *= k;
+			return on;
 		}
 
 		/// <summary>Things on the current map whose id, def name or label holds the query. args: query, kind (pawn, building, item, plant, any), limit.</summary>
@@ -909,8 +919,8 @@ namespace PortMobile
 				if (x >= 0f && y >= 0f && x < UnityEngine.Screen.width && y < UnityEngine.Screen.height)
 				{
 					w.WriteStartArray("screen");
-					w.WriteNumberValue(Mathf.Round(x));
-					w.WriteNumberValue(Mathf.Round(y));
+					w.WriteNumberValue(Mathf.Round(x * ResolutionChoice.ToScreen));
+					w.WriteNumberValue(Mathf.Round(y * ResolutionChoice.ToScreen));
 					w.WriteEndArray();
 				}
 			}
