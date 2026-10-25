@@ -453,10 +453,52 @@ internal static class StartupHook
 		AssemblyLoadContext.Default.Resolving += Resolve;
 		PretendProcessPath();
 		LimitGraphicsMemory();
+		DropAtlasCacheIfAsked();
 		PortHooks.Textures.Start();
 		PortHooks.UiDescriptors.Start();
 		Console.WriteLine("[port17] startup hook installed (Unity assembly names resolve to UnityStubs)");
 		PortDiag.StartIfRequested();
+	}
+
+	/// <summary>
+	/// PortMobile's atlas check found textures missing from a static atlas page that came from the engine's cache
+	/// (TextureCache/atlas-rebuild.txt says which): the cached pages (TextureCache/v*/*/pages.*.zip) are deleted before
+	/// the engine opens them, so that this start bakes every atlas again from its textures. The pages are baked before
+	/// PortMobile loads, so it cannot do this itself.
+	/// </summary>
+	private static void DropAtlasCacheIfAsked()
+	{
+		try
+		{
+			string home = Environment.GetEnvironmentVariable("HOME");
+			if (string.IsNullOrEmpty(home))
+			{
+				return;
+			}
+			string cache = Path.Combine(home, "unity3d", "Ludeon Studios", "RimWorld by Ludeon Studios", "TextureCache");
+			string flag = Path.Combine(cache, "atlas-rebuild.txt");
+			if (!File.Exists(flag))
+			{
+				return;
+			}
+			int deleted = 0;
+			foreach (string file in Directory.EnumerateFiles(cache, "pages.*", SearchOption.AllDirectories))
+			{
+				File.Delete(file);
+				deleted++;
+			}
+			foreach (string file in Directory.EnumerateFiles(cache, "atlas-checked*.txt"))
+			{
+				File.Delete(file);
+			}
+			string why = File.ReadAllText(flag).Trim();
+			File.Delete(flag);
+			Console.WriteLine("[port17] atlas cache dropped (" + deleted + " files), the atlases are baked again: " + why);
+		}
+		catch (Exception e)
+		{
+			Console.WriteLine("[port17] atlas cache not dropped: " + e.Message);
+		}
 	}
 
 	/// <summary>

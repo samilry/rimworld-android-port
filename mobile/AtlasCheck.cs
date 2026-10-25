@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Brutal.VulkanApi;
@@ -113,7 +114,9 @@ namespace PortMobile
 					return;
 				}
 				string root = Waylith.Runtime.WaylithRuntime.Current?.App.CacheDataPath;
-				string list = string.IsNullOrEmpty(root) ? null : Path.Combine(root, "TextureCache", "atlas-checked.txt");
+				// "2": pages noted whole before the tiles were checked as well are checked once more.
+				string list = string.IsNullOrEmpty(root) ? null : Path.Combine(root, "TextureCache", "atlas-checked2.txt");
+				cacheRoot = string.IsNullOrEmpty(root) ? null : Path.Combine(root, "TextureCache");
 				var checkedKeys = new HashSet<string>(list != null && File.Exists(list) ? File.ReadAllLines(list) : new string[0]);
 				string test = Settings.Get("atlasCheckTest", "");
 				if (test.Length > 0)
@@ -150,7 +153,7 @@ namespace PortMobile
 							continue;
 						}
 						pages++;
-						bool whole = Check(page, key, atlas.AdoptedFromCache, ref repaired);
+						bool whole = Check(page, key, atlas, mask, ref repaired);
 						if (whole && id != null)
 						{
 							added.Add(id);
@@ -332,8 +335,9 @@ namespace PortMobile
 		private enum Kind { Bc7, Astc, Rgba }
 
 		/// <summary>Whether the page is whole (after any repair).</summary>
-		private static bool Check(UnityEngine.Texture2D page, string key, bool fromCache, ref int repaired)
+		private static bool Check(UnityEngine.Texture2D page, string key, StaticTextureAtlas atlas, bool mask, ref int repaired)
 		{
+			bool fromCache = atlas.AdoptedFromCache;
 			Waylith.Rendering.Texture2D core = page.CoreTexture;
 			GpuTextureAllocation gpu = core.GpuResource;
 			Kind kind;
@@ -366,6 +370,10 @@ namespace PortMobile
 				return false;
 			}
 			readback = levels;
+			if (!mask && MissingTiles(atlas, page, key, levels[0], width, height, kind, srgb))
+			{
+				return false;
+			}
 			bool changed = false;
 			byte[][] fixedLevels = null;
 			for (int level = 1; level < mipCount; level++)
@@ -448,6 +456,178 @@ namespace PortMobile
 				}
 			}
 			return true;
+		}
+
+		private static readonly AccessTools.FieldRef<StaticTextureAtlas, Dictionary<UnityEngine.Texture, StaticTextureAtlasTile>> Tiles = AccessTools.FieldRefAccess<StaticTextureAtlas, Dictionary<UnityEngine.Texture, StaticTextureAtlasTile>>("tiles");
+		private static string cacheRoot;
+		private static bool rebuildSaid;
+
+		/// <summary>
+		/// Textures that are not in the page at all: a tile empty at 5 x 5 points inside it, at level 0, where its texture has
+		/// something. A tester's Adreno 730 (Xiaomi, 2026-10-25) had the comms console invisible: its tile in the Building page
+		/// was empty at every level, in the GPU's copy and in the engine's cache alike, so it stayed that way at every start
+		/// (the checks above compare a level with the one above it, and the page with its cache file: both found it whole).
+		/// Such a page cannot be mended here (the textures are drawn into a page when it is baked); its cache entry goes (the
+		/// ASTC file now; the engine's pack at the next start, PortHooks.DropAtlasCacheIfAsked) and the player is told that
+		/// the next start bakes it again. Which way up the page is read back is not assumed: the tiles are looked at both
+		/// ways, and the one with fewer empty tiles counts.
+		/// </summary>
+		private static bool MissingTiles(StaticTextureAtlas atlas, UnityEngine.Texture2D page, string key, byte[] level0, int width, int height, Kind kind, bool srgb)
+		{
+			Dictionary<UnityEngine.Texture, StaticTextureAtlasTile> tiles = Tiles(atlas);
+			if (tiles == null || tiles.Count == 0)
+			{
+				return false;
+			}
+			string test = Settings.Get("atlasTileTest", "");
+			if (test.Length > 0)
+			{
+				BlankTileForTest(tiles, test, level0, width, height, kind);
+			}
+			var texels = new byte[64];
+			var empty = new[] { new List<UnityEngine.Texture>(), new List<UnityEngine.Texture>() };
+			foreach (KeyValuePair<UnityEngine.Texture, StaticTextureAtlasTile> pair in tiles)
+			{
+				UnityEngine.Rect uv = pair.Value.uvRect;
+				for (int way = 0; way < 2; way++)
+				{
+					bool any = false;
+					for (int i = 0; i < 25 && !any; i++)
+					{
+						float u = uv.x + uv.width * (0.15f + 0.7f * (i % 5) / 4f), v = uv.y + uv.height * (0.15f + 0.7f * (i / 5) / 4f);
+						any = Alpha(level0, 0, width, height, u, way == 0 ? v : 1f - v, kind, srgb, texels) >= 16;
+					}
+					if (!any)
+					{
+						empty[way].Add(pair.Key);
+					}
+				}
+			}
+			List<UnityEngine.Texture> candidates = empty[0].Count <= empty[1].Count ? empty[0] : empty[1];
+			var missing = new List<string>();
+			foreach (UnityEngine.Texture texture in candidates)
+			{
+				if (HasContent(texture as UnityEngine.Texture2D))
+				{
+					missing.Add(texture.name);
+				}
+			}
+			if (missing.Count == 0)
+			{
+				return false;
+			}
+			string names = string.Join(", ", missing.Take(8)) + (missing.Count > 8 ? " ..." : "");
+			bool dropped = kind == Kind.Astc ? PortHooks.Astc.DropAtlasPage(key) : AskRebuild(page.name + ": " + missing.Count + " textures missing (" + names + ")");
+			Console.WriteLine("[mobile] atlas check: " + page.name + " (" + width + "x" + height + ", " + (atlas.AdoptedFromCache ? "from the engine's cache" : "made in this run") + "): " + missing.Count + " of " + tiles.Count
+				+ " textures are not in it (" + names + "; empty tiles " + empty[0].Count + " / " + empty[1].Count + " read either way up); "
+				+ (dropped ? "its cache entry goes, the next start bakes it again" : "its cache entry could not be dropped"));
+			if (dropped && !rebuildSaid)
+			{
+				rebuildSaid = true;
+				string text = Texts.Chinese
+					? "有 " + missing.Count + " 张贴图在图集缓存里缺失（比如 " + string.Join("、", missing.Take(3)) + "），这些东西会看不见。缓存已清除，重启游戏后会重新生成图集（第一次启动会慢一些）。"
+					: missing.Count + " textures are missing from a cached texture atlas (such as " + string.Join(", ", missing.Take(3)) + "), so those things are invisible. The cache was cleared: restart the game and the atlas is made again (the first start takes a little longer).";
+				Find.WindowStack.Add(new Dialog_MessageBox(text));
+			}
+			return true;
+		}
+
+		/// <summary>mobile.txt atlasTileTest=&lt;texture name&gt;: that texture's tile is emptied in the read-back level 0 (read either way up), to see the check find it.</summary>
+		private static void BlankTileForTest(Dictionary<UnityEngine.Texture, StaticTextureAtlasTile> tiles, string name, byte[] level0, int width, int height, Kind kind)
+		{
+			foreach (KeyValuePair<UnityEngine.Texture, StaticTextureAtlasTile> pair in tiles)
+			{
+				if (pair.Key.name != name || kind == Kind.Rgba)
+				{
+					continue;
+				}
+				UnityEngine.Rect uv = pair.Value.uvRect;
+				int blocksX = (width + 3) / 4;
+				foreach (float top in new[] { uv.y, 1f - uv.y - uv.height })
+				{
+					int x0 = (int)(uv.x * width) / 4, x1 = (int)((uv.x + uv.width) * width) / 4, y0 = (int)(top * height) / 4, y1 = (int)((top + uv.height) * height) / 4;
+					for (int by = y0; by <= y1 && by < (height + 3) / 4; by++)
+					{
+						Blank(level0, (by * blocksX + x0) * 16, (Math.Min(x1, blocksX - 1) - x0 + 1) * 16, kind == Kind.Astc);
+					}
+				}
+				Console.WriteLine("[mobile] atlas check: test: " + name + "'s tile emptied in the read-back copy");
+			}
+		}
+
+		/// <summary>Whether a texture is solid at 3 or more of the 5 x 5 points over its middle (level 0, read back from the GPU).</summary>
+		private static bool HasContent(UnityEngine.Texture2D texture)
+		{
+			try
+			{
+				Waylith.Rendering.Texture2D core = texture?.CoreTexture;
+				if (core == null || texture.width < 4 || texture.height < 4 || !core.EnsureResident() || core.GpuResource == null)
+				{
+					return false;
+				}
+				GpuTextureAllocation gpu = core.GpuResource;
+				Kind kind;
+				switch (gpu.Format)
+				{
+				case VkFormat.Bc7UNormBlock:
+				case VkFormat.Bc7SRGBBlock:
+					kind = Kind.Bc7;
+					break;
+				case VkFormat.Astc4X4UNormBlock:
+				case VkFormat.Astc4X4SRGBBlock:
+					kind = Kind.Astc;
+					break;
+				case VkFormat.R8G8B8A8UNorm:
+				case VkFormat.R8G8B8A8SRGB:
+					kind = Kind.Rgba;
+					break;
+				default:
+					return false;
+				}
+				bool srgb = gpu.Format == VkFormat.Bc7SRGBBlock || gpu.Format == VkFormat.Astc4X4SRGBBlock || gpu.Format == VkFormat.R8G8B8A8SRGB;
+				int width = texture.width, height = texture.height, mipCount = Math.Max(1, gpu.MipCount);
+				byte[][] levels = GpuTextureService.ReadbackTexture2DLevels(gpu, width, height, mipCount, kind == Kind.Rgba ? 4 : 1);
+				if (levels == null)
+				{
+					return false;
+				}
+				// Level 0, at the points the tile was looked at (the grid is the same either way up): a smaller level blurs an
+				// outline into the middle (the crafting spot's frame, hollow inside, looked filled at 4 x 4).
+				var texels = new byte[64];
+				int filled = 0;
+				for (int i = 0; i < 25; i++)
+				{
+					if (Alpha(levels[0], 0, width, height, 0.15f + 0.7f * (i % 5) / 4f, 0.15f + 0.7f * (i / 5) / 4f, kind, srgb, texels) > 128)
+					{
+						filled++;
+					}
+				}
+				return filled >= 3;
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] atlas check: " + texture?.name + " could not be read back: " + e.Message);
+				return false;
+			}
+		}
+
+		/// <summary>For the engine's BC7 pages: the next start drops its cached pages before it bakes (PortHooks reads the file).</summary>
+		private static bool AskRebuild(string why)
+		{
+			if (cacheRoot == null)
+			{
+				return false;
+			}
+			try
+			{
+				File.AppendAllText(Path.Combine(cacheRoot, "atlas-rebuild.txt"), why + "\n");
+				return true;
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] atlas check: the rebuild could not be asked for: " + e.Message);
+				return false;
+			}
 		}
 
 		/// <summary>Of the sample points the level above covers, how many are empty in this level.</summary>

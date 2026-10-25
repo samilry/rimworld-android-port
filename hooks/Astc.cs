@@ -654,6 +654,19 @@ namespace PortHooks
 			}
 		}
 
+		/// <summary>For PortMobile.AtlasCheck: a page with textures missing is dropped from the cache; the next start draws it again.</summary>
+		public static bool DropAtlasPage(string cacheKey)
+		{
+			if (!On || cacheKey == null)
+			{
+				return false;
+			}
+			string file = FileOf(AtlasKey(cacheKey));
+			bool was = File.Exists(file);
+			TryDelete(file);
+			return was;
+		}
+
 		public static void BeforeBakeStaticAtlases()
 		{
 			Interlocked.Increment(ref baking);
