@@ -219,10 +219,32 @@ namespace PortHooks
 		}
 
 		/// <summary>
-		/// A mod assembly built for x64 only (PE machine type AMD64, pure IL all the same) is refused by the runtime on
-		/// arm64; a copy with the machine type changed to ARM64 is kept next to the game (modcache/<mod folder>/) and
-		/// loaded instead. Returns null when the file needs no change.
+		/// A mod assembly built for x64 only (PE machine type AMD64, pure IL all the same), or for x86 only (32BITREQUIRED),
+		/// is refused by the runtime on arm64; a copy made loadable (ModPrep.FixMachineType) is kept next to the game
+		/// (modcache/<mod folder>/) and loaded instead. Mods prepared before the x86 case was known get it here. Returns
+		/// null when the file needs no change.
 		/// </summary>
+		/// <summary>Whether an I386 image's CLR header asks for a 32-bit process only (the header's flags read from the file; the section table is in the head).</summary>
+		private static bool Only32Bit(string path, byte[] head, int got, int pe)
+		{
+			int offset = ModPrep.ClrFlagsOffset(head.Length == got ? head : head.AsSpan(0, got).ToArray(), pe);
+			if (offset < 0)
+			{
+				return false;
+			}
+			var flags = new byte[4];
+			using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1, false))
+			{
+				stream.Position = offset;
+				if (stream.Read(flags, 0, 4) != 4)
+				{
+					return false;
+				}
+			}
+			uint value = BitConverter.ToUInt32(flags, 0);
+			return (value & 0x1) != 0 && (value & 0x2) != 0 && (value & 0x20000) == 0;
+		}
+
 		private static string FixedArchitectureCopy(string path)
 		{
 			try
@@ -244,13 +266,16 @@ namespace PortHooks
 				{
 					return null;
 				}
-				if (BitConverter.ToUInt16(head, pe + 4) != 0x8664)
+				ushort machine = BitConverter.ToUInt16(head, pe + 4);
+				if (machine != 0x8664 && !(machine == 0x14c && Only32Bit(path, head, got, pe)))
 				{
 					return null;
 				}
 				byte[] bytes = File.ReadAllBytes(path);
-				bytes[pe + 4] = 0x64;
-				bytes[pe + 5] = 0xaa;
+				if (!ModPrep.FixMachineType(bytes))
+				{
+					return null;
+				}
 				string modFolder = "x";
 				try
 				{
@@ -270,7 +295,7 @@ namespace PortHooks
 				{
 					File.WriteAllBytes(copy, bytes);
 				}
-				Console.WriteLine("[port17] " + Path.GetFileName(path) + " is marked AMD64; loading an ARM64-marked copy from " + copy);
+				Console.WriteLine("[port17] " + Path.GetFileName(path) + " is marked " + (machine == 0x8664 ? "AMD64" : "x86 only") + "; loading a copy marked for this runtime from " + copy);
 				return copy;
 			}
 			catch (Exception e)

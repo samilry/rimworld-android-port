@@ -493,10 +493,27 @@ namespace PortMobile
 	{
 		private const float Smallest = 0.5f, RowsSmallest = 0.6f, RowHeight = 75f + 14f, ColumnSpacing = 5f, RightColumn = 147f, BottomBar = 35f, TopMargin = 4f;
 
+		/// <summary>
+		/// What the grid leaves free at the right: the game's 147 units, or as far in as the time buttons were last drawn.
+		/// They reach further: TouchSizes makes them 1.4 times wider (four of them 185 units in), Smart Speed adds a fifth,
+		/// the column moves left off a camera hole at the right; a full row of commands covered the pause button (the user,
+		/// 2026-10-26).
+		/// </summary>
+		private static float RightReserve => timeLeft > 0f ? Mathf.Max(RightColumn, UI.screenWidth - timeLeft + ColumnSpacing) : RightColumn;
+
+		// Where on the screen the time buttons begin, in interface units, as last drawn (0: not drawn yet).
+		private static float timeLeft;
+
+		/// <summary>Prefix of TimeControls.DoTimeControlsGUI, after the mods' (which move and widen the strip): where it begins.</summary>
+		public static void SeeTimeControls(Rect timerRect)
+		{
+			timeLeft = UI.GUIToScreenPoint(timerRect.position).x;
+		}
+
 		private sealed class Fit
 		{
 			public int count = -1, screenWidth, screenHeight, rows;
-			public float factor = 1f, size = 1f;
+			public float factor = 1f, size = 1f, reserve;
 		}
 
 		// The selection's commands: the size chosen and the most rows (0: any), and whether they are being drawn now.
@@ -535,6 +552,7 @@ namespace PortMobile
 			harmony.Patch(AccessTools.Method(typeof(WindowStack), nameof(WindowStack.ImmediateWindow)), prefix: new HarmonyMethod(typeof(GizmoFit), nameof(BeforeImmediateWindow)));
 			harmony.Patch(AccessTools.Method(typeof(Window), nameof(Window.WindowOnGUI)), prefix: new HarmonyMethod(typeof(GizmoFit), nameof(BeforeWindow)), finalizer: new HarmonyMethod(typeof(GizmoFit), nameof(AfterWindow)));
 			harmony.Patch(AccessTools.Method(typeof(Window), "InnerWindowOnGUI"), prefix: new HarmonyMethod(typeof(GizmoFit), nameof(BeforeWindowInside)), finalizer: new HarmonyMethod(typeof(GizmoFit), nameof(AfterWindowInside)));
+			harmony.Patch(AccessTools.Method(typeof(TimeControls), nameof(TimeControls.DoTimeControlsGUI)), prefix: new HarmonyMethod(typeof(GizmoFit), nameof(SeeTimeControls)) { priority = Priority.Last });
 		}
 
 		/// <summary>Prefix of WindowStack.ImmediateWindow: inside a smaller grid, the rect as it shows on the screen.</summary>
@@ -628,17 +646,24 @@ namespace PortMobile
 				return;
 			}
 			float f = selection ? FactorFor(gizmos, startX, sizePercent / 100f, maxRows) : FactorFor(gizmos, startX, 1f, 0);
-			if (f > 0.999f)
+			float reserve = RightReserve;
+			if (f > 0.999f && reserve <= RightColumn + 0.5f)
 			{
 				return;
 			}
 			__state.active = true;
 			__state.matrix = GUI.matrix;
 			__state.width = UI.screenWidth;
+			// The game wraps its rows 147 units before the screen's width; that width is made to put the wrap at the reserve.
+			if (f > 0.999f)
+			{
+				UI.screenWidth = Mathf.FloorToInt(UI.screenWidth - (reserve - RightColumn));
+				return;
+			}
 			// Smaller around the grid's bottom-left corner, which stays where it is.
 			float cornerY = UI.screenHeight - BottomBar;
 			GUI.matrix = __state.matrix * Matrix4x4.TRS(new Vector3(startX * (1f - f), cornerY * (1f - f), 0f), Quaternion.identity, new Vector3(f, f, 1f));
-			UI.screenWidth = Mathf.FloorToInt(startX + RightColumn + (UI.screenWidth - RightColumn - startX) / f);
+			UI.screenWidth = Mathf.FloorToInt(startX + RightColumn + (UI.screenWidth - reserve - startX) / f);
 			gridFactor = f;
 			gridCorner = new Vector2(startX, cornerY);
 		}
@@ -668,10 +693,12 @@ namespace PortMobile
 			{
 				fits[key] = fit = new Fit();
 			}
-			if (fit.count == all.Count && fit.screenWidth == UI.screenWidth && fit.screenHeight == UI.screenHeight && fit.size == size && fit.rows == rows)
+			float reserve = RightReserve;
+			if (fit.count == all.Count && fit.screenWidth == UI.screenWidth && fit.screenHeight == UI.screenHeight && fit.size == size && fit.rows == rows && fit.reserve == reserve)
 			{
 				return fit.factor;
 			}
+			fit.reserve = reserve;
 			fit.count = all.Count;
 			fit.screenWidth = UI.screenWidth;
 			fit.screenHeight = UI.screenHeight;
@@ -732,7 +759,7 @@ namespace PortMobile
 		/// </summary>
 		private static float LaidOutHeight(float startX, float f)
 		{
-			float right = startX + (UI.screenWidth - RightColumn - startX) / f, maxWidth = right - startX, x = startX;
+			float right = startX + (UI.screenWidth - RightReserve - startX) / f, maxWidth = right - startX, x = startX;
 			int wraps = 0;
 			shrinkables.Clear();
 			foreach (Gizmo gizmo in groups)

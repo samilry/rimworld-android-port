@@ -124,8 +124,15 @@ internal static class ModPrep
 			var list = new List<string>();
 			foreach (KeyValuePair<string, string> problem in Problems)
 			{
-				string first = problem.Key.Split('/', '\\')[0];
-				Version v = VersionOf(first);
+				string[] parts = problem.Key.Split('/', '\\');
+				// The game loads assemblies only from an Assemblies folder: a mod's build output (Phinix ships Source/bin/Debug
+				// with copies of the engine's DLLs, two of which cannot be read here) is never loaded, and was reported as a
+				// mod that may fail (the user, 2026-10-26: "Phinix这个mod没法编译").
+				if (!parts.Take(parts.Length - 1).Any(p => p.Equals("Assemblies", StringComparison.OrdinalIgnoreCase)))
+				{
+					continue;
+				}
+				Version v = VersionOf(parts[0]);
 				if (v == null || v == best)
 				{
 					list.Add(problem.Key + ": " + problem.Value);
@@ -322,7 +329,7 @@ internal static class ModPrep
 				if (FixMachineType(data))
 				{
 					output = data;
-					log(name + ": AMD64 -> ARM64");
+					log(name + ": marked for one processor (AMD64 or x86 only); now loadable here");
 				}
 				resolver.AddSearchDirectory(Path.GetDirectoryName(file));
 				AssemblyDefinition assembly;
@@ -1544,16 +1551,64 @@ internal static class ModPrep
 		return true;
 	}
 
-	/// <summary>Changes the PE machine type AMD64 to ARM64 in place; false when the bytes are not such an image.</summary>
+	/// <summary>
+	/// Makes an assembly marked for one processor loadable here, in place; false when the bytes are not such an image.
+	/// The PE machine type AMD64 becomes ARM64. An IL-only image marked for 32-bit processes only (x86: the CLR header's
+	/// 32BITREQUIRED without 32BITPREFERRED) becomes AnyCPU: Expanded Prosthetics and Organ Engineering's EPIA.dll is built
+	/// that way, which Mono and the PC's runtime let pass and this one refuses ("The assembly architecture is not
+	/// compatible with the current process"; a tester, 2026-10-25).
+	/// </summary>
 	public static bool FixMachineType(byte[] bytes)
 	{
 		if (bytes.Length < 0x40 || bytes[0] != (byte)'M' || bytes[1] != (byte)'Z') return false;
 		int pe = BitConverter.ToInt32(bytes, 0x3c);
 		if (pe < 0 || pe + 24 > bytes.Length || bytes[pe] != (byte)'P' || bytes[pe + 1] != (byte)'E') return false;
-		if (BitConverter.ToUInt16(bytes, pe + 4) != 0x8664) return false;
-		bytes[pe + 4] = 0x64;
-		bytes[pe + 5] = 0xaa;
+		ushort machine = BitConverter.ToUInt16(bytes, pe + 4);
+		if (machine == 0x8664)
+		{
+			bytes[pe + 4] = 0x64;
+			bytes[pe + 5] = 0xaa;
+			return true;
+		}
+		int flags = machine == 0x14c ? ClrFlagsOffset(bytes, pe) : -1;
+		if (flags < 0 || flags + 4 > bytes.Length) return false;
+		uint value = BitConverter.ToUInt32(bytes, flags);
+		const uint ilOnly = 0x1, required32 = 0x2, preferred32 = 0x20000;
+		if ((value & ilOnly) == 0 || (value & required32) == 0 || (value & preferred32) != 0) return false;
+		BitConverter.GetBytes(value & ~required32).CopyTo(bytes, flags);
 		return true;
+	}
+
+	/// <summary>
+	/// Where the Flags of the CLR header are in the file (the COM descriptor's RVA through the section table), from the
+	/// bytes given, which need to reach only as far as the section table; -1 when there is no CLR header.
+	/// </summary>
+	public static int ClrFlagsOffset(byte[] bytes, int pe)
+	{
+		if (pe + 24 > bytes.Length) return -1;
+		int sections = BitConverter.ToUInt16(bytes, pe + 6);
+		int optionalSize = BitConverter.ToUInt16(bytes, pe + 20);
+		int optional = pe + 24;
+		if (optional + 2 > bytes.Length) return -1;
+		ushort magic = BitConverter.ToUInt16(bytes, optional);
+		int directories = optional + (magic == 0x20b ? 112 : magic == 0x10b ? 96 : -100000);
+		int com = directories + 14 * 8;
+		if (directories < 0 || com + 8 > optional + optionalSize || com + 8 > bytes.Length) return -1;
+		uint rva = BitConverter.ToUInt32(bytes, com);
+		if (rva == 0) return -1;
+		int table = optional + optionalSize;
+		for (int i = 0; i < sections; i++)
+		{
+			int s = table + i * 40;
+			if (s + 40 > bytes.Length) return -1;
+			uint size = BitConverter.ToUInt32(bytes, s + 8), address = BitConverter.ToUInt32(bytes, s + 12), raw = BitConverter.ToUInt32(bytes, s + 20);
+			if (size == 0) size = BitConverter.ToUInt32(bytes, s + 16);
+			if (rva >= address && rva < address + size)
+			{
+				return (int)(rva - address + raw) + 16;
+			}
+		}
+		return -1;
 	}
 
 	/// <summary>

@@ -87,6 +87,9 @@ namespace PortMobile
 		private static Texture tabFill;
 		private static Harmony patcher;
 		private static bool modRowsLooked;
+		// Whether the mods that draw the architect's panel themselves were looked for, and how far such a panel is moved now.
+		private static bool modPanelsLooked;
+		private static float modPanelShift;
 
 		public static void Start(Harmony harmony)
 		{
@@ -309,8 +312,72 @@ namespace PortMobile
 		/// <summary>Prefix of MainTabWindow_Architect.ExtraOnGUI and MainTabWindow_Inspect.ExtraOnGUI: how far the window is moved off a hole at the left.</summary>
 		public static void BeforeTabExtras(Window __instance)
 		{
+			if (!modPanelsLooked)
+			{
+				modPanelsLooked = true;
+				PatchModPanels();
+			}
 			tabShift = ShiftOf(__instance);
 			gridDepth = 0;
+		}
+
+		/// <summary>
+		/// Better Architect Menu draws the category's panel itself (a prefix of ArchitectCategoryTab.DesignationTabOnGUI that
+		/// skips the game's), straight onto the screen from the architect's width on, as wide as the screen leaves: with the
+		/// menu moved off a hole at the left, the panel's first column lay under the menu (the user, 2026-10-26: "避开摄像头
+		/// 挖孔会导致Better Architect Menu显示错位"). Its drawing goes as far right as the menu went, and the screen's
+		/// width it reads (its ExtensionMethods.UIWidth, there for patches like this) is that much less, so that it still
+		/// ends short of the right column. Its info box and a tool's controls are immediate windows, moved as the game's are.
+		/// </summary>
+		private static void PatchModPanels()
+		{
+			try
+			{
+				Type bam = AccessTools.TypeByName("BetterArchitect.ArchitectCategoryTab_DesignationTabOnGUI_Patch");
+				MethodInfo prefix = bam != null ? AccessTools.Method(bam, "Prefix") : null;
+				if (prefix != null)
+				{
+					patcher.Patch(prefix, prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeModPanel)), finalizer: new HarmonyMethod(typeof(Cutout), nameof(AfterModPanel)), transpiler: new HarmonyMethod(typeof(Cutout), nameof(ModWidthTranspiler)));
+					Console.WriteLine("[mobile] cutout: Better Architect Menu's panel goes with the menu");
+				}
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] cutout: a mod's architect panel left as it is: " + e.Message);
+			}
+		}
+
+		public static void BeforeModPanel()
+		{
+			modPanelShift = tabShift;
+			Push(tabShift);
+		}
+
+		public static void AfterModPanel()
+		{
+			modPanelShift = 0f;
+			EndShift();
+		}
+
+		/// <summary>Transpiler of Better Architect Menu's panel: the screen's width it reads (ExtensionMethods.UIWidth) is ModPanelWidth.</summary>
+		public static IEnumerable<CodeInstruction> ModWidthTranspiler(IEnumerable<CodeInstruction> instructions)
+		{
+			MethodInfo ours = AccessTools.Method(typeof(Cutout), nameof(ModPanelWidth));
+			foreach (CodeInstruction instruction in instructions)
+			{
+				if ((instruction.opcode == OpCodes.Call || instruction.opcode == OpCodes.Callvirt) && instruction.operand is MethodInfo called
+					&& called.Name == "get_UIWidth" && called.DeclaringType?.FullName == "BetterArchitect.ExtensionMethods")
+				{
+					instruction.opcode = OpCodes.Call;
+					instruction.operand = ours;
+				}
+				yield return instruction;
+			}
+		}
+
+		public static float ModPanelWidth()
+		{
+			return UI.screenWidth - modPanelShift;
 		}
 
 		/// <summary>How far an open window is moved right off a hole at the left (0: not moved, or not open).</summary>
