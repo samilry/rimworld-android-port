@@ -52,6 +52,8 @@ namespace PortMobile
 				consecutiveClicks = (int[])AccessTools.Field(state, "consecutiveClicks").GetValue(null);
 				eventsThisFrame = (List<InputEvent>)AccessTools.Field(state, "eventsThisFrame").GetValue(null);
 				harmony.Patch(AccessTools.Method(state, "OnMouseButton"), prefix: new HarmonyMethod(typeof(DoubleTap), nameof(Before)), postfix: new HarmonyMethod(typeof(DoubleTap), nameof(After)));
+				underMouse = AccessTools.MethodDelegate<Func<RimWorld.Selector, IEnumerable<object>>>(AccessTools.Method(typeof(RimWorld.Selector), "SelectableObjectsUnderMouse"));
+				harmony.Patch(AccessTools.Method(typeof(RimWorld.Selector), "HandleMapClicks"), prefix: new HarmonyMethod(typeof(DoubleTap), nameof(BeforeMapClick)));
 				Console.WriteLine("[mobile] double tap: within " + window.ToString("F2", inv) + " s and " + slop.ToString("F0", inv) + " px");
 			}
 			catch (Exception e)
@@ -86,6 +88,7 @@ namespace PortMobile
 			}
 			double now = clock.Elapsed.TotalSeconds;
 			int count = now - lastTime < window && System.Numerics.Vector2.Distance(position, lastPos) < slop ? lastCount + 1 : 1;
+			presses++;
 			lastTime = now;
 			lastPos = position;
 			lastCount = count;
@@ -94,6 +97,59 @@ namespace PortMobile
 			{
 				added.clickCount = count;
 				consecutiveClicks[(int)MouseButton.Left] = count;
+			}
+		}
+
+		private static Func<RimWorld.Selector, IEnumerable<object>> underMouse;
+		// Presses counted above, the one of the last press on the map, and what was under it.
+		private static int presses, mapPress = -1;
+		private static object mapTarget;
+
+		/// <summary>
+		/// Prefix of Selector.HandleMapClicks: a second tap is the map's double tap (everything of the kind on the screen
+		/// selected) only when the tap before it was on the map, on the same thing. Within the wider distance above, a tap on
+		/// the ground (to clear the selection) and a quick tap on a colonist next to it came as a double tap, and every
+		/// colonist was selected (the user, 2026-10-26: "点击空地取消选择，再点击小人选择单个小人……一下选中所有小人"). Such a
+		/// press is the game's single click instead, and the next tap may make a double tap with it.
+		/// </summary>
+		public static void BeforeMapClick(RimWorld.Selector __instance)
+		{
+			UnityEngine.Event current = UnityEngine.Event.current;
+			if (current == null || current.type != UnityEngine.EventType.MouseDown || current.button != 0 || !Touch.TouchInProgress)
+			{
+				return;
+			}
+			object target = Target(__instance);
+			if (current.clickCount == 2 && (mapPress != presses - 1 || !Equals(target, mapTarget)))
+			{
+				current.clickCount = 1;
+				lastCount = 1;
+				if (Touch.Verbose) Console.WriteLine("[mobile] double tap: the tap before was not on " + (target ?? "the ground") + "; a single tap");
+			}
+			mapPress = presses;
+			mapTarget = target;
+		}
+
+		/// <summary>What a double tap here would select the kind of (as Selector.SelectAllMatchingObjectUnderMouseOnScreen picks it); null for the ground.</summary>
+		private static object Target(RimWorld.Selector selector)
+		{
+			try
+			{
+				object first = null, pawn = null;
+				foreach (object o in underMouse(selector))
+				{
+					if (o is Verse.Pawn p && p.Faction == RimWorld.Faction.OfPlayer && !p.IsPrisoner)
+					{
+						return o;
+					}
+					first = first ?? o;
+					pawn = pawn ?? (o is Verse.Pawn ? o : null);
+				}
+				return pawn ?? first;
+			}
+			catch (Exception)
+			{
+				return null;
 			}
 		}
 	}
