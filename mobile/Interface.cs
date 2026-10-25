@@ -356,6 +356,8 @@ namespace PortMobile
 		// The frame whose coasting step is done; the scroll view the last BeginScrollView was for (its end, for Clamp).
 		private static int coastFrame = -1;
 		private static Rect lastOutRect, lastViewRect;
+		// The size of each list's contents as it was last drawn, by the scroll view's rectangle (see Clamp).
+		private static readonly Dictionary<Rect, Vector2> drawnViews = new Dictionary<Rect, Vector2>();
 
 		/// <summary>
 		/// Stands in for SteamDeck.HandleTouchScreenScrollViewScroll (the game calls it from every scroll view and
@@ -479,15 +481,27 @@ namespace PortMobile
 			}
 		}
 
-		/// <summary>Keeps a scroll position in its list: from 0 to the end the engine's scroll view clamps it to, when the list's size is known (the same BeginScrollView call).</summary>
+		/// <summary>
+		/// Keeps a scroll position in its list: from 0 to the end the engine's scroll view clamps it to, when the list's
+		/// size is known (the same BeginScrollView call). The size is the larger of this pass's and the one the list was
+		/// last drawn with: the finger's move comes in the frame's first pass, the layout, and some lists measure their
+		/// contents only while drawing them. The debug actions (Dialog_Debug) count their options' height afresh in every
+		/// layout pass, so there the list was as high as the window, and every move was clamped back to the top (the user,
+		/// 2026-10-25: "开发者界面不能用手指滑动了").
+		/// </summary>
 		private static void Clamp(Rect outRect, ref Vector2 pos)
 		{
 			if (pos.x < 0f) pos.x = 0f;
 			if (pos.y < 0f) pos.y = 0f;
 			if (outRect == lastOutRect)
 			{
-				pos.x = Mathf.Min(pos.x, Mathf.Max(0f, lastViewRect.width - outRect.width));
-				pos.y = Mathf.Min(pos.y, Mathf.Max(0f, lastViewRect.height - outRect.height));
+				Vector2 view = lastViewRect.size;
+				if (drawnViews.TryGetValue(outRect, out Vector2 drawnView))
+				{
+					view = Vector2.Max(view, drawnView);
+				}
+				pos.x = Mathf.Min(pos.x, Mathf.Max(0f, view.x - outRect.width));
+				pos.y = Mathf.Min(pos.y, Mathf.Max(0f, view.y - outRect.height));
 			}
 		}
 
@@ -506,6 +520,11 @@ namespace PortMobile
 			if (current.rawType == EventType.Repaint)
 			{
 				drawn.Add(scrolls && listTouch ? TapAssist.NoteList(outRect, down, across) : -1);
+				if (drawnViews.Count > 256)
+				{
+					drawnViews.Clear();
+				}
+				drawnViews[outRect] = viewRect.size;
 			}
 			if (current.rawType != EventType.MouseDown)
 			{

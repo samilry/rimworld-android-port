@@ -227,6 +227,23 @@ namespace PortMobile
 			return changed;
 		}
 
+		/// <summary>
+		/// A window moved right off a hole at the left that has made itself as wide as the screen again: narrower again, as
+		/// when it was moved. The research tab sets its width to the screen's in every DoWindowContents and keeps the place
+		/// it was moved to; clear of the hole then, it stuck out at the right, and WindowFit drew all of it smaller, with a
+		/// gap above the bottom bar (the user, 2026-10-25: "研究界面发生了偏移").
+		/// </summary>
+		private static bool NarrowAgain(Window window, ref Rect rect)
+		{
+			float width = UI.screenWidth;
+			if (!holeLeft || rect.xMax <= width + 0.5f || rect.width > width + 0.5f || !ownX.TryGetValue(window, out StrongBox<float> own) || rect.x <= own.Value + 0.5f)
+			{
+				return false;
+			}
+			rect.xMax = width;
+			return true;
+		}
+
 		/// <summary>Prefix of WindowStack.WindowStackOnGUI: every window that would lie over a hole is moved before it is drawn (and hit).</summary>
 		public static void BeforeWindows(WindowStack __instance)
 		{
@@ -241,7 +258,7 @@ namespace PortMobile
 			{
 				Window window = windows[i];
 				Rect rect = window.windowRect;
-				if (KeepClear(ref rect))
+				if (KeepClear(ref rect) || NarrowAgain(window, ref rect))
 				{
 					if (!ownX.TryGetValue(window, out StrongBox<float> own) || window.windowRect.x <= own.Value + 0.5f)
 					{
