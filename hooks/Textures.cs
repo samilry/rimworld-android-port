@@ -80,8 +80,167 @@ namespace PortHooks
 			return "";
 		}
 
+		// ---- the sources of the static atlases, as they are drawn into a page
+
+		private static System.Reflection.FieldInfo atlasTextures, pendingBuild, gpuResource;
+		private static System.Reflection.PropertyInfo coreOfTexture;
+		private static bool atlasSourceErrorSaid;
+
+		/// <summary>
+		/// A tester's Adreno 730 had textures missing from cached atlas pages (PortMobile.AtlasCheck finds such pages now).
+		/// The engine bakes the pages on the loading thread (PlayDataLoader.DoPlayLoad); a source still being built there is
+		/// not finished (TextureBuildBatch.Resolve does that on the main thread only), and a source let go after an earlier
+		/// page (the engine evicts a page's sources once it is baked; one texture can be in several pages: the comms console
+		/// is in Building, Item and Misc) comes back from the texture cache. Before a page is drawn, each source that is not
+		/// ready is made ready the engine's own way (as its draw would), and the log says how many were not and which stayed
+		/// so: what went wrong on such a phone shows in its next log.
+		/// </summary>
+		private static void WatchAtlasSources()
+		{
+			try
+			{
+				Type atlas = AccessTools.TypeByName("Verse.StaticTextureAtlas");
+				System.Reflection.MethodInfo blit = atlas == null ? null : AccessTools.Method(atlas, "BlitTexturesToColorAtlas");
+				atlasTextures = atlas == null ? null : AccessTools.Field(atlas, "textures");
+				Type unityTexture = AccessTools.TypeByName("UnityEngine.Texture2D");
+				coreOfTexture = unityTexture == null ? null : AccessTools.DeclaredProperty(unityTexture, "CoreTexture");
+				pendingBuild = AccessTools.Field(typeof(Waylith.Rendering.Texture), "PendingBuild");
+				gpuResource = AccessTools.Field(typeof(Waylith.Rendering.Texture), "_gpuResource");
+				if (blit == null || atlasTextures == null || coreOfTexture == null || pendingBuild == null || gpuResource == null)
+				{
+					Console.WriteLine("[port17] atlas sources: the game's atlas code is not as expected; not watched");
+					return;
+				}
+				harmony.Patch(blit, prefix: new HarmonyMethod(typeof(Textures), nameof(BeforeAtlasBlit)));
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[port17] atlas sources: not watched: " + e.Message);
+			}
+		}
+
+		public static void BeforeAtlasBlit(object __instance)
+		{
+			try
+			{
+				if (!(atlasTextures.GetValue(__instance) is System.Collections.IList list))
+				{
+					return;
+				}
+				int building = 0, away = 0, notReady = 0;
+				var names = new System.Collections.Generic.List<string>();
+				foreach (object texture in list)
+				{
+					if (!(coreOfTexture.GetValue(texture) is Waylith.Rendering.Texture core))
+					{
+						continue;
+					}
+					bool pending = pendingBuild.GetValue(core) != null;
+					if (!pending && gpuResource.GetValue(core) != null)
+					{
+						continue;
+					}
+					if (pending)
+					{
+						building++;
+					}
+					else
+					{
+						away++;
+					}
+					if (!core.EnsureResident())
+					{
+						notReady++;
+						if (names.Count < 8)
+						{
+							names.Add(core.Name);
+						}
+					}
+				}
+				if (building + away > 0)
+				{
+					Console.WriteLine("[port17] atlas sources: a page of " + list.Count + " textures, drawn on thread " + Environment.CurrentManagedThreadId + " (main " + Waylith.Runtime.WaylithRuntime.Current?.App.MainThreadId + "): "
+						+ building + " still being built, " + away + " not in graphics memory; " + notReady + " not ready after EnsureResident" + (names.Count > 0 ? " (" + string.Join(", ", names) + ")" : ""));
+				}
+			}
+			catch (Exception e)
+			{
+				if (!atlasSourceErrorSaid)
+				{
+					atlasSourceErrorSaid = true;
+					Console.WriteLine("[port17] atlas sources: " + e.GetType().Name + ": " + e.Message);
+				}
+			}
+		}
+
+		/// <summary>
+		/// On Adreno GPUs below the 800s the static atlas pages are encoded to BC7 on the processor, not with the engine's
+		/// GPU encoder (GlobalTextureAtlasManager.TryEncodeOnGpu, whose output is read back and becomes the cache entry).
+		/// Pages made on such GPUs have had regions empty at the large levels while a small level showed other things
+		/// there: an Adreno 720's Item page (level 1 empty), an Adreno 725's Plant page (level 0 cut off below a line), a
+		/// tester's Adreno 730 (2026-10-25: the comms console invisible, its tile empty at levels 0 to 2 and level 3 holding
+		/// pieces of other sprites, the same in the engine's cache). The levels do not belong together, so the encoder read
+		/// a page that was not all there yet; the OnePlus (Adreno 825) never showed it. Declined, the engine takes its own
+		/// way for this case, CompressInPlace: it reads the page back (after the GPU's work on it) and encodes it with
+		/// CpuBlockEncoder, then writes the cache from that. It costs time only when a page is made, not when it comes
+		/// from the cache. mobile.txt atlasCpuEncode=1 / 0 for any GPU.
+		/// </summary>
+		private static void EncodeAtlasesOnCpu()
+		{
+			try
+			{
+				string setting = Setting("atlasCpuEncode");
+				bool on = setting == "1";
+				string gpuName = "";
+				if (setting != "0" && setting != "1")
+				{
+					gpuName = Waylith.Graphics.GpuInfo.DeviceName ?? "";
+					// "Adreno (TM) 730": the first three digits after the word.
+					int at = gpuName.IndexOf("Adreno", StringComparison.OrdinalIgnoreCase), model = 0, digits = 0;
+					for (int i = at < 0 ? gpuName.Length : at + 6; i < gpuName.Length && digits < 3; i++)
+					{
+						if (char.IsDigit(gpuName[i]))
+						{
+							model = model * 10 + (gpuName[i] - '0');
+							digits++;
+						}
+						else if (digits > 0)
+						{
+							break;
+						}
+					}
+					on = digits == 3 && model < 800;
+				}
+				if (!on)
+				{
+					return;
+				}
+				Type manager = AccessTools.TypeByName("Verse.GlobalTextureAtlasManager");
+				System.Reflection.MethodInfo onGpu = manager == null ? null : AccessTools.Method(manager, "TryEncodeOnGpu");
+				if (onGpu == null)
+				{
+					Console.WriteLine("[port17] atlas pages: the game's atlas compression is not as expected; left on the GPU");
+					return;
+				}
+				harmony.Patch(onGpu, prefix: new HarmonyMethod(typeof(Textures), nameof(NotOnGpu)));
+				Console.WriteLine("[port17] atlas pages: encoded on the processor (" + (setting == "1" ? "atlasCpuEncode=1" : gpuName) + ")");
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[port17] atlas pages: left on the GPU: " + e.Message);
+			}
+		}
+
+		public static bool NotOnGpu(ref bool __result)
+		{
+			__result = false;
+			return false;
+		}
+
 		public static void AfterCompressionConfigured()
 		{
+			WatchAtlasSources();
+			EncodeAtlasesOnCpu();
 			try
 			{
 				string setting = Setting("bcDecode");
