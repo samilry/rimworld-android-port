@@ -309,9 +309,15 @@ namespace PortMobile
 				return;
 			}
 			lastFocus = focus;
-			if (Touch.Verbose) Console.WriteLine("[mobile] the keyboard focus is now " + focus + " (" + GUI.GetNameOfFocusedControl() + ", from a finger: " + (focus == tappedFocus) + ")");
+			// A finger's focus counts for the change it made, once. Control ids are handed out in drawing order, so a window
+			// opened again gives its fields the ids they had: kept, a save dialog's name tapped once took the focus the
+			// dialog gives it by code the next time it opened, and the keyboard came up by itself (the user, 2026-10-25:
+			// "存档的时候，有时候小键盘还是会自己弹出来").
+			bool fromFinger = focus != 0 && focus == tappedFocus;
+			tappedFocus = 0;
+			if (Touch.Verbose) Console.WriteLine("[mobile] the keyboard focus is now " + focus + " (" + GUI.GetNameOfFocusedControl() + ", from a finger: " + fromFinger + ")");
 			// With a hardware keyboard the focus stays where the game puts it, so that typing goes there at once.
-			if (!searchOnlyFromTap || InputMode.Keyboard || focus == 0 || focus == tappedFocus)
+			if (!searchOnlyFromTap || InputMode.Keyboard || focus == 0 || fromFinger)
 			{
 				return;
 			}
