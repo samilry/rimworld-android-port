@@ -427,6 +427,10 @@ public final class MainActivity extends NativeActivity
                                 }
                                 try
                                 {
+                                    // The game side removes files/ModImport before a pick; unpack and the folder copy
+                                    // make their folders, a lone save has to make it here (the user, 2026-10-25: an
+                                    // .rws picked by itself failed with ENOENT, only zips had been tried).
+                                    target.mkdirs();
                                     write(in, new File(target, safeName(name)));
                                 }
                                 finally
