@@ -64,6 +64,7 @@ namespace PortMobile
 			harmony.Patch(AccessTools.Method(typeof(Window), nameof(Window.WindowOnGUI)), prefix: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.Before)), finalizer: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.After)));
 			harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.DrawShadowAround)), prefix: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.BeforeShadow)));
 			GizmoFit.Start(harmony);
+			GearTabFit.Start(harmony);
 			harmony.Patch(AccessTools.Method(typeof(UI), nameof(UI.RotateAroundPivot)), prefix: new HarmonyMethod(typeof(RotateInFit), nameof(RotateInFit.Before)));
 			try
 			{
@@ -400,6 +401,49 @@ namespace PortMobile
 			Vector2 moved = (__instance.windowRect.position - passed.position) * factor;
 			design.position += moved;
 			__instance.windowRect = design;
+		}
+	}
+
+	/// <summary>
+	/// The gear tab (ITab_Pawn_Gear) sizes itself: 450 units high, or as high as its contents up to the room above the
+	/// inspect pane when they need more. On a phone the room is less than 450 (1920 x 864 at 1.6: about 310), so a pawn
+	/// with little gear got a tab too high for the screen, which WindowFit drew smaller, and one carrying more got a tab
+	/// as high as the room, drawn at full size: the tab grew and shrank as the pawn picked things up and put them away
+	/// (a tester, 2026-10-25: "这个栏的大小会随时变"). Here it is never higher than the room: always at full size, its
+	/// list scrolling when longer. Only the game's own gear tab; other tabs (and mods' gear tabs, laid out their own way)
+	/// keep their fixed sizes, made smaller when they do not fit, which does not change as they are used.
+	/// </summary>
+	internal static class GearTabFit
+	{
+		private static readonly Func<InspectTabBase, float> PaneTopY = AccessTools.MethodDelegate<Func<InspectTabBase, float>>(AccessTools.PropertyGetter(typeof(InspectTabBase), "PaneTopY"));
+		private static readonly AccessTools.FieldRef<InspectTabBase, Vector2> Size = AccessTools.FieldRefAccess<InspectTabBase, Vector2>("size");
+
+		public static void Start(Harmony harmony)
+		{
+			try
+			{
+				harmony.Patch(AccessTools.Method(typeof(InspectTabBase), "UpdateSize"), postfix: new HarmonyMethod(typeof(GearTabFit), nameof(AfterUpdateSize)));
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] gear tab: left to size itself: " + e.Message);
+			}
+		}
+
+		/// <summary>Postfix of InspectTabBase.UpdateSize (TabRect calls it before it places the tab).</summary>
+		public static void AfterUpdateSize(InspectTabBase __instance)
+		{
+			if (__instance.GetType() != typeof(ITab_Pawn_Gear))
+			{
+				return;
+			}
+			// The tab sits on the row of tab buttons (30) above the pane, as InspectTabBase.TabRect places it.
+			float room = PaneTopY(__instance) - 30f;
+			ref Vector2 size = ref Size(__instance);
+			if (room >= 200f && size.y > room)
+			{
+				size.y = room;
+			}
 		}
 	}
 
