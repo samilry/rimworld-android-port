@@ -33,8 +33,9 @@ namespace PortHooks
 	///     background thread of low priority; every later upload of the same content (the next start, and every time
 	///     ColdTextures brings it back) takes the ASTC from the cache. The key is a hash of the texture's data, so a
 	///     changed mod texture is a different entry.
-	/// The cache: TextureCache/astc1 next to the engine's own (astcCacheMB, 3072 by default; past that nothing new is
-	/// kept, and at the next start the least recently used entries go; unused for 30 days, an entry goes anyway).
+	/// The cache: TextureCache/astc1 next to the engine's own (astcCacheMB; by default a quarter of the free storage,
+	/// 3 to 8 GB; past that nothing new is kept, and at the next start, from nine tenths full, the least recently used
+	/// entries go down to three quarters; unused for 30 days, an entry goes anyway).
 	/// A texture of the atlases' sources while they are drawn is left as it is: it is let go right afterwards.
 	///
 	/// Only where the GPU says it samples both ASTC 4x4 formats with linear filtering (textureCompressionASTC_LDR and
@@ -50,6 +51,7 @@ namespace PortHooks
 		[DllImport("portastc")] private static extern int port_astc_decode(byte[] blocks, UIntPtr blocksLength, int width, int height, int srgb, byte[] rgba);
 		[DllImport("portastc")] private static extern void port_astc_release();
 		[DllImport("libc")] private static extern int gettid();
+		[DllImport("libc", SetLastError = true)] private static extern int statfs(string path, byte[] buffer);
 		[DllImport("libc")] private static extern int setpriority(int which, int who, int prio);
 
 		private const int Version = 1;
@@ -63,6 +65,7 @@ namespace PortHooks
 		private static float quality = 10f, atlasQuality = 0f;
 		private static int workerCount = 1;
 		private static long cacheLimit = 3072L << 20, cacheBytes;
+		private static bool cacheLimitSet;
 		private static string cacheDir;
 		// The entries of the cache, with when each was last used (UTC ticks).
 		private static readonly ConcurrentDictionary<ulong, long> known = new ConcurrentDictionary<ulong, long>();
@@ -114,6 +117,7 @@ namespace PortHooks
 				if (long.TryParse(Textures.Setting("astcCacheMB"), out long mb) && mb >= 0)
 				{
 					cacheLimit = mb << 20;
+					cacheLimitSet = true;
 				}
 				if (!SelfTest(out why))
 				{
@@ -131,7 +135,7 @@ namespace PortHooks
 					Console.WriteLine("[port17] astc: atlases stay RGBA: " + e);
 				}
 				On = true;
-				Console.WriteLine("[port17] astc: on (quality " + quality.ToString(System.Globalization.CultureInfo.InvariantCulture) + ", atlases " + atlasQuality.ToString(System.Globalization.CultureInfo.InvariantCulture) + ", " + workerCount + " background encoder(s)); cache " + cacheDir + ": " + known.Count + " entries, " + (cacheBytes >> 20) + " MB");
+				Console.WriteLine("[port17] astc: on (quality " + quality.ToString(System.Globalization.CultureInfo.InvariantCulture) + ", atlases " + atlasQuality.ToString(System.Globalization.CultureInfo.InvariantCulture) + ", " + workerCount + " background encoder(s)); cache " + cacheDir + ": " + known.Count + " entries, " + (cacheBytes >> 20) + " of " + (cacheLimit >> 20) + " MB");
 			}
 			catch (Exception e)
 			{
@@ -259,7 +263,15 @@ namespace PortHooks
 				entries.Add((key, used, info.Length, file));
 				cacheBytes += info.Length;
 			}
-			if (cacheBytes > cacheLimit)
+			if (!cacheLimitSet)
+			{
+				cacheLimit = SizedLimit(cacheBytes);
+			}
+			// Nearly full counts as full: nothing that would pass the limit is written, so a cache never goes over it, and
+			// one stuck just below it took nothing new for good (a tester with 588 mods, 2026-10-26: 3071 of 3072 MB, and
+			// the textures it had no room for went up as RGBA, four times the size, at every start, until the graphics
+			// memory ran out).
+			if (cacheBytes > cacheLimit / 10 * 9)
 			{
 				entries.Sort((a, b) => a.Used.CompareTo(b.Used));
 				int i = 0;
@@ -279,6 +291,30 @@ namespace PortHooks
 			if (dropped > 0)
 			{
 				Console.WriteLine("[port17] astc: " + dropped + " old cache entries dropped (" + (droppedBytes >> 20) + " MB)");
+			}
+		}
+
+		/// <summary>
+		/// The cache's size when mobile.txt does not say: 3 GB, or a quarter of what is free on the storage (with the cache
+		/// counted as free) up to 8 GB. Hundreds of mods have more textures than 3 GB of ASTC, and what has no room stays
+		/// RGBA in graphics memory.
+		/// </summary>
+		private static long SizedLimit(long used)
+		{
+			try
+			{
+				// struct statfs on arm64: f_bsize at 8, f_bavail at 32 (64-bit fields).
+				byte[] stat = new byte[120];
+				if (statfs(cacheDir, stat) != 0)
+				{
+					return cacheLimit;
+				}
+				long free = BitConverter.ToInt64(stat, 32) * BitConverter.ToInt64(stat, 8) + used;
+				return Math.Max(3072L << 20, Math.Min(8192L << 20, free / 4));
+			}
+			catch (Exception)
+			{
+				return cacheLimit;
 			}
 		}
 

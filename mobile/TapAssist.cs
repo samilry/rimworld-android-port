@@ -90,12 +90,66 @@ namespace PortMobile
 		private static AccessTools.FieldRef<object, Stack<float4>> HitClip;
 		private static AccessTools.FieldRef<object, List<float4>> WindowRects;
 		private static AccessTools.FieldRef<object, int> WindowDepth;
+		private static Type backendType;
+		private static object lastCurrent, lastEngine;
+
+		/// <summary>
+		/// The engine's own interface backend, whose fields are read here. A mod may put its own in GuiBackend.Current, with
+		/// the engine's inside (Readable Numbers formats every number it draws or measures): its fields are not the engine's,
+		/// and reading them as such threw in every control's prefix, so that nothing of the interface was drawn (a tester,
+		/// 2026-10-26: "这个mod加上之后会导致UI崩溃"). The engine's is looked for in such a backend's fields, a few levels
+		/// deep; without one, null (nothing is noted).
+		/// </summary>
+		private static object EngineBackend()
+		{
+			object current = UnityStubs.Gui.GuiBackend.Current;
+			if (current == null || backendType.IsInstanceOfType(current))
+			{
+				return current;
+			}
+			if (!ReferenceEquals(current, lastCurrent))
+			{
+				lastCurrent = current;
+				lastEngine = Inside(current, 4);
+				Console.WriteLine("[mobile] tap assist: the interface backend is " + current.GetType().FullName + (lastEngine != null ? ", the engine's inside it" : ", without the engine's inside it found: nothing is noted"));
+			}
+			return lastEngine;
+		}
+
+		private static object Inside(object wrapper, int depth)
+		{
+			for (Type type = wrapper.GetType(); type != null && type != typeof(object); type = type.BaseType)
+			{
+				foreach (FieldInfo field in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+				{
+					if (field.FieldType.IsValueType || field.FieldType == typeof(string))
+					{
+						continue;
+					}
+					object value = field.GetValue(wrapper);
+					if (value == null || ReferenceEquals(value, wrapper))
+					{
+						continue;
+					}
+					if (backendType.IsInstanceOfType(value))
+					{
+						return value;
+					}
+					if (depth > 1 && value is UnityStubs.Gui.IGuiBackend && Inside(value, depth - 1) is object found)
+					{
+						return found;
+					}
+				}
+			}
+			return null;
+		}
 
 		public static void Start(Harmony harmony, float density)
 		{
 			try
 			{
 				Type backend = AccessTools.TypeByName("RimWorldWaylith.Imgui.ImGuiGuiBackend");
+				backendType = backend;
 				M00 = AccessTools.FieldRefAccess<object, float>(AccessTools.Field(backend, "m00"));
 				M11 = AccessTools.FieldRefAccess<object, float>(AccessTools.Field(backend, "m11"));
 				Rotated = AccessTools.FieldRefAccess<object, bool>(AccessTools.Field(backend, "rotated"));
@@ -213,7 +267,7 @@ namespace PortMobile
 			{
 				return false;
 			}
-			backend = UnityStubs.Gui.GuiBackend.Current;
+			backend = EngineBackend();
 			if (backend == null || Rotated(backend))
 			{
 				return false;
@@ -243,7 +297,7 @@ namespace PortMobile
 		/// <summary>The scale the interface is being drawn at just now (the scale of the game, times that of a window made smaller to fit).</summary>
 		public static float CurrentScale()
 		{
-			object backend = Ready ? UnityStubs.Gui.GuiBackend.Current : null;
+			object backend = Ready ? EngineBackend() : null;
 			return backend != null ? M00(backend) : Prefs.UIScale;
 		}
 
@@ -451,7 +505,7 @@ namespace PortMobile
 			{
 				return;
 			}
-			object backend = UnityStubs.Gui.GuiBackend.Current;
+			object backend = EngineBackend();
 			if (backend == null)
 			{
 				return;
