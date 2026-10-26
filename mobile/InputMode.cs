@@ -36,11 +36,15 @@ namespace PortMobile
 	internal static class InputMode
 	{
 		[DllImport("glfw")] private static extern int glfwAndroidInputDevices(byte[] text, int size);
+		[DllImport("glfw")] private static extern void glfwAndroidLastDevices(out int mouse, out int key);
 
 		private const string Auto = "auto", TouchOnly = "touch", MouseAndKeys = "mouse";
 
 		private static string setting = Normalized(Settings.Get("inputMode", Auto));
+		// Whether the mouse's and the keyboard's ways are on (automatic): on as soon as one is there (see Update), off once it
+		// is gone and a finger has touched the screen.
 		private static bool mouseConnected, keyboardConnected, unavailable, announced;
+		private static volatile bool fingerTouched;
 		private static string devices = "";
 		private static readonly byte[] buffer = new byte[1024];
 		private static int nextPoll;
@@ -79,12 +83,76 @@ namespace PortMobile
 				Apply(false);
 				return;
 			}
-			int bar = text.IndexOf('|');
-			int bits = bar > 0 && int.TryParse(text.Substring(0, bar), out int b) ? b : 0;
-			mouseConnected = (bits & 1) != 0;
-			keyboardConnected = (bits & 2) != 0;
-			devices = bar >= 0 ? text.Substring(bar + 1) : "";
+			string[] fields = text.Split('|');
+			int bits = fields.Length > 0 && int.TryParse(fields[0], out int b) ? b : 0;
+			bool mouseNow = (bits & 1) != 0, keyboardNow = (bits & 2) != 0;
+			devices = fields.Length > 1 ? fields[1] : "";
+			if (fields.Length > 2 && fields[2].Length > 0)
+			{
+				Used(fields[2], ref mouseNow, ref keyboardNow);
+			}
+			// A Bluetooth mouse or keyboard asleep is gone from the list until it is touched again: the ways stay until a
+			// finger shows that the player has gone over to the screen.
+			bool finger = fingerTouched;
+			fingerTouched = false;
+			mouseConnected = mouseNow || (mouseConnected && !finger);
+			keyboardConnected = keyboardNow || (keyboardConnected && !finger);
 			Apply(true);
+		}
+
+		/// <summary>From Touch: a finger has come down on the screen.</summary>
+		public static void FingerTouched()
+		{
+			fingerTouched = true;
+		}
+
+		private static bool lastDevicesUnavailable;
+
+		/// <summary>
+		/// The activity's list of every mouse and keyboard ("id:m|k|mk:e|i:name;...") against the devices the GLFW shim saw
+		/// used (the last mouse event's, the last letter or digit key's). A mouse the system does not call external counts
+		/// once it was used: scrcpy's UHID keyboard and mouse (the virtual bus) and a tablet's keyboard on pogo pins are not
+		/// external to Android, and the game stayed in touch mode with them (the user, 2026-10-26, mirroring the phone to try
+		/// the mouse mode: "devices: none"); unused, a phone's own devices that look like a mouse leave the mode alone. A
+		/// keyboard, external or not, counts once a letter or digit was typed on it: Bluetooth game pads, remotes and
+		/// selfie buttons that call themselves keyboards do not take the key wheel and the soft keyboard away (the user:
+		/// "测试者可能用的是蓝牙外设"). With an older APK (no glfwAndroidLastDevices) an external keyboard counts as before.
+		/// </summary>
+		private static void Used(string all, ref bool mouseNow, ref bool keyboardNow)
+		{
+			int mouseDevice = -1, keyDevice = -1;
+			if (!lastDevicesUnavailable)
+			{
+				try
+				{
+					glfwAndroidLastDevices(out mouseDevice, out keyDevice);
+				}
+				catch (Exception)
+				{
+					lastDevicesUnavailable = true;
+				}
+			}
+			if (lastDevicesUnavailable)
+			{
+				return;
+			}
+			keyboardNow = false;
+			foreach (string entry in all.Split(';'))
+			{
+				string[] parts = entry.Split(new[] { ':' }, 4);
+				if (parts.Length < 4 || !int.TryParse(parts[0], out int id))
+				{
+					continue;
+				}
+				bool external = parts[2] == "e";
+				bool mouse = !external && id == mouseDevice && parts[1].Contains("m"), keyboard = id == keyDevice && parts[1].Contains("k");
+				mouseNow |= mouse;
+				keyboardNow |= keyboard;
+				if (mouse || (keyboard && !external))
+				{
+					devices += (devices.Length > 0 ? ", " : "") + parts[3] + (mouse && keyboard ? " (mouse, keyboard)" : mouse ? " (mouse)" : " (keyboard)");
+				}
+			}
 		}
 
 		/// <summary>After the devices or the choice changed: the parts that hold a state of their own are told.</summary>

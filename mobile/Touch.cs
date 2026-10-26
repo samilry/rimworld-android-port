@@ -838,6 +838,8 @@ namespace PortMobile
 					{
 						fingers.Add(new Finger { id = id, pos = pos, start = pos, downTime = Now });
 					}
+					// Every finger, a quick tap's too (it lifts before a frame has seen it down).
+					InputMode.FingerTouched();
 					return true;
 				case Move:
 					if (finger != null && finger.pos != pos)

@@ -132,8 +132,8 @@ public final class MainActivity extends NativeActivity
         cutoutRects = text.toString();
     }
 
-    /** The external mice and keyboards: "<bits>|<names>" (bit 1 a mouse, bit 2 a keyboard), as of the last change. */
-    private volatile String inputDevices = "0|";
+    /** The external mice and keyboards: "<bits>|<names>|<all>" (bit 1 a mouse, bit 2 a keyboard; all: see noteInputDevices), as of the last change. */
+    private volatile String inputDevices = "0||";
 
     private final InputManager.InputDeviceListener inputDeviceListener = new InputManager.InputDeviceListener()
     {
@@ -164,10 +164,15 @@ public final class MainActivity extends NativeActivity
     {
         int bits = 0;
         StringBuilder names = new StringBuilder();
+        // Every mouse and keyboard, by id: "id:m|k|mk:e|i:name;..." (e: external, as a USB or Bluetooth one is; i: one the
+        // system does not call external, such as scrcpy's UHID devices on the virtual bus or a tablet's keyboard on pogo
+        // pins). The game counts an internal one, and any keyboard, only once it was used (the GLFW shim notes the device
+        // of the last mouse event and of the last letter key from a hardware keyboard).
+        StringBuilder all = new StringBuilder();
         for (int id : InputDevice.getDeviceIds())
         {
             InputDevice device = InputDevice.getDevice(id);
-            if (device == null || device.isVirtual() || !isExternal(device))
+            if (device == null || device.isVirtual())
             {
                 continue;
             }
@@ -177,10 +182,17 @@ public final class MainActivity extends NativeActivity
             {
                 continue;
             }
+            String name = device.getName().replace('|', '/').replace(';', ',').replace(':', ' ');
+            boolean external = isExternal(device);
+            all.append(all.length() > 0 ? ";" : "").append(id).append(':').append(mouse ? "m" : "").append(keyboard ? "k" : "").append(':').append(external ? 'e' : 'i').append(':').append(name);
+            if (!external)
+            {
+                continue;
+            }
             bits |= (mouse ? 1 : 0) | (keyboard ? 2 : 0);
-            names.append(names.length() > 0 ? ", " : "").append(device.getName().replace('|', '/')).append(mouse && keyboard ? " (mouse, keyboard)" : mouse ? " (mouse)" : " (keyboard)");
+            names.append(names.length() > 0 ? ", " : "").append(name).append(mouse && keyboard ? " (mouse, keyboard)" : mouse ? " (mouse)" : " (keyboard)");
         }
-        String now = bits + "|" + names;
+        String now = bits + "|" + names + "|" + all;
         if (!now.equals(inputDevices))
         {
             android.util.Log.i("port17", "input devices: " + now);

@@ -457,6 +457,17 @@ static int g_mouseButtonState;
 #define TX(e, i) ((double)AMotionEvent_getX((e), (i)) * g_scaleX)
 #define TY(e, i) ((double)AMotionEvent_getY((e), (i)) * g_scaleY)
 
+// The devices the last mouse event and the last letter or digit key from a hardware keyboard came from (-1: none yet;
+// the soft keyboard's keys come from the virtual keyboard, -1). mobile/InputMode.cs counts a mouse or keyboard the
+// system does not call external once it has been used (glfwAndroidLastDevices).
+static volatile int g_mouseDevice = -1, g_keyDevice = -1;
+
+API void glfwAndroidLastDevices(int* mouse, int* key)
+{
+    if (mouse) *mouse = g_mouseDevice;
+    if (key) *key = g_keyDevice;
+}
+
 static int32_t on_input_event(struct android_app* app, AInputEvent* event)
 {
     (void)app;
@@ -467,6 +478,12 @@ static int32_t on_input_event(struct android_app* app, AInputEvent* event)
         if (code == AKEYCODE_VOLUME_UP || code == AKEYCODE_VOLUME_DOWN || code == AKEYCODE_VOLUME_MUTE || code == AKEYCODE_POWER)
         {
             return 0;
+        }
+        int device = AInputEvent_getDeviceId(event);
+        if (device >= 0 && AKeyEvent_getAction(event) == AKEY_EVENT_ACTION_DOWN
+            && ((code >= AKEYCODE_A && code <= AKEYCODE_Z) || (code >= AKEYCODE_0 && code <= AKEYCODE_9)))
+        {
+            g_keyDevice = device;
         }
         int glfwKey = key_from_android(code);
         if (glfwKey == GLFW_KEY_UNKNOWN) return 0;
@@ -497,6 +514,7 @@ static int32_t on_input_event(struct android_app* app, AInputEvent* event)
 
     if (isMouse)
     {
+        g_mouseDevice = AInputEvent_getDeviceId(event);
         double x = TX(event, 0), y = TY(event, 0);
         switch (masked)
         {
