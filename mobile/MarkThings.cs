@@ -48,7 +48,9 @@ namespace PortMobile
 
 		private static void DescribeThing(Thing thing, string marks, string name, StringBuilder text)
 		{
-			Graphic graphic = thing.Graphic;
+			// A pawn is drawn by its renderer (body, head, apparel); its Graphic is the def's placeholder, UI/Misc/BadTexture,
+			// which read as a texture missing in a mark (2026-10-25, a tester's colonist that was drawn whole). The body is described.
+			Graphic graphic = thing is Pawn pawn && pawn.Drawer?.renderer?.BodyGraphic != null ? pawn.Drawer.renderer.BodyGraphic : thing.Graphic;
 			Graphic inner = graphic?.ExtractInnerGraphicFor(thing);
 			UnityEngine.Material material = inner?.MatAt(thing.Rotation, thing);
 			var texture = material?.mainTexture as UnityEngine.Texture2D;
