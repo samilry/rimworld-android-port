@@ -88,15 +88,17 @@ namespace PortMobile
 	/// The map tools (designators, targeters) under a finger. A press reaches them at once (the touch layer sends
 	/// it like a mouse's), so what acts on the press is held back here until the finger lifts:
 	///   placing a building   nothing happens; the outline moves to where the finger lifts (Placement), the
-	///                        blueprint is put down by the confirm button
+	///   (or any tool that    blueprint is put down by the confirm button
+	///   acts on one cell)
 	///   picking a target     the choice is made where the finger lifts, so that a drag can still look around
 	///   designating by drag  the drag marks its cells (DragConfirm); the confirm button designates them
+	///   a dev mode tool      the cell where the finger lifts is marked (DebugConfirm); the confirm button acts there
 	/// A drag with such a deferred press turns into a pan (Touch tells us: CancelDeferred).
 	/// </summary>
 	internal static class MapTools
 	{
 		private static bool deferred, deferredOnWorld, deferredIsPlacing, deferredCancelled, converted;
-		private static bool deferredOnlyMoves;
+		private static bool deferredOnlyMoves, deferredDebug;
 
 		public static bool Deferred => deferred;
 
@@ -108,6 +110,7 @@ namespace PortMobile
 			WorldConfirm.Start(harmony);
 			DragConfirm.Start(harmony);
 			LandingConfirm.Start(harmony);
+			DebugConfirm.Start(harmony);
 		}
 
 		/// <summary>Every frame (from Touch).</summary>
@@ -115,6 +118,7 @@ namespace PortMobile
 		{
 			Placement.Update();
 			DragConfirm.Update();
+			DebugConfirm.Update();
 		}
 
 		/// <summary>The finger that pressed is now panning the map (or a second finger joined): the held-back press is dropped.</summary>
@@ -139,7 +143,7 @@ namespace PortMobile
 			}
 			if (current.type == EventType.MouseDown)
 			{
-				deferred = deferredOnWorld = false;
+				deferred = deferredOnWorld = deferredDebug = false;
 				if (Find.CurrentMap == null || !WorldRendererUtility.DrawingMap || !Touch.TouchInProgress || !Settings.PlaceConfirm)
 				{
 					return;
@@ -148,18 +152,22 @@ namespace PortMobile
 				// A tool that reads the mouse button itself gets the press now, as from a mouse (RawMouseTools).
 				bool placing = tools.SelectedDesignator != null && tools.SelectedStyle == null && !RawMouseTools.Is(tools.SelectedDesignator);
 				bool targeting = tools.SelectedDesignator == null && Find.Targeter.IsTargeting;
+				// A dev mode tool acts on the press (DebugTool.DebugToolOnGUI, after the map's clicks): the first touch of a
+				// drag across the map acted where it began.
+				bool debugging = tools.SelectedDesignator == null && !targeting && DebugConfirm.Tool() != null;
 				if (tools.SelectedDesignator != null && tools.SelectedStyle != null)
 				{
 					DragConfirm.DragStarted();
 				}
-				if (Touch.Verbose) Console.WriteLine("[mobile] map tools get a press: placing " + placing + ", targeting " + targeting + ", dragging " + (tools.SelectedDesignator != null && tools.SelectedStyle != null) + ", tool " + (tools.SelectedDesignator?.GetType().Name ?? "none"));
-				if (placing || targeting)
+				if (Touch.Verbose) Console.WriteLine("[mobile] map tools get a press: placing " + placing + ", targeting " + targeting + ", dragging " + (tools.SelectedDesignator != null && tools.SelectedStyle != null) + ", dev tool " + debugging + ", tool " + (tools.SelectedDesignator?.GetType().Name ?? "none"));
+				if (placing || targeting || debugging)
 				{
-					// Both act the moment the button goes down, at a place the player could not see beforehand.
+					// All act the moment the button goes down, at a place the player could not see beforehand.
 					deferred = true;
 					deferredIsPlacing = placing;
+					deferredDebug = debugging;
 					deferredCancelled = false;
-					Designator_Place building = placing ? Placement.Tool() : null;
+					Designator building = placing ? Placement.Tool() : null;
 					deferredOnlyMoves = building != null;
 					if (deferredOnlyMoves)
 					{
@@ -171,7 +179,17 @@ namespace PortMobile
 			else if (current.rawType == EventType.MouseUp && deferred && !deferredOnWorld)
 			{
 				deferred = false;
-				if (deferredOnlyMoves)
+				if (deferredDebug)
+				{
+					deferredDebug = false;
+					if (!deferredCancelled && current.type == EventType.MouseUp)
+					{
+						// Marked where the finger lifted; the confirm button acts there.
+						DebugConfirm.Tapped();
+						current.Use();
+					}
+				}
+				else if (deferredOnlyMoves)
 				{
 					deferredOnlyMoves = false;
 					Placement.TouchEnded(deferredCancelled);
@@ -570,30 +588,67 @@ namespace PortMobile
 		}
 	}
 
+	/// <summary>
+	/// A tool that acts on one cell (a building, and any tool without a drawing style: a mod's prefab or projection, the
+	/// game's plan paste or gravship move) is put down in two steps: a tap marks the cell, the tool's outline stays there,
+	/// and "confirm" acts there. The user, 2026-10-26, of Universal Blueprints: "手机一下误触就放了很多个" - its prefab
+	/// and projection tools stay selected and acted on every tap.
+	/// </summary>
 	internal static class Placement
 	{
-		private static Designator_Place tool;
+		private static Designator tool;
 		private static bool chosen, following, hadChoice;
 		private static IntVec3 cell, cellBefore;
 		private static int controlsFrame = -10;
 		private static bool lastResort, drew, complained;
+		private static Harmony harmony;
+		private static readonly HashSet<System.Reflection.MethodInfo> patchedControls = new HashSet<System.Reflection.MethodInfo>();
+		private static readonly HashSet<Type> checkedTypes = new HashSet<Type>();
 
 		public static void Start(Harmony harmony)
 		{
+			Placement.harmony = harmony;
 			harmony.Patch(AccessTools.Method(typeof(UI), nameof(UI.MouseCell)), prefix: new HarmonyMethod(typeof(Placement), nameof(MouseCell)));
+			harmony.Patch(AccessTools.Method(typeof(UI), nameof(UI.MouseMapPosition)), prefix: new HarmonyMethod(typeof(Placement), nameof(MouseMapPosition)));
 			harmony.Patch(AccessTools.Method(typeof(Designator_Place), nameof(Designator_Place.DoExtraGuiControls)), prefix: new HarmonyMethod(typeof(Placement), nameof(KeepControlsOnScreen)), postfix: new HarmonyMethod(typeof(Placement), nameof(Controls)));
 			harmony.Patch(AccessTools.Method(typeof(DesignatorManager), nameof(DesignatorManager.DesignationManagerOnGUI)), postfix: new HarmonyMethod(typeof(Placement), nameof(ControlsOfLastResort)));
 		}
 
-		/// <summary>The selected tool, if it is one that places a single building where the pointer is.</summary>
-		public static Designator_Place Tool()
+		/// <summary>The selected tool, if it is one that acts on the single cell under the pointer.</summary>
+		public static Designator Tool()
 		{
 			if (!Settings.PlaceConfirm || Current.ProgramState != ProgramState.Playing || Find.CurrentMap == null || !WorldRendererUtility.DrawingMap)
 			{
 				return null;
 			}
 			DesignatorManager manager = Find.DesignatorManager;
-			return manager.SelectedStyle == null ? manager.SelectedDesignator as Designator_Place : null;
+			Designator selected = manager.SelectedDesignator;
+			if (selected == null || manager.SelectedStyle != null)
+			{
+				return null;
+			}
+			// Tools that follow the mouse themselves act as with a mouse (RawMouseTools, DragConfirm.KeepsOwnDrag); a tool
+			// without a cell of its own (a mod's library browser selected while its window is open) has nothing to confirm.
+			return selected is Designator_Place || (ActsOnCells(selected) && !RawMouseTools.Is(selected) && !DragConfirm.KeepsOwnDrag(selected)) ? selected : null;
+		}
+
+		private static readonly Dictionary<Type, bool> actsOnCells = new Dictionary<Type, bool>();
+
+		/// <summary>
+		/// A tool that puts something down at a cell (its own DesignateSingleCell). One that marks the thing under the
+		/// finger (its own DesignateThing: release to the wild) or picks a colour (an eyedropper) acts on the tap.
+		/// </summary>
+		private static bool ActsOnCells(Designator designator)
+		{
+			Type type = designator.GetType();
+			if (!actsOnCells.TryGetValue(type, out bool acts))
+			{
+				acts = AccessTools.Method(type, nameof(Designator.DesignateSingleCell))?.DeclaringType != typeof(Designator)
+					&& AccessTools.Method(type, nameof(Designator.DesignateThing))?.DeclaringType == typeof(Designator)
+					&& !(designator is Designator_Eyedropper);
+				actsOnCells[type] = acts;
+			}
+			return acts;
 		}
 
 		/// <summary>Prefix of UI.MouseCell.</summary>
@@ -604,6 +659,27 @@ namespace PortMobile
 				__result = cell;
 				return false;
 			}
+			if (DebugConfirm.Marked(out IntVec3 marked))
+			{
+				__result = marked;
+				return false;
+			}
+			return true;
+		}
+
+		/// <summary>Prefix of UI.MouseMapPosition: the middle of the marked cell (dev mode tools that place by position).</summary>
+		public static bool MouseMapPosition(ref Vector3 __result)
+		{
+			if (chosen && !following)
+			{
+				__result = cell.ToVector3Shifted();
+				return false;
+			}
+			if (DebugConfirm.Marked(out IntVec3 marked))
+			{
+				__result = marked.ToVector3Shifted();
+				return false;
+			}
 			return true;
 		}
 
@@ -611,6 +687,11 @@ namespace PortMobile
 		{
 			if (!chosen && !following && tool == null)
 			{
+				Designator selected = Tool();
+				if (selected != null && !(selected is Designator_Place))
+				{
+					PatchControls(selected);
+				}
 				return;
 			}
 			if (Tool() != tool)
@@ -620,8 +701,70 @@ namespace PortMobile
 			}
 		}
 
+		/// <summary>
+		/// A tool's own DoExtraGuiControls (the game's plan paste and gravship move draw rotate buttons there, without the
+		/// base method that has the buttons' postfix) gets the confirm buttons after what it draws, once per method.
+		/// </summary>
+		private static void PatchControls(Designator selected)
+		{
+			if (!checkedTypes.Add(selected.GetType()))
+			{
+				return;
+			}
+			System.Reflection.MethodInfo method = AccessTools.Method(selected.GetType(), nameof(Designator.DoExtraGuiControls));
+			if (method == null || method.DeclaringType == typeof(Designator) || !patchedControls.Add(method))
+			{
+				return;
+			}
+			try
+			{
+				harmony.Patch(method, prefix: new HarmonyMethod(typeof(Placement), nameof(KeepOwnControlsOnScreen)), postfix: new HarmonyMethod(typeof(Placement), nameof(OwnControls)));
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] the controls of " + method.DeclaringType.FullName + " get no confirm buttons: " + e.Message);
+			}
+		}
+
+		// The parameters by position: an override may name them otherwise.
+		public static void KeepOwnControlsOnScreen(ref float __0, ref float __1)
+		{
+			KeepControlsOnScreen(ref __0, ref __1);
+		}
+
+		public static void OwnControls(Designator __instance, float __0, float __1)
+		{
+			NoteControls();
+			if (!(__instance is Designator_Place) && Tool() == __instance)
+			{
+				Draw(AfterGameControls(__0, __1));
+			}
+		}
+
+		/// <summary>
+		/// Where the buttons go for a tool that is not a building: right of the window the game (or the tool) drew its
+		/// controls in this frame, at (leftX, bottomY - 90), or there when it drew none.
+		/// </summary>
+		internal static Rect AfterGameControls(float leftX, float bottomY)
+		{
+			float x = leftX;
+			IList<Window> windows = Find.WindowStack.Windows;
+			for (int i = 0; i < windows.Count; i++)
+			{
+				Window window = windows[i];
+				if (window is ImmediateWindow && (window.ID < OwnWindows || window.ID > OwnWindows + 9) && Mathf.Abs(window.windowRect.x - leftX) < 1f && Mathf.Abs(window.windowRect.yMax - bottomY) < 1f)
+				{
+					x = Mathf.Max(x, window.windowRect.xMax + Gap);
+				}
+			}
+			return new Rect(x, bottomY - 90f, 200f, 90f);
+		}
+
+		// The immediate windows of the confirm buttons (73195731 ... 73195739).
+		internal const int OwnWindows = 73195730;
+
 		/// <summary>A finger landed on the map with the tool active: the outline goes with it.</summary>
-		public static void TouchBegan(Designator_Place selected)
+		public static void TouchBegan(Designator selected)
 		{
 			if (selected != tool)
 			{
@@ -742,19 +885,14 @@ namespace PortMobile
 			{
 				return;
 			}
-			MainButtonDef openTab = Find.MainTabsRoot.OpenTab;
-			bool menuOpen = openTab == MainButtonDefOf.Architect;
+			bool placing = Tool() == selected;
 			bool dragging = DragConfirm.Tool() == selected;
 			bool ownDrag = DragConfirm.OwnDragTool() == selected;
-			if (!(selected is Designator_Place) && !dragging && !ownDrag)
+			if (!(selected is Designator_Place) && !placing && !dragging && !ownDrag)
 			{
 				return;
 			}
-			// With the menu open its categories cover the bottom left: the controls go above them, as the game puts them.
-			// The inspect pane (things selected, as Select similar leaves them) is there too: above it.
-			float bottomY = menuOpen ? UI.screenHeight - 35 - ((MainTabWindow_Architect)MainButtonDefOf.Architect.TabWindow).WinHeight - 270f
-				: openTab == MainButtonDefOf.Inspect ? MainButtonDefOf.Inspect.TabWindow.windowRect.y - 8f
-				: UI.screenHeight - 35 - 10;
+			float bottomY = ControlsBottom();
 			lastResort = true;
 			drew = false;
 			try
@@ -779,16 +917,29 @@ namespace PortMobile
 			}
 			if (Tool() == selected)
 			{
-				Draw(ButtonsRect((Designator_Place)selected, 0f, bottomY));
+				Draw(selected is Designator_Place place ? ButtonsRect(place, 0f, bottomY) : AfterGameControls(0f, bottomY));
 			}
 			else if (dragging)
 			{
-				DragConfirm.Draw(DragConfirm.ButtonsRect(selected, 0f, bottomY, selected is Designator_Place place && Rotates(place)));
+				DragConfirm.Draw(DragConfirm.ButtonsRect(selected, 0f, bottomY, selected is Designator_Place rotating && Rotates(rotating)));
 			}
 			else
 			{
 				DragConfirm.DrawPutAway(DragConfirm.ButtonsRect(selected, 0f, bottomY, false));
 			}
+		}
+
+		/// <summary>
+		/// Where tool controls go when the game does not place them: with the Architect menu open its categories cover the
+		/// bottom left, so above them, as the game puts them; the inspect pane (things selected, as Select similar leaves
+		/// them) is there too: above it.
+		/// </summary>
+		internal static float ControlsBottom()
+		{
+			MainButtonDef openTab = Find.MainTabsRoot.OpenTab;
+			return openTab == MainButtonDefOf.Architect ? UI.screenHeight - 35 - ((MainTabWindow_Architect)MainButtonDefOf.Architect.TabWindow).WinHeight - 270f
+				: openTab == MainButtonDefOf.Inspect ? MainButtonDefOf.Inspect.TabWindow.windowRect.y - 8f
+				: UI.screenHeight - 35 - 10;
 		}
 
 		private static void Draw(Rect window)
@@ -813,15 +964,16 @@ namespace PortMobile
 
 		private static void Confirm()
 		{
-			Designator_Place selected = Tool();
+			Designator selected = Tool();
 			if (selected == null)
 			{
 				return;
 			}
-			if (Touch.Verbose) Console.WriteLine("[mobile] confirm placement: chosen " + chosen + ", same tool " + (selected == tool) + ", cell " + cell);
+			if (Touch.Verbose) Console.WriteLine("[mobile] confirm placement: chosen " + chosen + ", same tool " + (selected == tool) + ", cell " + cell + ", " + selected.GetType().Name);
 			if (!chosen || selected != tool)
 			{
-				Messages.Message(Texts.Chinese ? "先在地图上点一下要放的位置。" : "Tap the map where it should go first.", MessageTypeDefOf.RejectInput, false);
+				Messages.Message(selected is Designator_Place ? (Texts.Chinese ? "先在地图上点一下要放的位置。" : "Tap the map where it should go first.")
+					: (Texts.Chinese ? "先在地图上点一下位置。" : "Tap the place on the map first."), MessageTypeDefOf.RejectInput, false);
 				return;
 			}
 			// What the game does for a click at that place.
@@ -1004,7 +1156,7 @@ namespace PortMobile
 		/// confirmation hands it the marked cells its own area is gone, and nothing was selected (the user, 2026-10-22: a
 		/// tree, "选择相似", a box around other trees). These act when the finger lifts, as with a mouse.
 		/// </summary>
-		private static bool KeepsOwnDrag(Designator designator)
+		internal static bool KeepsOwnDrag(Designator designator)
 		{
 			if (designator == null)
 			{
@@ -1202,6 +1354,8 @@ namespace PortMobile
 			}
 			if (Tool() != __instance)
 			{
+				// A tool that acts on one cell (not a building: Designator_Place has a postfix of its own).
+				Placement.OwnControls(__instance, leftX, bottomY);
 				return;
 			}
 			Draw(ButtonsRect(__instance, leftX, bottomY, false));
@@ -1277,6 +1431,161 @@ namespace PortMobile
 			}
 			SoundDefOf.CancelMode.PlayOneShotOnCamera();
 			Find.DesignatorManager.Deselect();
+		}
+	}
+
+	/// <summary>
+	/// Dev mode map tools (a debug action that makes a tool: edit roof, spawn, kill, damage, explosion...) under a finger.
+	/// The game runs such a tool on every press of the button and keeps it until a right click: every drag of the map
+	/// began with a press, so looking around ran the tool where the finger landed, and with nobody selected nothing gave
+	/// a right click to put it away (the user, 2026-10-26: "开发者模式中的选项添加确定取消按钮，比如移除房顶的命令，执行之后
+	/// 取消比较麻烦"). As when placing a building: a tap marks the cell (MapTools holds the press back; a drag pans), the
+	/// tool takes that cell for the mouse's (UI.MouseCell, UI.MouseMapPosition), "confirm" runs it there, as often as
+	/// tapped, and "cancel" puts the tool away. The first corner of a rectangle (the game's GenericRectTool) is taken at
+	/// once, as it only remembers the cell; the second is marked and confirmed. Not with a mouse (Settings.PlaceConfirm);
+	/// mobile.txt debugConfirm=0 leaves it out.
+	/// </summary>
+	internal static class DebugConfirm
+	{
+		private const int WindowId = Placement.OwnWindows + 4;
+		private static readonly bool On = Settings.Get("debugConfirm", true);
+		private static AccessTools.FieldRef<LudeonTK.DebugTool, Action> ClickAction;
+		private static AccessTools.FieldRef<LudeonTK.DebugTool, string> Label;
+		private static LudeonTK.DebugTool markedFor;
+		private static bool marked, told;
+		private static IntVec3 cell;
+		private static Texture2D markTex;
+
+		public static void Start(Harmony harmony)
+		{
+			try
+			{
+				ClickAction = AccessTools.FieldRefAccess<LudeonTK.DebugTool, Action>("clickAction");
+				Label = AccessTools.FieldRefAccess<LudeonTK.DebugTool, string>("label");
+				harmony.Patch(AccessTools.Method(typeof(LudeonTK.DebugTools), nameof(LudeonTK.DebugTools.DebugToolsOnGUI)), postfix: new HarmonyMethod(typeof(DebugConfirm), nameof(OnGUI)));
+			}
+			catch (Exception e)
+			{
+				ClickAction = null;
+				Console.WriteLine("[mobile] dev mode tools: no confirm step (" + e.Message + ")");
+			}
+		}
+
+		/// <summary>The dev mode tool in use, if it is to be confirmed.</summary>
+		public static LudeonTK.DebugTool Tool()
+		{
+			if (!On || ClickAction == null || !Settings.PlaceConfirm || Current.ProgramState != ProgramState.Playing || Find.CurrentMap == null || !WorldRendererUtility.DrawingMap)
+			{
+				return null;
+			}
+			return LudeonTK.DebugTools.curTool;
+		}
+
+		/// <summary>The marked cell, while the tool it was marked for is in use (UI.MouseCell gives it then).</summary>
+		public static bool Marked(out IntVec3 at)
+		{
+			at = cell;
+			return marked && LudeonTK.DebugTools.curTool == markedFor;
+		}
+
+		/// <summary>Every frame: a mark belongs to one tool.</summary>
+		public static void Update()
+		{
+			if (marked && Tool() != markedFor)
+			{
+				marked = false;
+				markedFor = null;
+			}
+		}
+
+		/// <summary>From MapTools: the finger lifted on the map without dragging it; the press was held back.</summary>
+		public static void Tapped()
+		{
+			LudeonTK.DebugTool tool = Tool();
+			if (tool == null)
+			{
+				return;
+			}
+			cell = UI.UIToMapPosition(UI.MousePositionOnUI).ToIntVec3();
+			marked = true;
+			markedFor = tool;
+			if (Touch.Verbose) Console.WriteLine("[mobile] dev mode tool \"" + Label(tool) + "\": marked " + cell);
+			if ((Label(tool) ?? "").EndsWith("First corner...", StringComparison.Ordinal))
+			{
+				Run(tool);
+			}
+		}
+
+		private static void Run(LudeonTK.DebugTool tool)
+		{
+			if (Touch.Verbose) Console.WriteLine("[mobile] dev mode tool \"" + Label(tool) + "\": runs at " + cell);
+			try
+			{
+				ClickAction(tool)();
+			}
+			catch (Exception e)
+			{
+				Log.Error("Exception in dev mode tool " + Label(tool) + ": " + e);
+			}
+		}
+
+		/// <summary>Postfix of DebugTools.DebugToolsOnGUI: the marked cell and the buttons.</summary>
+		public static void OnGUI()
+		{
+			LudeonTK.DebugTool tool = Tool();
+			if (tool == null)
+			{
+				return;
+			}
+			if (!told)
+			{
+				told = true;
+				Messages.Message(Texts.Chinese ? "开发者工具：点地图标记位置，点左下角“" + "Confirm".Translate() + "”在那里执行，“" + "CancelButton".Translate() + "”退出工具。"
+					: "Dev mode tool: tap the map to mark the place, " + "Confirm".Translate() + " (bottom left) runs the tool there, " + "CancelButton".Translate() + " puts it away.", MessageTypeDefOf.SilentInput, false);
+			}
+			if (Event.current.type == EventType.Repaint && Marked(out IntVec3 at))
+			{
+				if (markTex == null)
+				{
+					markTex = SolidColorMaterials.NewSolidColorTexture(new Color(1f, 0.82f, 0.2f, 0.9f));
+				}
+				Vector2 min = new Vector3(at.x, 0f, at.z).MapToUIPosition();
+				Vector2 max = new Vector3(at.x + 1, 0f, at.z + 1).MapToUIPosition();
+				Widgets.DrawBox(Rect.MinMaxRect(min.x, max.y, max.x, min.y), 2, markTex);
+			}
+			var window = new Rect(0f, Placement.ControlsBottom() - 90f, 200f, 90f);
+			Find.WindowStack.ImmediateWindow(WindowId, window, WindowLayer.GameUI, delegate
+			{
+				Text.Font = GameFont.Small;
+				var inner = new Rect(0f, 0f, window.width, window.height).ContractedBy(10f);
+				float width = (inner.width - 10f) / 2f;
+				if (Widgets.ButtonText(new Rect(inner.x, inner.y, width, inner.height), "Confirm".Translate()))
+				{
+					Confirm();
+				}
+				if (Widgets.ButtonText(new Rect(inner.xMax - width, inner.y, width, inner.height), "CancelButton".Translate()))
+				{
+					SoundDefOf.CancelMode.PlayOneShotOnCamera();
+					LudeonTK.DebugTools.curTool = null;
+					marked = false;
+					markedFor = null;
+				}
+			});
+		}
+
+		private static void Confirm()
+		{
+			LudeonTK.DebugTool tool = Tool();
+			if (tool == null)
+			{
+				return;
+			}
+			if (!Marked(out _))
+			{
+				Messages.Message(Texts.Chinese ? "先在地图上点一下位置。" : "Tap the place on the map first.", MessageTypeDefOf.RejectInput, false);
+				return;
+			}
+			Run(tool);
 		}
 	}
 

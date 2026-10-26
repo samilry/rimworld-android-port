@@ -96,6 +96,7 @@ namespace PortMobile
 			try
 			{
 				harmony.Patch(AccessTools.Method(typeof(WindowStack), nameof(WindowStack.WindowStackOnGUI)), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeWindows)));
+				harmony.Patch(AccessTools.Method(typeof(Window), "InnerWindowOnGUI"), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeWindowInside)) { priority = Priority.First });
 				HarmonyMethod end = new HarmonyMethod(typeof(Cutout), nameof(EndShift));
 				harmony.Patch(AccessTools.Method(typeof(ResourceReadout), nameof(ResourceReadout.ResourceReadoutOnGUI)), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeReadout)), finalizer: end);
 				HarmonyMethod right = new HarmonyMethod(typeof(Cutout), nameof(BeforeRightColumn));
@@ -259,26 +260,45 @@ namespace PortMobile
 			List<Window> windows = holes.Count > 0 && stackWindows != null ? stackWindows(__instance) : null;
 			for (int i = 0; windows != null && i < windows.Count; i++)
 			{
-				Window window = windows[i];
-				Rect rect = window.windowRect;
-				if (KeepClear(ref rect) || NarrowAgain(window, ref rect))
-				{
-					if (!ownX.TryGetValue(window, out StrongBox<float> own) || window.windowRect.x <= own.Value + 0.5f)
-					{
-						ownX.AddOrUpdate(window, new StrongBox<float>(window.windowRect.x));
-					}
-					window.windowRect = rect;
-					if (!movedSaid)
-					{
-						movedSaid = true;
-						Console.WriteLine("[mobile] cutout: " + window.GetType().Name + " moved off the hole");
-					}
-				}
+				MoveOff(windows[i]);
 			}
 			if (timing)
 			{
 				windowTicks += Stopwatch.GetTimestamp() - start;
 				TimingReport();
+			}
+		}
+
+		private static void MoveOff(Window window)
+		{
+			Rect rect = window.windowRect;
+			if (KeepClear(ref rect) || NarrowAgain(window, ref rect))
+			{
+				if (!ownX.TryGetValue(window, out StrongBox<float> own) || window.windowRect.x <= own.Value + 0.5f)
+				{
+					ownX.AddOrUpdate(window, new StrongBox<float>(window.windowRect.x));
+				}
+				window.windowRect = rect;
+				if (!movedSaid)
+				{
+					movedSaid = true;
+					Console.WriteLine("[mobile] cutout: " + window.GetType().Name + " moved off the hole");
+				}
+			}
+		}
+
+		/// <summary>
+		/// Prefix of Window.InnerWindowOnGUI: the same before the window's own drawing. The engine hands a press to the window
+		/// under the mouse before the game's window pass (GUI.DispatchInputToWindows), so BeforeWindows has not run for it,
+		/// and a window that makes itself as wide as the screen in DoWindowContents (the research tab) took the press at that
+		/// width: its tabs were laid out wider than drawn, the last row was gone, and a tap chose the tab beside the one under
+		/// the finger or none (the user, 2026-10-26: "改变ui缩放后，研究的第三栏就无法点击了").
+		/// </summary>
+		public static void BeforeWindowInside(Window __instance)
+		{
+			if (on && holes.Count > 0)
+			{
+				MoveOff(__instance);
 			}
 		}
 

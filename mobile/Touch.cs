@@ -234,7 +234,7 @@ namespace PortMobile
 				{
 					return Find.WorldTargeter != null && Find.WorldTargeter.IsTargeting;
 				}
-				return Playing && (Find.DesignatorManager.SelectedDesignator != null || Find.Targeter.IsTargeting);
+				return Playing && (Find.DesignatorManager.SelectedDesignator != null || Find.Targeter.IsTargeting || DebugConfirm.Tool() != null);
 			}
 		}
 
