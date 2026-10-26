@@ -1,10 +1,11 @@
 #!/bin/bash
 # Puts freshly built assemblies of the port into the game folder on the phone (the game must be restarted to load them).
 # usage: host/push-dll.sh [PortMobile.dll PortHooks.dll ...]     (default: PortMobile.dll; files are taken from build/)
+# RW_PACKAGE=com.local.waylith.porttest pushes into the test copy.
 ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
-PKG=com.local.waylith.port
+PKG=${RW_PACKAGE:-com.local.waylith.port}
 GAME=/data/media/0/Android/data/$PKG/files/game
 UID_=$("$ADB" shell "dumpsys package $PKG | grep -m1 -o 'appId=[0-9]*' | cut -d= -f2" | tr -d '\r')
 for f in "${@:-PortMobile.dll}"; do

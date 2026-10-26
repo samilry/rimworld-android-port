@@ -291,13 +291,69 @@ namespace PortMobile
 		}
 
 		/// <summary>Postfix of the engine's TextFieldImpl: a field that took the focus while handling a press took it from a finger.</summary>
-		public static void AfterTextField(int __state)
+		public static void AfterTextField(int __state, string __result)
 		{
 			int focus = GUIUtility.keyboardControl;
 			if (focus != __state && focus != 0 && OriginalEventUtility.EventType == EventType.MouseDown)
 			{
 				tappedFocus = focus;
+				if (Touch.TouchInProgress && !InputMode.Mouse && IsNumber(__result))
+				{
+					SelectAllNextTime(focus);
+				}
 			}
+		}
+
+		private static AccessTools.FieldRef<int> selectAllOnFocusId;
+		private static bool noSelectAll;
+
+		/// <summary>
+		/// A number field tapped with a finger is selected whole: what is typed replaces it. The caret went after the 0 of
+		/// a trade count, and the game takes "0-" for no number and turns "02" for a thing the colony only sells back into
+		/// 0, so typed counts seemed to do nothing (the user, 2026-10-26: "用小键盘填写数字好像不生效"). A mouse places
+		/// the caret where it clicks, as on the PC; the engine selects a field whole when the game focuses it by name.
+		/// </summary>
+		private static void SelectAllNextTime(int id)
+		{
+			if (noSelectAll)
+			{
+				return;
+			}
+			try
+			{
+				if (selectAllOnFocusId == null)
+				{
+					selectAllOnFocusId = AccessTools.StaticFieldRefAccess<int>(AccessTools.Field(typeof(GUI), "_selectAllOnFocusId"));
+				}
+				selectAllOnFocusId() = id;
+			}
+			catch (Exception e)
+			{
+				noSelectAll = true;
+				Console.WriteLine("[mobile] number fields: not selected whole on a tap (" + e.Message + ")");
+			}
+		}
+
+		private static bool IsNumber(string text)
+		{
+			if (string.IsNullOrEmpty(text) || text.Length > 16)
+			{
+				return false;
+			}
+			bool digit = false;
+			for (int i = 0; i < text.Length; i++)
+			{
+				char c = text[i];
+				if (c >= '0' && c <= '9')
+				{
+					digit = true;
+				}
+				else if (!(c == '.' || c == ',' || (c == '-' && i == 0)))
+				{
+					return false;
+				}
+			}
+			return digit;
 		}
 
 		/// <summary>Once a frame, before the keyboard follows the focus: a search box or a save dialog's name that got the focus some other way than from a finger lets it go.</summary>

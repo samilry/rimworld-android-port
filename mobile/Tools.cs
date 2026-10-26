@@ -656,6 +656,12 @@ namespace PortMobile
 		// The immediate window of an open inspect tab (InspectTabBase.DoTabGUI), as the window stack numbers it.
 		private const int InspectTabWindowId = -235086;
 
+		// Between the game's controls and the confirm buttons. The game's right arrow (rotate, next drawing style) reaches
+		// the right edge of its window, and the confirm button began ten units further: a finger meant for "confirm" turned
+		// the plan's shape to a hollow rectangle (the user, 2026-10-26: "点确认好像和旋转按钮重合了"). A tap in the gap
+		// presses nothing (TapAssist reaches only small controls).
+		internal const float Gap = 30f;
+
 		/// <summary>
 		/// Prefix of DoExtraGuiControls (Designator_Place's and the base one). The game puts a tool's extra controls (rotate buttons, drawing styles) in a
 		/// small window above the description box; when that is above the top of the screen (a tall Architect menu
@@ -669,7 +675,7 @@ namespace PortMobile
 				leftX += 208f;
 				bottomY = Mathf.Max(0f, bottomY) + 90f;
 			}
-			var controls = new Rect(leftX, bottomY - 90f, 400f, 90f);
+			var controls = new Rect(leftX, bottomY - 90f, 400f + Gap, 90f);
 			IList<Window> windows = Find.WindowStack.Windows;
 			for (int i = 0; i < windows.Count; i++)
 			{
@@ -717,7 +723,7 @@ namespace PortMobile
 
 		private static Rect ButtonsRect(Designator_Place selected, float leftX, float bottomY)
 		{
-			return new Rect(leftX + (Rotates(selected) ? 200f : 0f), bottomY - 90f, 200f, 90f);
+			return new Rect(leftX + (Rotates(selected) ? 200f + Gap : 0f), bottomY - 90f, 200f, 90f);
 		}
 
 		/// <summary>
@@ -1020,13 +1026,39 @@ namespace PortMobile
 			return own;
 		}
 
-		/// <summary>Every frame: marked cells belong to one tool on one map.</summary>
+		/// <summary>Every frame: marked cells belong to one tool on one map; a drag ends with its finger.</summary>
 		public static void Update()
 		{
 			if (tool != null && (Tool() != tool || Find.CurrentMap != map))
 			{
 				Clear();
 			}
+			EndStrandedDrag();
+		}
+
+		private static int strandedFrames;
+
+		/// <summary>
+		/// A drag whose finger lifted over a window (the confirm buttons, the menu): the window took the release, the map
+		/// never saw it, and the drag went on with the next touch. The user, 2026-10-26: a plan dragged up to the
+		/// confirm button went on following the finger, and every "confirm" said to drag first. Two frames after the
+		/// release went out the drag ends here, where the finger lifted, as a release on the map would have ended it.
+		/// </summary>
+		private static void EndStrandedDrag()
+		{
+			// A mouse's button held down (touch chosen in the options with a mouse connected) is a drag going on.
+			if (Touch.TouchInProgress || Input.GetMouseButton(0) || Tool() == null || !Find.DesignatorManager.Dragger.Dragging)
+			{
+				strandedFrames = 0;
+				return;
+			}
+			if (++strandedFrames < 2)
+			{
+				return;
+			}
+			strandedFrames = 0;
+			Console.WriteLine("[mobile] drag: the release went to a window; the drag ends at " + UI.MouseCell());
+			DragEnded();
 		}
 
 		private static void Clear()
@@ -1179,7 +1211,7 @@ namespace PortMobile
 		{
 			List<DrawStyleDef> styles = selected.DrawStyleCategory?.styles;
 			bool picker = !rotates && Find.DesignatorManager.SelectedStyle != null && styles != null && styles.Count > 1;
-			return new Rect(leftX + (rotates || picker ? 200f : 0f), bottomY - 90f, 200f, 90f);
+			return new Rect(leftX + (rotates || picker ? 200f + Placement.Gap : 0f), bottomY - 90f, 200f, 90f);
 		}
 
 		internal static void Draw(Rect window)

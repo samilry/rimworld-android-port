@@ -19,10 +19,36 @@ namespace PortMobile
 		private static int fieldFrame = -1;
 		private static string text = "";
 		private static int caret;
+		// The control id of the field being drawn (-1: not known yet in this call; 0: the engine does not tell).
+		private static int drawnId;
+		private static bool idsKnown;
 
 		public static void Start(Harmony harmony)
 		{
-			harmony.Patch(AccessTools.Method(typeof(GUI), "TextFieldImpl"), postfix: new HarmonyMethod(typeof(TypingBar), nameof(AfterTextField)));
+			try
+			{
+				harmony.Patch(AccessTools.Method(typeof(GUI), "TrackControlWindow"), prefix: new HarmonyMethod(typeof(TypingBar), nameof(NoteId)));
+				idsKnown = true;
+			}
+			catch (System.Exception e)
+			{
+				System.Console.WriteLine("[mobile] typing bar: field ids not known (" + e.Message + ")");
+			}
+			harmony.Patch(AccessTools.Method(typeof(GUI), "TextFieldImpl"), prefix: new HarmonyMethod(typeof(TypingBar), nameof(BeforeTextField)), postfix: new HarmonyMethod(typeof(TypingBar), nameof(AfterTextField)));
+		}
+
+		public static void BeforeTextField()
+		{
+			drawnId = -1;
+		}
+
+		/// <summary>Prefix of the engine's GUI.TrackControlWindow: a text field calls it first with its own id.</summary>
+		public static void NoteId(int id)
+		{
+			if (drawnId == -1)
+			{
+				drawnId = id;
+			}
 		}
 
 		/// <summary>Postfix of the engine's GUI.TextFieldImpl: the field with the focus, where it is and what it holds.</summary>
@@ -31,6 +57,13 @@ namespace PortMobile
 			int focus = GUIUtility.keyboardControl;
 			Event current = Event.current;
 			if (focus == 0 || current == null || current.type != EventType.Repaint)
+			{
+				return;
+			}
+			// The rectangle alone does not tell the field: the rows of a list are drawn in groups of their own, and the
+			// count fields of the trade dialog all had one rectangle; the bar showed the last row's 0 whatever was typed
+			// (the user, 2026-10-26: "用小键盘填写数字好像不生效").
+			if (idsKnown && drawnId != focus)
 			{
 				return;
 			}
