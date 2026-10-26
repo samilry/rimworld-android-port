@@ -108,6 +108,7 @@ namespace PortMobile
 				harmony.Patch(AccessTools.Method(typeof(MainTabWindow_Inspect), nameof(MainTabWindow_Inspect.ExtraOnGUI)), prefix: extras, finalizer: extrasEnd);
 				// Before GizmoFit's prefix, which lays the grid out from where it begins.
 				harmony.Patch(AccessTools.Method(typeof(GizmoGridDrawer), nameof(GizmoGridDrawer.DrawGizmoGrid)), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeGrid)) { priority = Priority.First }, finalizer: new HarmonyMethod(typeof(Cutout), nameof(AfterGrid)));
+				harmony.Patch(AccessTools.Method(typeof(GizmoGridDrawer), nameof(GizmoGridDrawer.DrawGizmoGridFor)), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeSelectionGrid)), finalizer: new HarmonyMethod(typeof(Cutout), nameof(AfterSelectionGrid)));
 				harmony.Patch(AccessTools.Method(typeof(WindowStack), nameof(WindowStack.ImmediateWindow)), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeImmediateWindow)) { priority = Priority.Last });
 				// First: before a mod's prefix that draws the row in the game's place (RimHUD) and skips the rest.
 				patcher = harmony;
@@ -253,11 +254,19 @@ namespace PortMobile
 		{
 			if (!on)
 			{
+				if (narrowedTables.Count > 0 && stackWindows != null)
+				{
+					FitTables(stackWindows(__instance));
+				}
 				return;
 			}
 			long start = timing ? Stopwatch.GetTimestamp() : 0;
 			Poll();
 			List<Window> windows = holes.Count > 0 && stackWindows != null ? stackWindows(__instance) : null;
+			if (windows != null || narrowedTables.Count > 0)
+			{
+				FitTables(windows ?? stackWindows(__instance));
+			}
 			for (int i = 0; windows != null && i < windows.Count; i++)
 			{
 				MoveOff(windows[i]);
@@ -267,6 +276,83 @@ namespace PortMobile
 				windowTicks += Stopwatch.GetTimestamp() - start;
 				TimingReport();
 			}
+		}
+
+		private static readonly AccessTools.FieldRef<MainTabWindow_PawnTable, PawnTable> TableOf = AccessTools.FieldRefAccess<MainTabWindow_PawnTable, PawnTable>("table");
+		private static readonly AccessTools.FieldRef<PawnTable, int> TableMinWidth = AccessTools.FieldRefAccess<PawnTable, int>("minTableWidth");
+		private static readonly AccessTools.FieldRef<PawnTable, int> TableMaxWidth = AccessTools.FieldRefAccess<PawnTable, int>("maxTableWidth");
+		private static readonly AccessTools.FieldRef<PawnTable, int> TableMinHeight = AccessTools.FieldRefAccess<PawnTable, int>("minTableHeight");
+		private static readonly AccessTools.FieldRef<PawnTable, int> TableMaxHeight = AccessTools.FieldRefAccess<PawnTable, int>("maxTableHeight");
+		private static readonly Action<MainTabWindow_PawnTable> TableTabDirty = AccessTools.MethodDelegate<Action<MainTabWindow_PawnTable>>(AccessTools.Method(typeof(MainTabWindow_PawnTable), "SetDirty"));
+		// The tables made narrower than the game made them, with the width the game gave them.
+		private static readonly Dictionary<PawnTable, int> narrowedTables = new Dictionary<PawnTable, int>();
+
+		/// <summary>
+		/// The pawn tables (work, schedule, assign, animals, wildlife, mechs; and mods' tables in such a window) as wide as
+		/// the room beside the holes. The game makes such a table at most as wide as the screen, whatever the window it is
+		/// in, and the window as wide as the table: one as wide as the screen was made narrower here, and its right
+		/// columns were cut off (2x on this phone: the work tab's research and the columns after it). A table that fits
+		/// the room is left as it is; one made narrower gets its width back when the hole no longer reaches its window.
+		/// </summary>
+		private static void FitTables(List<Window> windows)
+		{
+			for (int i = 0; i < windows.Count; i++)
+			{
+				if (!(windows[i] is MainTabWindow_PawnTable tab) || !(TableOf(tab) is PawnTable table))
+				{
+					continue;
+				}
+				narrowedTables.TryGetValue(table, out int own);
+				int gameMax = own > 0 ? own : TableMaxWidth(table);
+				int want = Mathf.Min(gameMax, (int)(UI.screenWidth - Blocked(tab.windowRect)) - (UI.screenWidth - gameMax));
+				if (want >= gameMax)
+				{
+					if (own > 0)
+					{
+						narrowedTables.Remove(table);
+						Resize(tab, table, own);
+					}
+					continue;
+				}
+				if (TableMaxWidth(table) != want)
+				{
+					narrowedTables[table] = gameMax;
+					Resize(tab, table, want);
+				}
+			}
+		}
+
+		private static void Resize(MainTabWindow_PawnTable tab, PawnTable table, int maxWidth)
+		{
+			table.SetMinMaxSize(Mathf.Min(TableMinWidth(table), maxWidth), maxWidth, TableMinHeight(table), TableMaxHeight(table));
+			// The window takes the table's new size, at the game's place for it (moved off the holes next).
+			TableTabDirty(tab);
+		}
+
+		/// <summary>How much of the screen's width the holes at its sides take beside a window's rows (0 while switched off).</summary>
+		private static float Blocked(Rect rect)
+		{
+			if (!on)
+			{
+				return 0f;
+			}
+			float left = 0f, right = 0f, width = UI.screenWidth;
+			foreach (Rect hole in holes)
+			{
+				if (hole.yMax <= rect.yMin || hole.yMin >= rect.yMax)
+				{
+					continue;
+				}
+				if (hole.center.x < width * 0.3f)
+				{
+					left = Mathf.Max(left, Mathf.Ceil(hole.xMax));
+				}
+				else if (hole.center.x > width * 0.7f)
+				{
+					right = Mathf.Max(right, width - Mathf.Floor(hole.xMin));
+				}
+			}
+			return left + right;
 		}
 
 		private static void MoveOff(Window window)
@@ -425,6 +511,25 @@ namespace PortMobile
 				startX += tabShift;
 				gridDepth++;
 			}
+		}
+
+		/// <summary>
+		/// Prefix of GizmoGridDrawer.DrawGizmoGridFor: the selection's commands (drawn by the map's and the world's
+		/// interface, not by the pane) begin at the inspect pane's width; with the pane moved right off a hole at the left
+		/// (RimHUD's taller pane at a large scale reaches the hole) they go as much further right.
+		/// </summary>
+		public static void BeforeSelectionGrid(out float __state)
+		{
+			__state = tabShift;
+			if (tabShift == 0f)
+			{
+				tabShift = ShiftOf(Find.WindowStack?.WindowOfType<IInspectPane>() as Window);
+			}
+		}
+
+		public static void AfterSelectionGrid(float __state)
+		{
+			tabShift = __state;
 		}
 
 		public static void AfterGrid()
