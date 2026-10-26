@@ -266,7 +266,7 @@ namespace PortMobile
 					ModImport.CleanUp();
 					if (state == Failed)
 					{
-						Find.WindowStack.Add(new Dialog_MessageBox(ModImport.Say("复制文件时出错，没有导入存档：\n\n", "Copying the files failed, no save was imported:\n\n") + message));
+						Find.WindowStack.Add(new Dialog_MessageBox(ModImport.Say("复制文件时出错，没有导入存档：\n\n", "Copying the files failed, no save was imported:\n\n") + ModImport.Explain(message)));
 					}
 				}
 			}

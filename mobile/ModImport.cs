@@ -45,6 +45,29 @@ namespace PortMobile
 			return Texts.Chinese ? chinese : english;
 		}
 
+		/// <summary>
+		/// The copy's error as Android words it, with what it means where that is known. The user, 2026-10-26: "Only owner is
+		/// able to interact with pending/trashed item content://media/...": the chooser handed over a file still being written
+		/// by another app (a download not finished) or one in the recycle bin, which only that app may read.
+		/// </summary>
+		internal static string Explain(string message)
+		{
+			if (message == null)
+			{
+				return "";
+			}
+			if (message.IndexOf("pending/trashed", StringComparison.OrdinalIgnoreCase) >= 0)
+			{
+				return message + Say("\n\n这个文件还没写完（比如还在下载，或者别的应用正在复制它），或者已经被删进了回收站，系统只让创建它的那个应用读。请等下载完成后，到文件所在的文件夹（例如“下载”）里重新选它；如果是从“最近”里选的，换到文件夹里去选。",
+					"\n\nThat file is not finished yet (still downloading, or another app is copying it), or it is in the recycle bin: only the app that made it may read it. Wait until the download is done, then pick it from its folder (such as Downloads), not from Recent.");
+			}
+			if (message.IndexOf("ENOSPC", StringComparison.Ordinal) >= 0 || message.IndexOf("No space left", StringComparison.OrdinalIgnoreCase) >= 0)
+			{
+				return message + Say("\n\n手机存储空间不够了，清出一些空间再导入。", "\n\nThe phone's storage is full: free some space and import again.");
+			}
+			return message;
+		}
+
 		// files/ModImport and files/ModImport.state, next to the game folder (the activity writes both).
 		private static string FilesDir => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, ".."));
 		internal static string Staging => Path.Combine(FilesDir, "ModImport");
@@ -512,7 +535,7 @@ namespace PortMobile
 					finished = true;
 					Close(false);
 					CleanUp();
-					Find.WindowStack.Add(new Dialog_MessageBox(Say("复制文件时出错，没有导入任何mod：\n\n", "Copying the files failed, nothing was imported:\n\n") + message));
+					Find.WindowStack.Add(new Dialog_MessageBox(Say("复制文件时出错，没有导入任何mod：\n\n", "Copying the files failed, nothing was imported:\n\n") + Explain(message)));
 				}
 				else if (state != Choosing && state != Copying)
 				{
