@@ -469,11 +469,11 @@ namespace PortHooks
 			{
 				return false;
 			}
-			if (texture.width <= TextureCompressionSettings.RawMaxSize && texture.height <= TextureCompressionSettings.RawMaxSize)
+			if (texture.width <= EngineTypes.RawMaxSize && texture.height <= EngineTypes.RawMaxSize)
 			{
 				return false;
 			}
-			return !TextureCompressionSettings.MatchesAny(path, TextureCompressionSettings.RawPaths) && !Path.GetFileNameWithoutExtension(path).EndsWith("_Uncompressed", StringComparison.OrdinalIgnoreCase);
+			return !EngineTypes.MatchesAny(path, EngineTypes.RawPaths) && !Path.GetFileNameWithoutExtension(path).EndsWith("_Uncompressed", StringComparison.OrdinalIgnoreCase) && !EngineTypes.KeepRaw(path);
 		}
 
 		/// <summary>The cache key of a texture's data: its blocks (BC) or texels (RGBA), all levels, with what they are.</summary>
@@ -786,8 +786,7 @@ namespace PortHooks
 		private static void Adopt(Waylith.Rendering.Texture2D page, GpuTextureAllocation image)
 		{
 			page.AdoptEncodedImage(image, LoadedTextureFormat.Bc7, image.MipCount);
-			page.CpuData?.ReleaseTracked();
-			page.CpuData?.Release();
+			EngineTypes.ReleaseCpuData(page);
 		}
 
 		/// <summary>Prefix of GlobalTextureAtlasManager.CompressAtlas (which does nothing with the compression off): the drawn pages to ASTC, and into the cache.</summary>
@@ -816,7 +815,7 @@ namespace PortHooks
 		private static void EncodePage(Waylith.Rendering.Texture2D page, string key)
 		{
 			GpuTextureAllocation gpu = page?.GpuResource;
-			if (gpu == null || page.CpuData == null || TexturePixelData.IsBlockCompressed(page.CpuData.Format) || (gpu.Format != VkFormat.R8G8B8A8UNorm && gpu.Format != VkFormat.R8G8B8A8SRGB))
+			if (gpu == null || !(EngineTypes.CpuFormatOf(page) is Waylith.Rendering.LoadedTextureFormat cpuFormat) || EngineTypes.IsBlockCompressed(cpuFormat) || (gpu.Format != VkFormat.R8G8B8A8UNorm && gpu.Format != VkFormat.R8G8B8A8SRGB))
 			{
 				return;
 			}

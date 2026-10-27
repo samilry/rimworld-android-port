@@ -61,6 +61,12 @@ namespace PortMobile
 				harmony.Patch(safe, prefix: new HarmonyMethod(typeof(UiScale), nameof(FitsWithWindowFit)));
 			}
 			harmony.Patch(AccessTools.Method(typeof(ResolutionUtility), nameof(ResolutionUtility.Update)), prefix: new HarmonyMethod(typeof(UiScale), nameof(WithoutScaleReset)));
+			if (Compat.On)
+			{
+				// Compatibility mode: windows and grids as on a PC (the scale stays the player's, never changed by itself).
+				Console.WriteLine("[mobile] UI scale " + preferred.ToString("F2") + "; compatibility mode: windows and grids are not fitted to the screen");
+				return;
+			}
 			harmony.Patch(AccessTools.Method(typeof(Window), nameof(Window.WindowOnGUI)), prefix: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.Before)), finalizer: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.After)));
 			harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.DrawShadowAround)), prefix: new HarmonyMethod(typeof(WindowFit), nameof(WindowFit.BeforeShadow)));
 			GizmoFit.Start(harmony);

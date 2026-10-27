@@ -388,8 +388,8 @@ namespace PortMobile
 				int w = Math.Max(1, width >> level), h = Math.Max(1, height >> level);
 				byte[] above = Decode(levels[level - 1], aboveW, aboveH, kind, srgb);
 				var rgba = new byte[w * h * 4];
-				CpuBlockEncoder.Downsample(above, aboveW, aboveH, rgba, w, h, parallel: true);
-				byte[] remade = kind == Kind.Bc7 ? CpuBlockEncoder.EncodeBc7Levels(new[] { rgba }, w, h, 1, parallel: true)[0] : kind == Kind.Astc ? PortHooks.Astc.EncodeAtlasLevel(rgba, w, h, srgb) : rgba;
+				PortHooks.EngineTypes.Downsample(above, aboveW, aboveH, rgba, w, h, parallel: true);
+				byte[] remade = kind == Kind.Bc7 ? PortHooks.EngineTypes.EncodeBc7Levels(new[] { rgba }, w, h, 1, parallel: true)[0] : kind == Kind.Astc ? PortHooks.Astc.EncodeAtlasLevel(rgba, w, h, srgb) : rgba;
 				if (remade == null)
 				{
 					Console.WriteLine("[mobile] atlas check: " + page.name + " level " + level + " could not be encoded again");
@@ -671,7 +671,7 @@ namespace PortMobile
 		{
 			if (kind == Kind.Bc7)
 			{
-				Bc7BlockEncoder.DecodeBc7Block(new ReadOnlySpan<byte>(data, offset, 16), texels);
+				PortHooks.EngineTypes.DecodeBc7Block(new ReadOnlySpan<byte>(data, offset, 16), texels);
 			}
 			else
 			{
@@ -699,7 +699,7 @@ namespace PortMobile
 				var texels = new byte[64];
 				for (int bx = 0; bx < blocksX; bx++)
 				{
-					Bc7BlockEncoder.DecodeBc7Block(new ReadOnlySpan<byte>(data, (by * blocksX + bx) * 16, 16), texels);
+					PortHooks.EngineTypes.DecodeBc7Block(new ReadOnlySpan<byte>(data, (by * blocksX + bx) * 16, 16), texels);
 					for (int y = 0; y < 4 && by * 4 + y < h; y++)
 					{
 						int count = Math.Min(4, w - bx * 4) * 4;

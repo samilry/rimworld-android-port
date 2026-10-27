@@ -174,12 +174,18 @@ namespace PortMobile
 			UiScale.Start(harmony);
 			steady = Settings.Get("tapSteady", 1) != 0;
 			TapAssist.Start(harmony, density);
-			TouchSizes.Start(harmony);
+			if (!Compat.On)
+			{
+				TouchSizes.Start(harmony);
+			}
 			Letters.Start(harmony);
 			TypingBar.Start(harmony);
 			EdgeScroll.Start(harmony);
 			KeyWheel.Start();
-			BarInset.Start(harmony);
+			if (!Compat.On)
+			{
+				BarInset.Start(harmony);
+			}
 			MouseDecorations.Start(harmony);
 			DiagFloatMenu.Start(harmony);
 			Log("touch layer on (density " + density.ToString("F2") + ", drag threshold " + DragThreshold.ToString("F0") + " px)");

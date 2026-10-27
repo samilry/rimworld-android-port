@@ -31,6 +31,15 @@ namespace PortMobile
 			Console.WriteLine("[mobile] patched UIRoot.UIRootOnGUI");
 			// First of the rest: what goes wrong while the others start is in the record too.
 			Recorder.Start(harmony);
+			try
+			{
+				string missing = PortHooks.EngineTypes.Verify();
+				Console.WriteLine("[mobile] engine types: " + (missing == null ? "all found" : "NOT FOUND: " + missing));
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] engine types not checked: " + e.Message);
+			}
 			Touch.Start();
 			ModImport.Start(harmony);
 			ModSort.Start(harmony);
@@ -41,20 +50,33 @@ namespace PortMobile
 			FrameRate.Start(harmony);
 			Perf.Start(harmony);
 			WorldLabels.Start(harmony);
-			ResearchTree.Start(harmony);
+			if (!Compat.On)
+			{
+				ResearchTree.Start(harmony);
+			}
 			Squad.Start(harmony);
 			DoubleTap.Start(harmony);
 			Counters.Start(harmony);
 			MemTrim.Start(harmony);
 			BakeDepth.Start(harmony);
 			Temporaries.Start(harmony);
-			Cutout.Start(harmony);
+			if (!Compat.On)
+			{
+				Cutout.Start(harmony);
+			}
+			else
+			{
+				Console.WriteLine("[mobile] " + Compat.Describe());
+			}
 			ColdTextures.Start(harmony);
 			AtlasSeams.Start(harmony);
 			PlainIcons.Start(harmony);
 			BindKeys.Start(harmony);
-			MintMenus.Start(harmony);
-			FactionList.Start(harmony);
+			if (!Compat.On)
+			{
+				MintMenus.Start(harmony);
+				FactionList.Start(harmony);
+			}
 			WinterShadow.Start(harmony);
 			MultiplayerFiles.Start(harmony);
 			VideoUrls.Start(harmony);
@@ -138,6 +160,7 @@ namespace PortMobile
 				// Once: how long the start took, for comparing builds and settings.
 				menuTimed = true;
 				Console.WriteLine("[mobile] main menu " + SecondsSinceProcessStart().ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + " s after the runtime started");
+				ConflictTag.SelfTest();
 				Console.WriteLine("[mobile] of that: " + WhereTheStartWent());
 				Temporaries.Test();
 				AccessViolationTest();

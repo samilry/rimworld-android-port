@@ -851,6 +851,11 @@ namespace PortMobile
 			{
 				Event("error", (seen > 0 ? "(again, " + (seen + 1) + ") " : "") + key);
 			}
+			if (seen == 0 && ConflictTag.Check(text) is string conflict)
+			{
+				Event("conflict", conflict);
+				Console.WriteLine("[mobile] the port and a mod meet in an error: " + conflict);
+			}
 		}
 
 		public static void AfterWarning()
@@ -866,7 +871,7 @@ namespace PortMobile
 			Event("quit", "the game shuts down");
 		}
 
-		private static string Short(string text, int length)
+		internal static string Short(string text, int length)
 		{
 			if (text == null)
 			{

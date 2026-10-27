@@ -79,7 +79,7 @@ namespace PortMobile
 			}
 			Waylith.Rendering.Texture2D core = texture.CoreTexture;
 			GpuTextureAllocation gpu = core?.GpuResource;
-			return "'" + texture.name + "' " + texture.width + "x" + texture.height + ", " + (core?.SourcePath ?? "no file") + ", CPU format " + core?.CpuData?.Format
+			return "'" + texture.name + "' " + texture.width + "x" + texture.height + ", " + (core?.SourcePath ?? "no file") + ", CPU format " + PortHooks.EngineTypes.CpuFormatOf(core)
 				+ (gpu == null ? ", not on the GPU now" : ", GPU " + gpu.Format + " with " + gpu.MipCount + " levels") + ", filter " + texture.filterMode + ", mip bias " + texture.mipMapBias;
 		}
 
@@ -193,16 +193,16 @@ namespace PortMobile
 					}
 					else if (bytes == 8)
 					{
-						Bc7BlockEncoder.DecodeBc1Block(block, texels);
+						PortHooks.EngineTypes.DecodeBc1Block(block, texels);
 					}
 					else if (format == VkFormat.Bc7UNormBlock || format == VkFormat.Bc7SRGBBlock)
 					{
-						Bc7BlockEncoder.DecodeBc7Block(block, texels);
+						PortHooks.EngineTypes.DecodeBc7Block(block, texels);
 					}
 					else
 					{
-						Bc7BlockEncoder.DecodeBc1Block(block.Slice(8), texels);
-						Bc7BlockEncoder.DecodeBc4Block(block.Slice(0, 8), alpha);
+						PortHooks.EngineTypes.DecodeBc1Block(block.Slice(8), texels);
+						PortHooks.EngineTypes.DecodeBc4Block(block.Slice(0, 8), alpha);
 						for (int i = 0; i < 16; i++)
 						{
 							texels[i * 4 + 3] = alpha[i * 4];

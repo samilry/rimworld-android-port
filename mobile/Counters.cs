@@ -145,10 +145,15 @@ namespace PortMobile
 				InputMode.OptionRow(listing);
 				// The key wheel's switch, in the same place.
 				KeyWheel.OptionRow(listing);
-				// And whether the interface keeps clear of the camera's hole.
-				Cutout.OptionRow(listing);
-				// And the size of the selection's commands.
-				GizmoFit.OptionRows(listing);
+				// The interface as on a PC; while it is on, the rows of what it leaves out are not shown.
+				Compat.OptionRow(listing);
+				if (!Compat.On)
+				{
+					// Whether the interface keeps clear of the camera's hole.
+					Cutout.OptionRow(listing);
+					// The size of the selection's commands.
+					GizmoFit.OptionRows(listing);
+				}
 			}
 			catch (Exception e)
 			{

@@ -267,7 +267,7 @@ namespace PortHooks
 					Console.WriteLine("[port17] textures: " + why + "; left as they are");
 					return;
 				}
-				TextureCompressionSettings.Configure(BcEncodeTarget.None, TextureCompressionSettings.Quality);
+				EngineTypes.ConfigureNoBcEncoding();
 				var service = typeof(GpuTextureService);
 				harmony.Patch(AccessTools.Method(service, "CreateTexture2D"), prefix: new HarmonyMethod(typeof(Textures), nameof(BeforeCreateTexture2D)));
 				harmony.Patch(AccessTools.Method(service, "AllocateTexture2D"), prefix: new HarmonyMethod(typeof(Textures), nameof(PlainFormat)));
@@ -520,20 +520,20 @@ namespace PortHooks
 				switch (kind)
 				{
 				case 7:
-					Bc7BlockEncoder.DecodeBc7Block(block, rgba);
+					EngineTypes.DecodeBc7Block(block, rgba);
 					break;
 				case 4:
-					Bc7BlockEncoder.DecodeBc4Block(block, rgba);
+					EngineTypes.DecodeBc4Block(block, rgba);
 					break;
 				case 5:
-					Bc7BlockEncoder.DecodeBc5Block(block, rgba);
+					EngineTypes.DecodeBc5Block(block, rgba);
 					break;
 				case 1:
-					Bc7BlockEncoder.DecodeBc1Block(block, rgba);
+					EngineTypes.DecodeBc1Block(block, rgba);
 					break;
 				case 11:
 					// BC1 in an RGB format: no alpha, the "transparent" colour is black.
-					Bc7BlockEncoder.DecodeBc1Block(block, rgba);
+					EngineTypes.DecodeBc1Block(block, rgba);
 					for (int i = 3; i < 64; i += 4)
 					{
 						rgba[i] = 255;
@@ -542,7 +542,7 @@ namespace PortHooks
 				case 2:
 				{
 					// BC2: 4 bits of alpha per texel, then a BC1 colour block.
-					Bc7BlockEncoder.DecodeBc1Block(block.Slice(8), rgba);
+					EngineTypes.DecodeBc1Block(block.Slice(8), rgba);
 					ulong bits = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(block);
 					for (int i = 0; i < 16; i++)
 					{
@@ -552,8 +552,8 @@ namespace PortHooks
 				}
 				case 3:
 					// BC3: a BC4 block of alpha, then a BC1 colour block.
-					Bc7BlockEncoder.DecodeBc1Block(block.Slice(8), rgba);
-					Bc7BlockEncoder.DecodeBc4Block(block.Slice(0, 8), alpha);
+					EngineTypes.DecodeBc1Block(block.Slice(8), rgba);
+					EngineTypes.DecodeBc4Block(block.Slice(0, 8), alpha);
 					for (int i = 0; i < 16; i++)
 					{
 						rgba[i * 4 + 3] = alpha[i * 4];
