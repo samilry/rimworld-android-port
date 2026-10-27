@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
+using Mono.Cecil.Rocks;
 
 /// <summary>
 /// Rewrites the staged game assemblies for the phone. Done once, on the PC, to the copies in build/game:
@@ -502,6 +503,7 @@ internal static class Patch
 		gh.Emit(OpCodes.Ret);
 
 		AddLudeonMembers(module);
+		AddLudeonSwitches(module);
 
 		// Written as plain IL for arm64 (the ReadyToRun code is gone; crossgen2 wants IL-only input).
 		module.Attributes = (module.Attributes & ~ModuleAttributes.ILLibrary) | ModuleAttributes.ILOnly;
@@ -672,6 +674,197 @@ internal static class Patch
 			jitHelpers.Methods.Add(cast);
 		}
 		Console.WriteLine("Ludeon's additions: X86Base.ReadTimeStampCounter, AppDomain.DefineDynamicAssembly (2), AssemblyBuilder.DefineDynamicModule(name, fileName), JitHelpers.UnsafeEnumCast / UnsafeEnumCastLong");
+	}
+
+	/// <summary>
+	/// The four WaylithClr switches that Ludeon's runtime fork implements in its System.Private.CoreLib (1.7.4990; the
+	/// game's runtimeconfig turns all of them on, the stock runtime knows none), done here as there, always on:
+	///   - MonoFloatFormatPrecision: Number.FormatFloat gives "G" without a precision (ToString(), "G", string
+	///     interpolation) the significant digits of a custom format, 7 for float and 15 for double, as Mono did: 0.8 where
+	///     the stock runtime writes the shortest round trip, 0.8000001 (mods' labels, saved values; "R" is unchanged).
+	///   - DynamicMethodOwnerIsDeclaringType: DynamicMethod.DeclaringType and ReflectedType are the owner type it was made
+	///     for instead of null (Harmony's replacements are dynamic methods; mods that name a method by its type found null).
+	///   - LaxDynamicMethodAttributes: DynamicMethod.Init takes any attributes and calling convention as public static
+	///     standard instead of throwing NotSupportedException (Mono accepted them).
+	///   - IsolatedLoadsResolveByName: an assembly loaded by Assembly.Load(byte[]) or Assembly.LoadFile, each in a load
+	///     context of its own, is remembered by simple name, and a reference by that name that nothing else resolves finds
+	///     it (AssemblyLoadContext.ResolveUsingEvent asks first, then the Resolving handlers), as Mono's one domain did.
+	/// </summary>
+	private static void AddLudeonSwitches(ModuleDefinition module)
+	{
+		TypeSystem ts = module.TypeSystem;
+
+		// MonoFloatFormatPrecision. In FormatFloat(ref ValueListBuilder<TChar>, TNumber, ReadOnlySpan<char>, NumberFormatInfo):
+		//   char c = ParseFormatSpecifier(format, out int digits); ...
+		//   if (c == '\0') digits = TNumber.MaxPrecisionCustomFormat;
+		// becomes
+		//   if (c == '\0' || ((c | 0x20) == 'g' && digits <= 0)) digits = TNumber.MaxPrecisionCustomFormat;
+		TypeDefinition number = module.GetType("System.Number");
+		MethodDefinition formatFloat = number.Methods.Single(m => m.Name == "FormatFloat" && m.Parameters.Count == 4 && m.Parameters[0].ParameterType.IsByReference);
+		MethodBody body = formatFloat.Body;
+		body.SimplifyMacros();
+		Instruction parse = body.Instructions.Single(i => i.OpCode == OpCodes.Call && ((MethodReference)i.Operand).Name == "ParseFormatSpecifier");
+		var c = (VariableDefinition)parse.Next.Operand;
+		var digits = (VariableDefinition)parse.Previous.Operand;
+		Instruction test = parse.Next;
+		while (!(test.OpCode == OpCodes.Ldloc && test.Operand == c && test.Next.OpCode == OpCodes.Brtrue))
+		{
+			test = test.Next;
+		}
+		Instruction branch = test.Next;
+		Instruction set = branch.Next;
+		var skip = (Instruction)branch.Operand;
+		if (!(set.OpCode == OpCodes.Constrained && ((MethodReference)set.Next.Operand).Name == "get_MaxPrecisionCustomFormat" && set.Next.Next.OpCode == OpCodes.Stloc && set.Next.Next.Operand == digits && set.Next.Next.Next == skip))
+		{
+			throw new InvalidOperationException("FormatFloat is not as expected");
+		}
+		ILProcessor il = body.GetILProcessor();
+		branch.OpCode = OpCodes.Brfalse;
+		branch.Operand = set;
+		il.InsertBefore(set, Instruction.Create(OpCodes.Ldloc, c));
+		il.InsertBefore(set, Instruction.Create(OpCodes.Ldc_I4, 0x20));
+		il.InsertBefore(set, Instruction.Create(OpCodes.Or));
+		il.InsertBefore(set, Instruction.Create(OpCodes.Ldc_I4, (int)'g'));
+		il.InsertBefore(set, Instruction.Create(OpCodes.Bne_Un, skip));
+		il.InsertBefore(set, Instruction.Create(OpCodes.Ldloc, digits));
+		il.InsertBefore(set, Instruction.Create(OpCodes.Ldc_I4_0));
+		il.InsertBefore(set, Instruction.Create(OpCodes.Bgt, skip));
+		body.OptimizeMacros();
+
+		// DynamicMethodOwnerIsDeclaringType: get_DeclaringType / get_ReflectedType { return _typeOwner; }
+		TypeDefinition dynamicMethod = module.GetType("System.Reflection.Emit.DynamicMethod");
+		FieldDefinition typeOwner = dynamicMethod.Fields.Single(f => f.Name == "_typeOwner");
+		foreach (string getter in new[] { "get_DeclaringType", "get_ReflectedType" })
+		{
+			MethodDefinition get = dynamicMethod.Methods.Single(m => m.Name == getter && m.Parameters.Count == 0);
+			get.Body = new MethodBody(get);
+			ILProcessor g = get.Body.GetILProcessor();
+			g.Emit(OpCodes.Ldarg_0);
+			g.Emit(OpCodes.Ldfld, typeOwner);
+			g.Emit(OpCodes.Ret);
+		}
+
+		// LaxDynamicMethodAttributes: at the start of Init(name, attributes, callingConvention, ...),
+		//   attributes = MethodAttributes.Public | MethodAttributes.Static; callingConvention = CallingConventions.Standard;
+		MethodDefinition init = dynamicMethod.Methods.Single(m => m.Name == "Init" && m.Parameters.Count >= 3 && m.Parameters[1].ParameterType.FullName == "System.Reflection.MethodAttributes" && m.Parameters[2].ParameterType.FullName == "System.Reflection.CallingConventions");
+		ILProcessor ii = init.Body.GetILProcessor();
+		Instruction first = init.Body.Instructions[0];
+		ii.InsertBefore(first, Instruction.Create(OpCodes.Ldc_I4, 0x16));
+		ii.InsertBefore(first, Instruction.Create(OpCodes.Starg, init.Parameters[1]));
+		ii.InsertBefore(first, Instruction.Create(OpCodes.Ldc_I4_1));
+		ii.InsertBefore(first, Instruction.Create(OpCodes.Starg, init.Parameters[2]));
+
+		// IsolatedLoadsResolveByName.
+		TypeDefinition alc = module.GetType("System.Runtime.Loader.AssemblyLoadContext");
+		TypeDefinition assemblyType = module.GetType("System.Reflection.Assembly");
+		TypeDefinition assemblyName = module.GetType("System.Reflection.AssemblyName");
+		// A synchronized Hashtable (CoreLib has no ConcurrentDictionary): simple name -> the first assembly of that name.
+		TypeDefinition hashtable = module.GetType("System.Collections.Hashtable");
+		MethodDefinition hashtableCtor = hashtable.Methods.Single(m => m.IsConstructor && !m.IsStatic && m.Parameters.Count == 0);
+		MethodDefinition synchronized = hashtable.Methods.Single(m => m.Name == "Synchronized" && m.IsStatic);
+		MethodDefinition containsKey = hashtable.Methods.Single(m => m.Name == "ContainsKey" && m.Parameters.Count == 1);
+		MethodDefinition getItem = hashtable.Methods.Single(m => m.Name == "get_Item" && m.Parameters.Count == 1);
+		MethodDefinition setItem = hashtable.Methods.Single(m => m.Name == "set_Item" && m.Parameters.Count == 2);
+		var isolated = new FieldDefinition("s_waylithIsolatedLoads", FieldAttributes.Private | FieldAttributes.Static | FieldAttributes.InitOnly, hashtable);
+		alc.Fields.Add(isolated);
+		MethodDefinition cctor = alc.Methods.SingleOrDefault(m => m.IsConstructor && m.IsStatic);
+		if (cctor == null)
+		{
+			cctor = new MethodDefinition(".cctor", MethodAttributes.Private | MethodAttributes.Static | MethodAttributes.HideBySig | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName, ts.Void);
+			cctor.Body.GetILProcessor().Emit(OpCodes.Ret);
+			alc.Methods.Add(cctor);
+		}
+		ILProcessor cc = cctor.Body.GetILProcessor();
+		Instruction cctorFirst = cctor.Body.Instructions[0];
+		cc.InsertBefore(cctorFirst, Instruction.Create(OpCodes.Newobj, hashtableCtor));
+		cc.InsertBefore(cctorFirst, Instruction.Create(OpCodes.Call, synchronized));
+		cc.InsertBefore(cctorFirst, Instruction.Create(OpCodes.Stsfld, isolated));
+
+		// internal static void WaylithRegisterIsolatedLoad(Assembly assembly)
+		//   { string name = assembly?.GetName().Name; if (name != null && !s_waylithIsolatedLoads.ContainsKey(name)) s_waylithIsolatedLoads[name] = assembly; }
+		var register = new MethodDefinition("WaylithRegisterIsolatedLoad", MethodAttributes.Assembly | MethodAttributes.Static | MethodAttributes.HideBySig, ts.Void);
+		register.Parameters.Add(new ParameterDefinition("assembly", ParameterAttributes.None, assemblyType));
+		var registerName = new VariableDefinition(ts.String);
+		register.Body.Variables.Add(registerName);
+		ILProcessor r = register.Body.GetILProcessor();
+		Instruction registerEnd = Instruction.Create(OpCodes.Ret);
+		r.Emit(OpCodes.Ldarg_0);
+		r.Emit(OpCodes.Brfalse, registerEnd);
+		r.Emit(OpCodes.Ldarg_0);
+		r.Emit(OpCodes.Callvirt, assemblyType.Methods.Single(m => m.Name == "GetName" && m.Parameters.Count == 0));
+		r.Emit(OpCodes.Callvirt, assemblyName.Methods.Single(m => m.Name == "get_Name"));
+		r.Emit(OpCodes.Stloc, registerName);
+		r.Emit(OpCodes.Ldloc, registerName);
+		r.Emit(OpCodes.Brfalse, registerEnd);
+		r.Emit(OpCodes.Ldsfld, isolated);
+		r.Emit(OpCodes.Ldloc, registerName);
+		r.Emit(OpCodes.Callvirt, containsKey);
+		r.Emit(OpCodes.Brtrue, registerEnd);
+		r.Emit(OpCodes.Ldsfld, isolated);
+		r.Emit(OpCodes.Ldloc, registerName);
+		r.Emit(OpCodes.Ldarg_0);
+		r.Emit(OpCodes.Callvirt, setItem);
+		r.Append(registerEnd);
+		alc.Methods.Add(register);
+
+		// private Assembly WaylithResolveFirst(AssemblyName name)
+		//   { the isolated load of that simple name, or else GetFirstResolvedAssemblyFromResolvingEvent(name) }
+		MethodDefinition resolveUsingEvent = alc.Methods.Single(m => m.Name == "ResolveUsingEvent" && !m.IsStatic);
+		Instruction firstResolved = resolveUsingEvent.Body.Instructions.Single(i => i.OpCode == OpCodes.Call && ((MethodReference)i.Operand).Name == "GetFirstResolvedAssemblyFromResolvingEvent");
+		var getFirst = (MethodReference)firstResolved.Operand;
+		var resolveFirst = new MethodDefinition("WaylithResolveFirst", MethodAttributes.Private | MethodAttributes.HideBySig, assemblyType);
+		resolveFirst.Parameters.Add(new ParameterDefinition("assemblyName", ParameterAttributes.None, assemblyName));
+		var found = new VariableDefinition(assemblyType);
+		var simple = new VariableDefinition(ts.String);
+		resolveFirst.Body.Variables.Add(found);
+		resolveFirst.Body.Variables.Add(simple);
+		resolveFirst.Body.InitLocals = true;
+		ILProcessor f = resolveFirst.Body.GetILProcessor();
+		Instruction fallback = Instruction.Create(OpCodes.Ldarg_0);
+		f.Emit(OpCodes.Ldarg_1);
+		f.Emit(OpCodes.Callvirt, assemblyName.Methods.Single(m => m.Name == "get_Name"));
+		f.Emit(OpCodes.Stloc, simple);
+		f.Emit(OpCodes.Ldloc, simple);
+		f.Emit(OpCodes.Brfalse, fallback);
+		f.Emit(OpCodes.Ldsfld, isolated);
+		f.Emit(OpCodes.Ldloc, simple);
+		f.Emit(OpCodes.Callvirt, getItem);
+		f.Emit(OpCodes.Isinst, assemblyType);
+		f.Emit(OpCodes.Stloc, found);
+		f.Emit(OpCodes.Ldloc, found);
+		f.Emit(OpCodes.Brfalse, fallback);
+		f.Emit(OpCodes.Ldloc, found);
+		f.Emit(OpCodes.Ret);
+		f.Append(fallback);
+		f.Emit(OpCodes.Ldarg_1);
+		f.Emit(OpCodes.Call, getFirst);
+		f.Emit(OpCodes.Ret);
+		alc.Methods.Add(resolveFirst);
+		firstResolved.Operand = resolveFirst;
+
+		// Assembly.Load(byte[], byte[]) and Assembly.LoadFile(string) register what they return.
+		foreach (MethodDefinition load in assemblyType.Methods.Where(m => m.IsStatic && ((m.Name == "Load" && m.Parameters.Count == 2 && m.Parameters[0].ParameterType.FullName == "System.Byte[]") || (m.Name == "LoadFile" && m.Parameters.Count == 1))).ToList())
+		{
+			ILProcessor l = load.Body.GetILProcessor();
+			foreach (Instruction ret in load.Body.Instructions.Where(i => i.OpCode == OpCodes.Ret).ToList())
+			{
+				// Branches that went to the ret go to the dup now.
+				Instruction dup = Instruction.Create(OpCodes.Dup);
+				foreach (Instruction i in load.Body.Instructions.Where(i => i.Operand == ret).ToList())
+				{
+					i.Operand = dup;
+				}
+				foreach (ExceptionHandler handler in load.Body.ExceptionHandlers)
+				{
+					if (handler.TryEnd == ret) handler.TryEnd = dup;
+					if (handler.HandlerEnd == ret) handler.HandlerEnd = dup;
+				}
+				l.InsertBefore(ret, dup);
+				l.InsertBefore(ret, Instruction.Create(OpCodes.Call, register));
+			}
+			Console.WriteLine("  registers isolated loads: Assembly." + load.Name + "(" + string.Join(", ", load.Parameters.Select(p => p.ParameterType.Name)) + ")");
+		}
+		Console.WriteLine("Ludeon's switches: MonoFloatFormatPrecision, DynamicMethodOwnerIsDeclaringType, LaxDynamicMethodAttributes, IsolatedLoadsResolveByName");
 	}
 
 	/// <summary>

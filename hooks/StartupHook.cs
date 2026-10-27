@@ -459,6 +459,7 @@ internal static class StartupHook
 		PortHooks.Textures.Start();
 		PortHooks.UiDescriptors.Start();
 		PortHooks.AndroidFonts.Start();
+		PortHooks.WindowsLibraries.Start();
 		Console.WriteLine("[port17] startup hook installed (Unity assembly names resolve to UnityStubs)");
 		PortDiag.StartIfRequested();
 	}

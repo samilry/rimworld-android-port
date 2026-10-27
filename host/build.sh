@@ -36,6 +36,8 @@ APK_NAME=port17.apk
 # The same stub under the name the Steamworks.NET of the Linux and Mac builds asks for (players import those as well):
 # without any, SteamManager.InitIfNeeded quits the game right at the start.
 cp "$LIB/libsteam_api64.so" "$LIB/libsteam_api.so"
+# Windows user32 functions PC mods call directly (clipboard, MessageBox), for hooks/WindowsLibraries.cs.
+"$CLANG" $TARGET -shared -fPIC -O2 -Wall -o "$LIB/libportuser32.so" host/stubs/user32.c -llog -ldl
 # The Android GLFW (window, input, Vulkan surface), bound by the engine as libglfw.so.
 "$CLANG" $TARGET -shared -fPIC -O2 -Wall -Wno-unused-function -I host -o "$LIB/libglfw.so" host/glfw/glfw_android.c -landroid -llog -ldl
 # The Vulkan interposer (identity surface transform, swapchain and present logging), found before the system loader.

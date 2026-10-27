@@ -100,6 +100,23 @@ final class Diagnostics
         });
     }
 
+    /**
+     * For the crash dialog: when the imported game is newer than the version the port was made for, the likely reason
+     * (a tester's crash at start, 2026-10-27: the port of 10-25 on 1.7.4990). Empty otherwise.
+     */
+    static String olderThanGame(Context context)
+    {
+        File ext = context.getExternalFilesDir(null);
+        String[] rules = MainActivity.readText(new File(ext, "setup/version.txt")).trim().split("\\s+");
+        String[] game = MainActivity.readText(new File(ext, "game/Version.txt")).trim().split("\\s+");
+        String builtFor = rules.length > 1 ? rules[1] : "", version = game.length > 0 ? game[0] : "";
+        if (MainActivity.buildOf(builtFor) > 0 && MainActivity.buildOf(version) > MainActivity.buildOf(builtFor))
+        {
+            return "很可能是因为安装包比游戏旧：游戏是 " + version + "，安装包是为 " + builtFor + " 做的。请先下载最新的安装包覆盖安装。\n\n";
+        }
+        return "";
+    }
+
     /** From MainActivity.onCreate: the shortcut, and a report when the previous run ended badly. */
     static void onStart(final Activity activity)
     {
@@ -133,7 +150,7 @@ final class Diagnostics
                             }
                             new AlertDialog.Builder(activity)
                                 .setTitle("上次游戏异常退出")
-                                .setMessage(firstLine(found) + "\n\n"
+                                .setMessage(firstLine(found) + "\n\n" + olderThanGame(activity)
                                     + (where != null ? "诊断报告已保存到：" + where + "\n\n请把这个文件发给作者（里面是游戏日志和手机型号，API 密钥已打码）。"
                                     : "诊断报告没能保存。"))
                                 .setPositiveButton("好的", null)

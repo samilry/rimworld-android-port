@@ -10,10 +10,11 @@ mkdir -p build/patch
   echo "-out:build/patch/patch.dll"
   for f in System.Runtime System.Collections System.Console System.Linq System.IO.FileSystem System.Reflection System.Security.Cryptography System.Private.CoreLib netstandard; do echo "-r:\"$(cygpath -w "$RT/$f.dll")\""; done
   echo "-r:\"$(cygpath -w "$CECIL/Mono.Cecil.dll")\""
+  echo "-r:\"$(cygpath -w "$CECIL/Mono.Cecil.Rocks.dll")\""
   echo "patch/Patch.cs patch/ModPrep.cs"
 } > build/patch/patch.rsp
 dotnet /d/Harness/rimworld/tools/roslyn/pkg/tasks/netcore/bincore/csc.dll @build/patch/patch.rsp
-cp "$CECIL/Mono.Cecil.dll" build/patch/
+cp "$CECIL/Mono.Cecil.dll" "$CECIL/Mono.Cecil.Rocks.dll" build/patch/
 cat > build/patch/patch.runtimeconfig.json <<'EOF'
 { "runtimeOptions": { "tfm": "net8.0", "framework": { "name": "Microsoft.NETCore.App", "version": "8.0.0" } } }
 EOF

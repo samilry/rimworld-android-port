@@ -291,13 +291,19 @@ static void first_line(const char* path, char* out, size_t cap)
     while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r' || out[n - 1] == ' ')) out[--n] = 0;
 }
 
-// The tester's APK (PAYLOAD=port host/build.sh) carries no game: <ext>/setup/PortSetup.dll makes the player's own copy
-// ready, and <ext>/game/port-setup.txt says which rules did it last (the first line of <ext>/setup/version.txt).
+// The tester's APK (PAYLOAD=port host/build.sh) carries no game: <ext>/setup/PortSetup.dll makes the player's own copy ready.
+static int is_tester(const char* ext)
+{
+    char path[1100];
+    snprintf(path, sizeof path, "%s/setup/PortSetup.dll", ext);
+    return file_exists(path);
+}
+
+// <ext>/game/port-setup.txt says which rules made the game ready last (the first line of <ext>/setup/version.txt).
 static int needs_setup(const char* ext)
 {
     char path[1100], want[256], have[256];
-    snprintf(path, sizeof path, "%s/setup/PortSetup.dll", ext);
-    if (!file_exists(path)) return 0;
+    if (!is_tester(ext)) return 0;
     snprintf(path, sizeof path, "%s/setup/version.txt", ext);
     first_line(path, want, sizeof want);
     snprintf(path, sizeof path, "%s/game/port-setup.txt", ext);
@@ -305,10 +311,11 @@ static int needs_setup(const char* ext)
     return strcmp(want, have) != 0;
 }
 
-// MainActivity.prepareGame() on the Java side: the import dialogs, copying the player's game folder, and running
-// SetupService (setup/PortSetup.dll, in a process of its own: the runtime can start only once in this one). True when
-// the game is ready; false when the player left (the activity is finishing then).
-static int java_prepare_game(struct android_app* app)
+// A boolean method of MainActivity without arguments, called on this thread: prepareGame() (the import dialogs, copying
+// the player's game folder, and running SetupService: setup/PortSetup.dll, in a process of its own, as the runtime can
+// start only once in this one; true when the game is ready) and checkGameVersion() (a game newer than the port was made
+// for: the player is told to update the APK; true to start). False when the player left (the activity is finishing then).
+static int java_activity_bool(struct android_app* app, const char* method)
 {
     JavaVM* vm = app->activity->vm;
     JNIEnv* env = NULL;
@@ -319,11 +326,11 @@ static int java_prepare_game(struct android_app* app)
     }
     jobject activity = app->activity->clazz;
     jclass activityClass = (*env)->GetObjectClass(env, activity);
-    jmethodID prepare = (*env)->GetMethodID(env, activityClass, "prepareGame", "()Z");
+    jmethodID prepare = (*env)->GetMethodID(env, activityClass, method, "()Z");
     if (prepare == NULL)
     {
         (*env)->ExceptionClear(env);
-        LOGE("MainActivity.prepareGame missing");
+        LOGE("MainActivity.%s missing", method);
         return 0;
     }
     jboolean ready = (*env)->CallBooleanMethod(env, activity, prepare);
@@ -481,6 +488,15 @@ static void* run_runtime(void* arg)
     struct android_app* app = (struct android_app*)arg;
     const char* ext = app->activity->externalDataPath;
     const char* internal = app->activity->internalDataPath;
+    pthread_attr_t self;
+    size_t stack = 0;
+    if (pthread_getattr_np(pthread_self(), &self) == 0)
+    {
+        pthread_attr_getstacksize(&self, &stack);
+        pthread_attr_destroy(&self);
+    }
+    LOGI("main thread stack %zu KB", stack >> 10);
+    fprintf(stderr, "game: main thread stack %zu KB\n", stack >> 10);
 
     const char* libdir = lib_dir();
     char runtime[1024], game[1024], gameSlash[1024], home[1024], tmp[1024];
@@ -495,11 +511,16 @@ static void* run_runtime(void* arg)
     if (needs_setup(ext))
     {
         LOGI("the game is not prepared (tester's APK): asking the player for it");
-        if (!java_prepare_game(app))
+        if (!java_activity_bool(app, "prepareGame"))
         {
             LOGI("no game: the player left");
             return NULL;
         }
+    }
+    if (is_tester(ext) && !java_activity_bool(app, "checkGameVersion"))
+    {
+        LOGI("the game is newer than the port: the player left to update");
+        return NULL;
     }
     LOGI("libs %s", libdir);
     LOGI("runtime %s", runtime);
@@ -711,8 +732,21 @@ void android_main(struct android_app* app)
     redirect_stdio(app->activity->externalDataPath);
     LOGI("port17 host starting (internal %s, external %s)", app->activity->internalDataPath, app->activity->externalDataPath);
     attach_glfw(app);
+    // The game's main thread. Bionic's default stack is 1 MB; the PC's RimWorld.exe gives its main thread 1.5 MB (the PE
+    // header's reserve), Linux 8 MB. Recursion as deep as the PC takes overflowed here first and ended the game at once.
+    // 16 MB, reserved address space only: what is not touched takes no memory.
     pthread_t t;
-    pthread_create(&t, NULL, run_runtime, app);
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    if (pthread_attr_setstacksize(&attr, 16u << 20) != 0)
+    {
+        LOGI("main thread: the 16 MB stack was refused, the default is used");
+    }
+    if (pthread_create(&t, &attr, run_runtime, app) != 0)
+    {
+        pthread_create(&t, NULL, run_runtime, app);
+    }
+    pthread_attr_destroy(&attr);
     pthread_detach(t);
     for (;;)
     {

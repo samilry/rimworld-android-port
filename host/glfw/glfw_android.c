@@ -1388,14 +1388,87 @@ API int glfwUpdateGamepadMappings(const char* s) { (void)s; return GLFW_TRUE; }
 API const char* glfwGetGamepadName(int jid) { (void)jid; return NULL; }
 API int glfwGetGamepadState(int jid, GLFWgamepadstate* state) { (void)jid; (void)state; return GLFW_FALSE; }
 
-// Clipboard: process-local until the Java clipboard is wired up.
+// Calls a method of the activity with one byte[] argument (in: UTF-8 text, or none when NULL) from whatever thread this
+// is. sig is its JNI signature; it returns void ("V"), boolean ("Z", into *flag) or byte[] ("[B": a malloc'd
+// NUL-terminated copy, or NULL for a null array). Returns that copy (byte[] methods) or NULL.
+static char* activity_bytes(const char* name, const char* sig, const char* in, int* flag)
+{
+    if (flag) *flag = 0;
+    if (!g_app || !g_app->activity || !g_app->activity->vm) return NULL;
+    JavaVM* vm = g_app->activity->vm;
+    JNIEnv* env = NULL;
+    int attached = 0;
+    if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK)
+    {
+        if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return NULL;
+        attached = 1;
+    }
+    char* out = NULL;
+    jobject activity = g_app->activity->clazz;
+    jclass cls = (*env)->GetObjectClass(env, activity);
+    jmethodID method = (*env)->GetMethodID(env, cls, name, sig);
+    jbyteArray arg = NULL;
+    if (in)
+    {
+        jsize n = (jsize)strlen(in);
+        arg = (*env)->NewByteArray(env, n);
+        if (arg) (*env)->SetByteArrayRegion(env, arg, 0, n, (const jbyte*)in);
+    }
+    char kind = sig[strlen(sig) - 1];
+    if (!method) LOGW("glfw: no %s on the activity", name);
+    else if (kind == 'V') (*env)->CallVoidMethod(env, activity, method, arg);
+    else if (kind == 'Z') { jboolean b = (*env)->CallBooleanMethod(env, activity, method, arg); if (flag) *flag = b ? 1 : 0; }
+    else
+    {
+        jbyteArray result = (jbyteArray)(in ? (*env)->CallObjectMethod(env, activity, method, arg) : (*env)->CallObjectMethod(env, activity, method));
+        if (result && !(*env)->ExceptionCheck(env))
+        {
+            jsize n = (*env)->GetArrayLength(env, result);
+            out = (char*)malloc((size_t)n + 1);
+            if (out)
+            {
+                (*env)->GetByteArrayRegion(env, result, 0, n, (jbyte*)out);
+                out[n] = 0;
+            }
+        }
+        if (result) (*env)->DeleteLocalRef(env, result);
+    }
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); LOGW("glfw: %s threw", name); free(out); out = NULL; if (flag) *flag = 0; }
+    if (arg) (*env)->DeleteLocalRef(env, arg);
+    (*env)->DeleteLocalRef(env, cls);
+    if (attached) (*vm)->DetachCurrentThread(vm);
+    return out;
+}
+
+// Clipboard: the phone's (MainActivity.setClipboardUtf8 / clipboardUtf8IfChanged; until 2026-10-27 only this process's,
+// where the PC's is the system's). The last text is kept here for the pointer glfwGetClipboardString returns, and stands
+// when the phone's clipboard has not changed since it was read.
 API void glfwSetClipboardString(GLFWwindow* w, const char* s)
 {
     (void)w;
     free(g_clipboard);
     g_clipboard = s ? strdup(s) : NULL;
+    activity_bytes("setClipboardUtf8", "([B)V", s ? s : "", NULL);
 }
-API const char* glfwGetClipboardString(GLFWwindow* w) { (void)w; return g_clipboard ? g_clipboard : ""; }
+API const char* glfwGetClipboardString(GLFWwindow* w)
+{
+    (void)w;
+    char* fresh = activity_bytes("clipboardUtf8IfChanged", "()[B", NULL, NULL);
+    if (fresh)
+    {
+        free(g_clipboard);
+        g_clipboard = fresh;
+    }
+    return g_clipboard ? g_clipboard : "";
+}
+
+// A link opened in the phone's app for it (MainActivity.openUrlUtf8), for mobile/OpenUrl.cs: 1 when an app was asked.
+API int glfwAndroidOpenUrl(const char* url)
+{
+    int ok = 0;
+    if (url && *url) activity_bytes("openUrlUtf8", "([B)Z", url, &ok);
+    return ok;
+}
 
 // Time
 API double glfwGetTime(void)

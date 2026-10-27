@@ -80,6 +80,7 @@ namespace PortMobile
 			WinterShadow.Start(harmony);
 			MultiplayerFiles.Start(harmony);
 			VideoUrls.Start(harmony);
+			OpenUrl.Start(harmony);
 			SaveImport.Start(harmony);
 			HugsLogFile.Start(harmony);
 			ResolutionChoice.Start(harmony);
@@ -151,6 +152,103 @@ namespace PortMobile
 			}
 		}
 
+		/// <summary>
+		/// mobile.txt corelibTest=1: the four WaylithClr switches the phone's CoreLib now has as Ludeon's (patch/Patch.cs
+		/// AddLudeonSwitches), each against what the PC gives. One line each in the log, "ok" or what came instead.
+		/// </summary>
+		private static void CoreLibTest()
+		{
+			if (Settings.Get("corelibTest", 0) != 1)
+			{
+				return;
+			}
+			var inv = System.Globalization.CultureInfo.InvariantCulture;
+			void Line(string what, Func<string> got, string want)
+			{
+				string result;
+				try
+				{
+					result = got();
+				}
+				catch (Exception e)
+				{
+					result = e.GetType().Name + ": " + e.Message;
+				}
+				Console.WriteLine("[mobile] corelib test: " + what + " -> " + result + (result == want ? " ok" : " (the PC: " + want + ")"));
+			}
+			float f = (float)Math.PI;
+			double d = 0.1;
+			d += 0.2;
+			Line("((float)Math.PI).ToString()", () => f.ToString(inv), "3.141593");
+			Line("Math.PI.ToString()", () => Math.PI.ToString(inv), "3.14159265358979");
+			Line("(0.1 + 0.2).ToString()", () => d.ToString(inv), "0.3");
+			Line("(0.1 + 0.2).ToString(\"G\")", () => d.ToString("G", inv), "0.3");
+			Line("interpolated 0.1 + 0.2", () => FormattableString.Invariant($"{d}"), "0.3");
+			Line("(0.1 + 0.2).ToString(\"R\")", () => d.ToString("R", inv), "0.30000000000000004");
+			Line("DynamicMethod public static hidebysig", () =>
+			{
+				var method = new System.Reflection.Emit.DynamicMethod("probe", System.Reflection.MethodAttributes.Public | System.Reflection.MethodAttributes.Static | System.Reflection.MethodAttributes.HideBySig, System.Reflection.CallingConventions.Standard, typeof(int), Type.EmptyTypes, typeof(Entry), true);
+				System.Reflection.Emit.ILGenerator il = method.GetILGenerator();
+				il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4, 42);
+				il.Emit(System.Reflection.Emit.OpCodes.Ret);
+				return ((Func<int>)method.CreateDelegate(typeof(Func<int>)))().ToString(inv);
+			}, "42");
+			Line("DynamicMethod.DeclaringType", () => new System.Reflection.Emit.DynamicMethod("owner", typeof(void), Type.EmptyTypes, typeof(Entry)).DeclaringType?.FullName ?? "null", typeof(Entry).FullName);
+			Line("Assembly.Load(bytes), then the type by name", () =>
+			{
+				var builder = new System.Reflection.Emit.PersistedAssemblyBuilder(new System.Reflection.AssemblyName("WaylithIsolatedProbe"), typeof(object).Assembly);
+				builder.DefineDynamicModule("WaylithIsolatedProbe").DefineType("WaylithIsolatedProbe.Probe", System.Reflection.TypeAttributes.Public | System.Reflection.TypeAttributes.Class).CreateType();
+				var bytes = new System.IO.MemoryStream();
+				builder.Save(bytes);
+				System.Reflection.Assembly loaded = System.Reflection.Assembly.Load(bytes.ToArray());
+				Type found = Type.GetType("WaylithIsolatedProbe.Probe, WaylithIsolatedProbe");
+				return found == null ? "not found" : found.Assembly == loaded ? "found" : "another assembly";
+			}, "found");
+		}
+
+		private static bool clipboardProbeSeen;
+
+		[System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool OpenClipboard(IntPtr owner);
+		[System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool CloseClipboard();
+		[System.Runtime.InteropServices.DllImport("user32.dll")] private static extern IntPtr SetClipboardData(uint format, IntPtr memory);
+
+		/// <summary>
+		/// mobile.txt clipboardTest=1: at the main menu the game copies a test text (paste it in another app to see it got
+		/// to the phone's clipboard); afterwards, text "port17probe" copied in another app is noticed once (OnFrame). What
+		/// else is on the phone's clipboard is never written down.
+		/// </summary>
+		private static void ClipboardTest(bool menu)
+		{
+			if (Settings.Get("clipboardTest", 0) != 1 || clipboardProbeSeen)
+			{
+				return;
+			}
+			if (menu)
+			{
+				// Character Editor's way (hooks/WindowsLibraries.cs, host/stubs/user32.c).
+				string viaWindows = "Port17 user32 测试 ✓";
+				try
+				{
+					OpenClipboard(IntPtr.Zero);
+					SetClipboardData(13, System.Runtime.InteropServices.Marshal.StringToHGlobalUni(viaWindows));
+					CloseClipboard();
+					Console.WriteLine("[mobile] clipboard test: user32 SetClipboardData " + (UnityEngine.GUIUtility.systemCopyBuffer == viaWindows ? "ok" : "did not arrive"));
+				}
+				catch (Exception e)
+				{
+					Console.WriteLine("[mobile] clipboard test: user32 " + e.GetType().Name + ": " + e.Message);
+				}
+				UnityEngine.GUIUtility.systemCopyBuffer = "Port17 剪贴板测试 ✓ 🚀";
+				Console.WriteLine("[mobile] clipboard test: copied the test text; now copy \"port17probe\" in another app and come back");
+				return;
+			}
+			if (frames % 120 == 0 && UnityEngine.GUIUtility.systemCopyBuffer == "port17probe")
+			{
+				clipboardProbeSeen = true;
+				Console.WriteLine("[mobile] clipboard test: the text copied in another app arrived");
+			}
+		}
+
 		public static void AfterUIRootOnGUI()
 		{
 			PortHooks.Watch.Beat();
@@ -166,6 +264,8 @@ namespace PortMobile
 				Console.WriteLine("[mobile] of that: " + WhereTheStartWent());
 				Temporaries.Test();
 				AccessViolationTest();
+				CoreLibTest();
+				ClipboardTest(true);
 				// mobile.txt stallTest=1: the main thread busy for 15 s, for the watch's stall lines (logs/watch.txt).
 				if (Settings.Get("stallTest", 0) == 1)
 				{
@@ -180,6 +280,10 @@ namespace PortMobile
 				PortHooks.InlineWatch.Report("main menu", Harmony.GetAllPatchedMethods());
 			}
 			frames++;
+			if (menuTimed)
+			{
+				ClipboardTest(false);
+			}
 			MemTrim.OnFrame();
 			ColdTextures.OnFrame();
 			if (frames == 1 || frames == 600)

@@ -259,6 +259,126 @@ public final class MainActivity extends NativeActivity
     {
         super.onResume();
         Diagnostics.trail(this, "the app is on the screen");
+        // Copied in another app meanwhile: the listener below hears nothing while this app is away.
+        clipboardChanged = true;
+    }
+
+    // The game's clipboard (glfw_android.c: glfwSetClipboardString / glfwGetClipboardString) is the phone's: copying in
+    // the game (text fields, the debug log's "Copy to clipboard", seeds, mods' share codes) reaches other apps, and text
+    // copied elsewhere can be pasted in. Until 2026-10-27 it was kept inside the game only, where the PC's is Windows'.
+    // The phone's clipboard is read only when it changed since the last read: Android 12+ shows a notice on every read,
+    // and the game may look at the clipboard every frame (whether pasting is possible). Text goes as UTF-8 bytes both
+    // ways (JNI's own string conversion mangles characters outside the BMP).
+    private volatile boolean clipboardChanged = true;
+    private boolean clipboardListening;
+
+    private android.content.ClipboardManager clipboard()
+    {
+        final android.content.ClipboardManager manager = (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (manager != null && !clipboardListening)
+        {
+            clipboardListening = true;
+            runOnUiThread(new Runnable()
+            {
+                @Override
+                public void run()
+                {
+                    manager.addPrimaryClipChangedListener(new android.content.ClipboardManager.OnPrimaryClipChangedListener()
+                    {
+                        @Override
+                        public void onPrimaryClipChanged()
+                        {
+                            clipboardChanged = true;
+                        }
+                    });
+                }
+            });
+        }
+        return manager;
+    }
+
+    /** glfwSetClipboardString: the text the game copied, to the phone's clipboard. */
+    public void setClipboardUtf8(byte[] text)
+    {
+        try
+        {
+            android.content.ClipboardManager manager = clipboard();
+            if (manager != null)
+            {
+                manager.setPrimaryClip(ClipData.newPlainText("RimWorld", new String(text, "UTF-8")));
+                clipboardChanged = false;
+            }
+        }
+        catch (Throwable t)
+        {
+            android.util.Log.w("port17", "clipboard: could not copy", t);
+        }
+    }
+
+    /** glfwGetClipboardString: the phone's clipboard text when it changed since the last read, null when it did not. */
+    public byte[] clipboardUtf8IfChanged()
+    {
+        if (!clipboardChanged)
+        {
+            return null;
+        }
+        try
+        {
+            android.content.ClipboardManager manager = clipboard();
+            if (manager == null)
+            {
+                return null;
+            }
+            ClipData clip = manager.getPrimaryClip();
+            clipboardChanged = false;
+            CharSequence text = clip != null && clip.getItemCount() > 0 ? clip.getItemAt(0).coerceToText(this) : null;
+            return (text != null ? text.toString() : "").getBytes("UTF-8");
+        }
+        catch (Throwable t)
+        {
+            // Without focus (Android 10+ lets only the focused app read it) nothing is read: asked again next time.
+            android.util.Log.w("port17", "clipboard: could not read", t);
+            return null;
+        }
+    }
+
+    /**
+     * Application.OpenURL (mobile/OpenUrl.cs, through glfw_android.c): a web address or other link opens in the app
+     * the phone has for it (the browser, the mail app, Steam). On Linux the game runs xdg-open, which Android has not:
+     * the main menu's links and mods' "open the page" buttons did nothing (the PC opens the browser). False when no
+     * app takes it.
+     */
+    public boolean openUrlUtf8(byte[] url)
+    {
+        try
+        {
+            final Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(new String(url, "UTF-8"))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            if (intent.resolveActivity(getPackageManager()) == null && Build.VERSION.SDK_INT < 30)
+            {
+                return false;
+            }
+            runOnUiThread(new Runnable()
+            {
+                @Override
+                public void run()
+                {
+                    try
+                    {
+                        startActivity(intent);
+                    }
+                    catch (Throwable t)
+                    {
+                        Toast.makeText(MainActivity.this, "没有能打开这个链接的应用", Toast.LENGTH_SHORT).show();
+                    }
+                }
+            });
+            return true;
+        }
+        catch (Throwable t)
+        {
+            android.util.Log.w("port17", "open url failed", t);
+            return false;
+        }
     }
 
     @Override
@@ -947,6 +1067,90 @@ public final class MainActivity extends NativeActivity
      * before and only the APK is newer, the kept assemblies are prepared again without asking. Returns true when the
      * game is ready, false when the player chose to leave (the activity is finishing then).
      */
+    /**
+     * Called by the host (host.c, on its runtime thread) before every start of the tester's APK, once the game is ready:
+     * a game newer than the one the port was made for (the second word of setup/version.txt) may not start at all (a
+     * tester, 2026-10-27: the port of 10-25, built for 1.7.4985, on 1.7.4990, whose engine had moved a type the port
+     * uses: a crash at once, with nothing that said why). The player is told to update the APK, and may start anyway;
+     * that is remembered for the pair of versions. False when the player chose to leave (the activity is finishing).
+     */
+    public boolean checkGameVersion()
+    {
+        File ext = getExternalFilesDir(null);
+        String[] rules = readText(new File(ext, "setup/version.txt")).trim().split("\\s+");
+        final String builtFor = rules.length > 1 ? rules[1] : "";
+        String[] game = readText(new File(ext, "game/Version.txt")).trim().split("\\s+");
+        final String version = game.length > 0 ? game[0] : "";
+        if (!(buildOf(version) > buildOf(builtFor) && buildOf(builtFor) > 0))
+        {
+            return true;
+        }
+        final String key = "startAnyway:" + builtFor + ":" + version;
+        final android.content.SharedPreferences prefs = getSharedPreferences("port17", MODE_PRIVATE);
+        if (prefs.getBoolean(key, false))
+        {
+            return true;
+        }
+        Diagnostics.trail(this, "the game (" + version + ") is newer than the port's rules (" + builtFor + "): asking");
+        final LinkedBlockingQueue<Boolean> answer = new LinkedBlockingQueue<Boolean>();
+        runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                new AlertDialog.Builder(MainActivity.this)
+                    .setTitle("请先更新安装包")
+                    .setMessage("你导入的游戏是 RimWorld " + version + "，这个安装包是为 " + builtFor + " 做的。游戏更新后引擎常有变化，旧安装包可能一启动就闪退。\n\n"
+                        + "请下载最新的 Port17 安装包直接覆盖安装：存档、设置和 mod 都会保留，也不用重新导入游戏。")
+                    .setCancelable(false)
+                    .setPositiveButton("退出", new DialogInterface.OnClickListener()
+                    {
+                        public void onClick(DialogInterface dialog, int which)
+                        {
+                            answer.offer(false);
+                        }
+                    })
+                    .setNegativeButton("仍然启动", new DialogInterface.OnClickListener()
+                    {
+                        public void onClick(DialogInterface dialog, int which)
+                        {
+                            prefs.edit().putBoolean(key, true).apply();
+                            answer.offer(true);
+                        }
+                    })
+                    .show();
+            }
+        });
+        try
+        {
+            if (answer.take())
+            {
+                Diagnostics.trail(this, "started anyway on a newer game");
+                return true;
+            }
+        }
+        catch (InterruptedException ignored)
+        {
+        }
+        Diagnostics.trail(this, "the player left to update the APK");
+        finish();
+        return false;
+    }
+
+    /** 4990 of "1.7.4990" (the third number), 0 when there is none. */
+    static int buildOf(String version)
+    {
+        String[] parts = version.split("\\.");
+        try
+        {
+            return parts.length >= 3 ? Integer.parseInt(parts[2].replaceAll("[^0-9].*$", "")) : 0;
+        }
+        catch (NumberFormatException e)
+        {
+            return 0;
+        }
+    }
+
     public boolean prepareGame()
     {
         File ext = getExternalFilesDir(null);
