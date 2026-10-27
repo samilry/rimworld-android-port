@@ -25,11 +25,14 @@
 //     transposed and the map drew as one red triangle. Everything else of the interface (locations, sets, bindings,
 //     offsets, member names) is the same from both compilers;
 //   - no optimizer runs (the NDK's glslang is built here without spirv-tools); the driver compiles the SPIR-V anyway.
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -153,6 +156,45 @@ private:
     Request& request;
 };
 
+// The words a glslang info log calls reserved ("ERROR: file:113: 'common' : Reserved word."), each once.
+std::vector<std::string> ReservedWordsIn(const std::string& log)
+{
+    std::vector<std::string> words;
+    const std::string mark = "' : Reserved word";
+    for (size_t at = log.find(mark); at != std::string::npos; at = log.find(mark, at + 1))
+    {
+        size_t open = log.rfind('\'', at - 1);
+        if (open == std::string::npos) continue;
+        std::string word = log.substr(open + 1, at - open - 1);
+        bool plain = !word.empty();
+        for (char c : word) plain = plain && (isalnum((unsigned char)c) || c == '_');
+        if (plain && std::find(words.begin(), words.end(), word) == words.end()) words.push_back(word);
+    }
+    return words;
+}
+
+// Every whole-word occurrence of word in text as replacement.
+std::string RenameWord(const std::string& text, const std::string& word, const std::string& replacement)
+{
+    std::string out;
+    out.reserve(text.size() + 64);
+    auto part = [](char c) { return isalnum((unsigned char)c) || c == '_'; };
+    size_t i = 0;
+    while (i < text.size())
+    {
+        if (text.compare(i, word.size(), word) == 0 && (i == 0 || !part(text[i - 1])) && (i + word.size() >= text.size() || !part(text[i + word.size()])))
+        {
+            out += replacement;
+            i += word.size();
+        }
+        else
+        {
+            out += text[i++];
+        }
+    }
+    return out;
+}
+
 bool StageOf(int stage, EShLanguage& out)
 {
     switch (stage)
@@ -230,29 +272,44 @@ bool CompileEntry(Request& request, EntryPoint& entry)
         preamble += "#define " + define.first + " " + define.second + "\n";
     }
     const std::string& name = unit.path.empty() ? unit.name : unit.path;
-    const std::string text = hlsl ? unit.source : WithMatricesByRows(unit.source);
-    const char* strings[1] = { text.c_str() };
-    const int lengths[1] = { (int)text.size() };
-    const char* names[1] = { name.c_str() };
-
-    glslang::TShader shader(stage);
-    shader.setStringsWithLengthsAndNames(strings, lengths, names, 1);
-    shader.setPreamble(preamble.c_str());
-    shader.setEntryPoint(entry.name.empty() ? "main" : entry.name.c_str());
-    shader.setEnvInput(hlsl ? glslang::EShSourceHlsl : glslang::EShSourceGlsl, stage, glslang::EShClientVulkan, 110);
-    shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_1);
-    shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_3);
-    shader.setAutoMapLocations(true);
+    std::string text = hlsl ? unit.source : WithMatricesByRows(unit.source);
     EShMessages messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules | (hlsl ? EShMsgReadHlsl : 0));
     Includer includer(request);
-    if (!shader.parse(&shaderc_util::kDefaultTBuiltInResource, 110, false, messages, includer))
+    std::unique_ptr<glslang::TShader> shader;
+    // A GLSL source that names a variable with a word glslang reserves (a mod's "float common = ..."; the PC's Slang takes
+    // it) is parsed once more with those words renamed, the ones the first parse named only.
+    for (int attempt = 0;; attempt++)
     {
-        request.diagnostics += shader.getInfoLog();
-        request.diagnostics += shader.getInfoDebugLog();
-        return false;
+        const char* strings[1] = { text.c_str() };
+        const int lengths[1] = { (int)text.size() };
+        const char* names[1] = { name.c_str() };
+        shader.reset(new glslang::TShader(stage));
+        shader->setStringsWithLengthsAndNames(strings, lengths, names, 1);
+        shader->setPreamble(preamble.c_str());
+        shader->setEntryPoint(entry.name.empty() ? "main" : entry.name.c_str());
+        shader->setEnvInput(hlsl ? glslang::EShSourceHlsl : glslang::EShSourceGlsl, stage, glslang::EShClientVulkan, 110);
+        shader->setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_1);
+        shader->setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_3);
+        shader->setAutoMapLocations(true);
+        if (shader->parse(&shaderc_util::kDefaultTBuiltInResource, 110, false, messages, includer))
+        {
+            break;
+        }
+        std::string log = shader->getInfoLog();
+        std::vector<std::string> words = ReservedWordsIn(log);
+        if (hlsl || attempt > 0 || words.empty())
+        {
+            request.diagnostics += log;
+            request.diagnostics += shader->getInfoDebugLog();
+            return false;
+        }
+        for (const std::string& word : words)
+        {
+            text = RenameWord(text, word, word + "_port17");
+        }
     }
     glslang::TProgram program;
-    program.addShader(&shader);
+    program.addShader(shader.get());
     if (!program.link(messages))
     {
         request.diagnostics += program.getInfoLog();

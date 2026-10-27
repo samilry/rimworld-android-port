@@ -126,6 +126,31 @@ if want freetype; then
     "$IMGUI/misc/freetype/imgui_freetype.cpp" native/imgui_freetype/imgui_freetype_c.cpp "$OBJ/libfreetype.a" -L "$LIB" -limgui -lm
 fi
 
+if want ktx; then
+  echo "== ktx (read and transcode)"
+  # Khronos' libktx 4.4.0 (Apache-2.0, the PC's Ktx.dll is the same version), the read-only library of its CMake
+  # (KTX_MAIN_SRC + KTX 1, no writers, encoders, GL or Vulkan upload): the engine's Brutal.Ktx loads .ktx/.ktx2
+  # textures through it (Brutal.TextureApi.Ktx.Loader); without it a mod's KTX texture failed on the phone only.
+  # Bound as "Ktx": libKtx.so. The encoding entry points Brutal.Ktx also declares are not there (looked up on first
+  # use, and the engine's loader uses none).
+  KTX=downloads/ktx/KTX-Software-4.4.0
+  KDEFS="-DLIBKTX -DKTX_FEATURE_KTX1 -DKTX_FEATURE_KTX2 -DKTX_OMIT_VULKAN=1 -DSUPPORT_SOFTWARE_ETC_UNPACK=1 -DBASISD_SUPPORT_FXT1=0"
+  KINC="-I $KTX/include -I $KTX/lib -I $KTX/utils -I $KTX/other_include -I $KTX/external -I $KTX/external/basisu/transcoder -I $KTX/external/basisu/zstd -I $KTX/external/dfdutils"
+  KOBJ="$OBJ/ktx"
+  rm -rf "$KOBJ"
+  mkdir -p "$KOBJ"
+  for f in lib/checkheader.c lib/filestream.c lib/hashlist.c lib/info.c lib/memstream.c lib/strings.c lib/swap.c lib/texture.c lib/texture1.c lib/texture2.c lib/vkformat_check.c lib/vkformat_check_variant.c lib/vkformat_str.c lib/vkformat_typesize.c \
+           external/dfdutils/createdfd.c external/dfdutils/colourspaces.c external/dfdutils/interpretdfd.c external/dfdutils/printdfd.c external/dfdutils/queries.c external/dfdutils/vk2dfd.c external/basisu/zstd/zstd.c; do
+    "$CC" $TARGET -std=c11 -O2 -fPIC -w $KDEFS $KINC -c "$KTX/$f" -o "$KOBJ/$(echo "$f" | tr '/' '_').o"
+  done
+  for f in lib/basis_transcode.cpp lib/miniz_wrapper.cpp external/basisu/transcoder/basisu_transcoder.cpp lib/etcunpack.cxx external/etcdec/etcdec.cxx; do
+    "$CXX" $TARGET -std=c++17 -O2 -fPIC -w $KDEFS $KINC -c "$KTX/$f" -o "$KOBJ/$(echo "$f" | tr '/' '_').o"
+  done
+  # The engine binds the entry points of Brutal's Ktx.dll ("<function>1"), not libktx's own: native/ktx/ktx_c.c.
+  "$CC" $TARGET -std=c11 -O2 -fPIC -w $KDEFS $KINC -c native/ktx/ktx_c.c -o "$KOBJ/ktx_c.o"
+  "$CXX" $TARGET -shared -fPIC -static-libstdc++ -Wl,--no-undefined -o "$LIB/libKtx.so" "$KOBJ"/*.o -lm -llog
+fi
+
 if want astc; then
   echo "== astc"
   # ARM's astcenc 5.7.0 (Apache-2.0), NEON only (every arm64 core), for the GPUs without BC (hooks/Textures.cs).
