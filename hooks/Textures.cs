@@ -223,6 +223,7 @@ namespace PortHooks
 					return;
 				}
 				harmony.Patch(onGpu, prefix: new HarmonyMethod(typeof(Textures), nameof(NotOnGpu)));
+				atlasesOnCpu = true;
 				Console.WriteLine("[port17] atlas pages: encoded on the processor (" + (setting == "1" ? "atlasCpuEncode=1" : gpuName) + ")");
 			}
 			catch (Exception e)
@@ -237,10 +238,89 @@ namespace PortHooks
 			return false;
 		}
 
+		// The GPU was lost (VK_ERROR_DEVICE_LOST) in an earlier run: noted by NoteDeviceLost, read at the next starts.
+		private static bool atlasesOnCpu;
+		private static string GpuLostNote => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "logs", "gpu-lost.txt"));
+
+		/// <summary>
+		/// The textures a game loads in batches (TextureBuildBatch: a mod's PNGs, mip levels and BC7 made by compute
+		/// shaders) are made on the processor for 7 days after the GPU was lost in a run, as the atlas pages are on
+		/// Adreno below 800. A tester's Adreno 730 (Android 13 driver, Vulkan 1.1) lost the device on 1.7.4990 in the
+		/// middle of those batches at the start (2026-10-27; the same phone had loaded on 4985 for days); the engine then
+		/// made the rest on the processor anyway, the process grew to 7.8 GB and ended in VMA's assertion while the
+		/// engine shut down. Declined here, the engine takes its own processor path (CompressAtLoad); the cache stays the
+		/// same. mobile.txt gpuTextureBuild=0 always on the processor, =1 never.
+		/// </summary>
+		private static void BuildTexturesOnCpuAfterLostGpu()
+		{
+			try
+			{
+				string setting = Setting("gpuTextureBuild");
+				string why = setting == "0" ? "gpuTextureBuild=0 in mobile.txt" : null;
+				if (why == null && setting != "1" && File.Exists(GpuLostNote) && DateTime.UtcNow - File.GetLastWriteTimeUtc(GpuLostNote) < TimeSpan.FromDays(7))
+				{
+					why = "the GPU was lost in a run of " + File.GetLastWriteTime(GpuLostNote).ToString("MM-dd HH:mm") + " (logs/gpu-lost.txt)";
+				}
+				if (why == null)
+				{
+					return;
+				}
+				System.Reflection.MethodInfo canBuild = AccessTools.Method(AccessTools.TypeByName("Waylith.Rendering.TextureBuildBatch"), "CanBuild");
+				Type manager = AccessTools.TypeByName("Verse.GlobalTextureAtlasManager");
+				System.Reflection.MethodInfo onGpu = manager == null ? null : AccessTools.Method(manager, "TryEncodeOnGpu");
+				if (canBuild != null)
+				{
+					harmony.Patch(canBuild, prefix: new HarmonyMethod(typeof(Textures), nameof(NotOnGpu)));
+				}
+				if (onGpu != null && !atlasesOnCpu)
+				{
+					harmony.Patch(onGpu, prefix: new HarmonyMethod(typeof(Textures), nameof(NotOnGpu)));
+					atlasesOnCpu = true;
+				}
+				Console.WriteLine("[port17] textures and atlas pages: made on the processor (" + why + ")" + (canBuild == null ? "; this engine has no texture batches" : ""));
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[port17] textures: left on the GPU: " + e.Message);
+			}
+		}
+
+		/// <summary>Postfix of GpuCrashDiagnostics.CaptureDeviceLost (1.7.4990 and later): the note for the next starts.</summary>
+		public static void NoteDeviceLost(string where)
+		{
+			try
+			{
+				Directory.CreateDirectory(Path.GetDirectoryName(GpuLostNote));
+				File.AppendAllText(GpuLostNote, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + (GpuInfo.DeviceName ?? "?") + ": " + where + "\n");
+				Console.WriteLine("[port17] the GPU was lost (" + where + "); the next starts make textures on the processor for 7 days (logs/gpu-lost.txt)");
+			}
+			catch (Exception)
+			{
+			}
+		}
+
+		private static void WatchDeviceLost()
+		{
+			try
+			{
+				System.Reflection.MethodInfo capture = AccessTools.Method(AccessTools.TypeByName("Waylith.Graphics.GpuCrashDiagnostics"), "CaptureDeviceLost", new[] { typeof(string) });
+				if (capture != null)
+				{
+					harmony.Patch(capture, postfix: new HarmonyMethod(typeof(Textures), nameof(NoteDeviceLost)));
+				}
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[port17] device lost: not watched: " + e.Message);
+			}
+		}
+
 		public static void AfterCompressionConfigured()
 		{
 			WatchAtlasSources();
 			EncodeAtlasesOnCpu();
+			WatchDeviceLost();
+			BuildTexturesOnCpuAfterLostGpu();
 			try
 			{
 				string setting = Setting("bcDecode");

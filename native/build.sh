@@ -41,6 +41,9 @@ want() { [ "$WHAT" = all ] || [ "$WHAT" = "$1" ]; }
 #   its 10-bit signed Generation back negative: from then on the check failed (the assert above) and, without asserts
 #   as on the PC, the slot's lookups (ImFontAtlasPackGetRectSafe) found nothing. A long list of mod names in several
 #   scripts fills the atlas and re-bakes glyphs often enough to get there in minutes.
+#   thread-lock.patch: the functions that load a glyph or change the font atlas take one lock. The engine measures text on
+#   any thread and loads unseen glyphs there; two threads rendering into the same FreeType glyph slot crashed a tester's
+#   vivo (2026-10-27, a NULL bitmap in ImGui_ImplFreeType_FontBakedLoadGlyph). Applied after rect-generation.patch.
 if want imgui || want freetype; then
   rm -rf "$OBJ/imgui-src"
   cp -r "$IMGUI" "$OBJ/imgui-src"
