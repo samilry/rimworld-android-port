@@ -612,6 +612,7 @@ namespace PortMobile
 			harmony.Patch(AccessTools.Method(typeof(UI), nameof(UI.MouseMapPosition)), prefix: new HarmonyMethod(typeof(Placement), nameof(MouseMapPosition)));
 			harmony.Patch(AccessTools.Method(typeof(Designator_Place), nameof(Designator_Place.DoExtraGuiControls)), prefix: new HarmonyMethod(typeof(Placement), nameof(KeepControlsOnScreen)), postfix: new HarmonyMethod(typeof(Placement), nameof(Controls)));
 			harmony.Patch(AccessTools.Method(typeof(DesignatorManager), nameof(DesignatorManager.DesignationManagerOnGUI)), postfix: new HarmonyMethod(typeof(Placement), nameof(ControlsOfLastResort)));
+			harmony.Patch(AccessTools.Method(typeof(DesignatorUtility), nameof(DesignatorUtility.GUIDoRotationControls)), prefix: new HarmonyMethod(typeof(Placement), nameof(SeeRotationControls)));
 		}
 
 		/// <summary>The selected tool, if it is one that acts on the single cell under the pointer.</summary>
@@ -867,7 +868,38 @@ namespace PortMobile
 
 		private static Rect ButtonsRect(Designator_Place selected, float leftX, float bottomY)
 		{
-			return new Rect(leftX + (Rotates(selected) ? 200f + Gap : 0f), bottomY - 90f, 200f, 90f);
+			// Right of the rotate buttons where they were drawn in this frame. A tool or mod that puts them somewhere else
+			// than the place it was given (its own column under the info box) had the buttons 200 units off to the right
+			// (2026-10-27, a tester's screenshot: "确定按钮漂移了"). Their asked-for place, not the window's: the camera hole
+			// moves both windows alike afterwards.
+			Rect at = rotationFrame == Time.frameCount ? new Rect(rotationAt.x + 200f + Gap, rotationAt.y - 90f, 200f, 90f)
+				: new Rect(leftX + (Rotates(selected) ? 200f + Gap : 0f), bottomY - 90f, 200f, 90f);
+			if (selected != toldFor)
+			{
+				toldFor = selected;
+				Console.WriteLine("[mobile] confirm buttons for " + selected.GetType().Name + " " + (selected.PlacingDef?.defName ?? "?") + ": controls asked at (" + leftX + ", " + bottomY + ")"
+					+ (rotationFrame == Time.frameCount ? ", rotate buttons at (" + rotationAt.x + ", " + rotationAt.y + ")" : ", no rotate buttons") + ", buttons at " + at);
+			}
+			return at;
+		}
+
+		// Where DesignatorUtility.GUIDoRotationControls was asked to draw last (leftX, bottomY), and in which frame.
+		private static Vector2 rotationAt;
+		private static int rotationFrame = -10;
+		private static Designator toldFor;
+
+		/// <summary>Where the rotate buttons were asked for in this frame (leftX, bottomY), if they were.</summary>
+		internal static bool RotationDrawn(out Vector2 at)
+		{
+			at = rotationAt;
+			return rotationFrame == Time.frameCount;
+		}
+
+		/// <summary>Prefix of DesignatorUtility.GUIDoRotationControls: where the rotate buttons go.</summary>
+		public static void SeeRotationControls(float leftX, float bottomY)
+		{
+			rotationAt = new Vector2(leftX, bottomY);
+			rotationFrame = Time.frameCount;
 		}
 
 		/// <summary>
@@ -961,6 +993,47 @@ namespace PortMobile
 					Find.DesignatorManager.Deselect();
 				}
 			});
+			BesideRotation(73195731);
+		}
+
+		private static bool snapSaid;
+
+		/// <summary>
+		/// The buttons' window (immediate window id) right of the rotate buttons' window as the window stack holds both
+		/// now, when the rotate buttons were drawn in this frame: whatever moved either (the camera hole's shift of the
+		/// architect, a mod placing its controls itself), they stay side by side. With the hole avoided, the buttons were
+		/// the architect's shift further right than the rotate buttons (2026-10-27, on this phone and a tester's).
+		/// </summary>
+		internal static void BesideRotation(int id)
+		{
+			if (rotationFrame != Time.frameCount || Event.current.type != EventType.Repaint)
+			{
+				return;
+			}
+			Window rotation = null, own = null;
+			IList<Window> windows = Find.WindowStack.Windows;
+			for (int i = 0; i < windows.Count; i++)
+			{
+				if (windows[i].ID == -73095)
+				{
+					rotation = windows[i];
+				}
+				else if (windows[i].ID == -id)
+				{
+					own = windows[i];
+				}
+			}
+			if (rotation == null || own == null)
+			{
+				return;
+			}
+			var beside = new Rect(rotation.windowRect.xMax + Gap, rotation.windowRect.y, own.windowRect.width, own.windowRect.height);
+			if (!snapSaid && (Mathf.Abs(beside.x - own.windowRect.x) > 0.5f || Mathf.Abs(beside.y - own.windowRect.y) > 0.5f))
+			{
+				snapSaid = true;
+				Console.WriteLine("[mobile] confirm buttons moved beside the rotate buttons: rotate " + rotation.windowRect + ", buttons " + own.windowRect + " -> " + beside);
+			}
+			own.windowRect = beside;
 		}
 
 		private static void Confirm()
@@ -1366,6 +1439,11 @@ namespace PortMobile
 		{
 			List<DrawStyleDef> styles = selected.DrawStyleCategory?.styles;
 			bool picker = !rotates && Find.DesignatorManager.SelectedStyle != null && styles != null && styles.Count > 1;
+			// Right of the rotate buttons where they were drawn in this frame (Placement.ButtonsRect).
+			if (rotates && Placement.RotationDrawn(out Vector2 at))
+			{
+				return new Rect(at.x + 200f + Placement.Gap, at.y - 90f, 200f, 90f);
+			}
 			return new Rect(leftX + (rotates || picker ? 200f + Placement.Gap : 0f), bottomY - 90f, 200f, 90f);
 		}
 
@@ -1386,6 +1464,7 @@ namespace PortMobile
 					Cancel();
 				}
 			});
+			Placement.BesideRotation(73195732);
 		}
 
 		/// <summary>The cancel button alone, in the left half of the buttons' place.</summary>
