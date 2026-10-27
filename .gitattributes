@@ -1,2 +1,3 @@
 # Run on the phone (Android sh): LF only, whatever autocrlf does on checkout.
 host/vinput/hidctl.sh text eol=lf
+*.patch -text
