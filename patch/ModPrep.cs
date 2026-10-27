@@ -83,7 +83,7 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 internal static class ModPrep
 {
 	/// <summary>Bumped whenever what is done to an assembly changes; part of the stamp, so prepared mods are done again.</summary>
-	public const int RulesVersion = 12;
+	public const int RulesVersion = 13;
 
 	public const string StampName = ".port17-prepared";
 
@@ -452,6 +452,7 @@ internal static class ModPrep
 		edits += RetargetMissingFrameworkTypes(module, resolver, label, log);
 		edits += AdaptFrameworkReturnTypes(module, label, log);
 		edits += MatchFrameworkFieldNames(module, label, log);
+		edits += MatchInheritedFields(module, label, log);
 		foreach (TypeDefinition type in module.GetTypes())
 		{
 			foreach (FieldDefinition field in type.Fields)
@@ -1186,6 +1187,96 @@ internal static class ModPrep
 			log(label + ": " + matched + " use(s) of framework fields by their Mono names: " + string.Join(", ", names.Take(4)) + (names.Count > 4 ? ", ..." : ""));
 		}
 		return matched;
+	}
+
+	/// <summary>
+	/// A field used through a type that no longer declares it, because the game (or a library) moved it to a base class:
+	/// Ludeon's runtime finds it in the base (WaylithClr.LaxInheritedFieldRefs, measured on the PC 2026-10-27: a field
+	/// moved from Derived to Base read fine there, MissingFieldException on this runtime). The reference is pointed at
+	/// the nearest base type that declares a field of that name and type. Non-generic types only.
+	/// v13.
+	/// </summary>
+	private static int MatchInheritedFields(ModuleDefinition module, string label, Action<string> log)
+	{
+		var verdicts = new Dictionary<string, TypeDefinition>();
+		var names = new List<string>();
+		int matched = 0;
+		foreach (TypeDefinition type in module.GetTypes())
+		{
+			foreach (MethodDefinition method in type.Methods)
+			{
+				if (!method.HasBody)
+				{
+					continue;
+				}
+				foreach (Instruction instruction in method.Body.Instructions)
+				{
+					if (!(instruction.Operand is FieldReference field) || field is FieldDefinition || field.DeclaringType == null
+						|| field.DeclaringType is GenericInstanceType || field.DeclaringType.Module == module && field.DeclaringType.Scope == module)
+					{
+						continue;
+					}
+					string key = field.FullName;
+					if (!verdicts.TryGetValue(key, out TypeDefinition owner))
+					{
+						owner = FindInheritedField(field);
+						verdicts[key] = owner;
+						if (owner != null)
+						{
+							names.Add(field.DeclaringType.Name + "." + field.Name + " -> " + owner.Name);
+						}
+					}
+					if (owner == null)
+					{
+						continue;
+					}
+					instruction.Operand = new FieldReference(field.Name, field.FieldType, module.ImportReference(owner));
+					matched++;
+				}
+			}
+		}
+		if (matched > 0)
+		{
+			log(label + ": " + matched + " use(s) of fields now in a base class: " + string.Join(", ", names.Take(4)) + (names.Count > 4 ? ", ..." : ""));
+		}
+		return matched;
+	}
+
+	/// <summary>The base type that declares the field a reference names, when its own declaring type does not.</summary>
+	private static TypeDefinition FindInheritedField(FieldReference field)
+	{
+		try
+		{
+			if (field.Resolve() != null)
+			{
+				return null;
+			}
+		}
+		catch (Exception)
+		{
+		}
+		TypeDefinition type = TryResolve(field.DeclaringType);
+		for (int depth = 0; type != null && depth < 16; depth++)
+		{
+			TypeReference baseRef = type.BaseType;
+			if (baseRef == null || baseRef is GenericInstanceType)
+			{
+				return null;
+			}
+			type = TryResolve(baseRef);
+			if (type == null)
+			{
+				return null;
+			}
+			foreach (FieldDefinition candidate in type.Fields)
+			{
+				if (candidate.Name == field.Name && SameParameterType(candidate.FieldType, field.FieldType))
+				{
+					return type;
+				}
+			}
+		}
+		return null;
 	}
 
 	private static FieldDefinition FindFieldByMonoName(FieldReference field)

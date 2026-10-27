@@ -207,6 +207,47 @@ namespace PortMobile
 			}, "found");
 		}
 
+		/// <summary>
+		/// mobile.txt parityTest=1, with the test mod "port17.paritytest" active (its assemblies built against an older
+		/// library and an optional one that is not there): what the PC's runtime does for each, measured there (moved
+		/// field, missing optional assembly, newer library reference).
+		/// </summary>
+		private static void ParityTest()
+		{
+			if (Settings.Get("parityTest", 0) != 1)
+			{
+				return;
+			}
+			foreach (System.Reflection.Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+			{
+				string name = assembly.GetName().Name;
+				Type tests = name == "Port17ParityMod" ? assembly.GetType("ParityMod.Tests") : name == "Port17ParityHigh" ? assembly.GetType("ParityHigh.Tests") : null;
+				if (tests == null)
+				{
+					continue;
+				}
+				foreach (System.Reflection.MethodInfo method in tests.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static))
+				{
+					string result;
+					try
+					{
+						result = (string)method.Invoke(null, null);
+					}
+					catch (System.Reflection.TargetInvocationException e)
+					{
+						result = "escaped: " + e.InnerException.GetType().Name + ": " + e.InnerException.Message;
+					}
+					Console.WriteLine("[mobile] parity test: " + method.Name + ": " + result);
+				}
+			}
+			bool listed = false;
+			foreach (System.Reflection.Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+			{
+				listed |= assembly.GetName().Name == "Port17ParityOptional";
+			}
+			Console.WriteLine("[mobile] parity test: the missing assembly " + (listed ? "IS listed by GetAssemblies" : "is not listed by GetAssemblies"));
+		}
+
 		private static bool clipboardProbeSeen;
 
 		[System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool OpenClipboard(IntPtr owner);
@@ -267,6 +308,7 @@ namespace PortMobile
 				AccessViolationTest();
 				CoreLibTest();
 				AndroidVideo.Test();
+				ParityTest();
 				ClipboardTest(true);
 				// mobile.txt stallTest=1: the main thread busy for 15 s, for the watch's stall lines (logs/watch.txt).
 				if (Settings.Get("stallTest", 0) == 1)

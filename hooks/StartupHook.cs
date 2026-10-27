@@ -460,6 +460,7 @@ internal static class StartupHook
 		PortHooks.UiDescriptors.Start();
 		PortHooks.AndroidFonts.Start();
 		PortHooks.WindowsLibraries.Start();
+		PortHooks.MissingAssemblies.Start(new HarmonyLib.Harmony("port17.missingassemblies"));
 		Console.WriteLine("[port17] startup hook installed (Unity assembly names resolve to UnityStubs)");
 		PortDiag.StartIfRequested();
 	}
@@ -604,6 +605,26 @@ internal static class StartupHook
 		{
 			Console.WriteLine("[port17] no facade for " + n + " (add it to the forwarders list in host/stage.sh)");
 		}
+		// Not loaded yet, but there under an older version than asked for (a mod built against a newer library): that one
+		// serves, as on the PC (WaylithClr.LaxAssemblyBinding, measured 2026-10-27: a reference to 3.0 bound to the 1.0
+		// there, FileNotFoundException here).
+		if (name.Version != null && !byNameOnly && n.Length > 0)
+		{
+			byNameOnly = true;
+			try
+			{
+				return context.LoadFromAssemblyName(new AssemblyName(n));
+			}
+			catch (Exception)
+			{
+			}
+			finally
+			{
+				byNameOnly = false;
+			}
+		}
 		return null;
 	}
+
+	[ThreadStatic] private static bool byNameOnly;
 }
