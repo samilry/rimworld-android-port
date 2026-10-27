@@ -513,6 +513,9 @@ final class Diagnostics
             File logs = new File(ext, "home/unity3d/Ludeon Studios/RimWorld by Ludeon Studios/Logs");
             File data = new File(ext, "home/unity3d/Ludeon Studios/RimWorld by Ludeon Studios");
             putText(zip, "phone.txt", phone(context, ext));
+            // First to read: the logs below in a page (ReportSummary), and every mod folder with its place in the load order.
+            putText(zip, "summary.txt", ReportSummary.summary(ext, logs));
+            putText(zip, "mods.txt", ReportSummary.mods(new File(ext, "game"), new File(data, "Config/ModsConfig.xml")));
             if (exitText != null)
             {
                 putText(zip, "exit.txt", exitText);
@@ -541,7 +544,8 @@ final class Diagnostics
             putText(zip, "logcat.txt", ownLogcat());
             // The run's record (PortMobile's Recorder: what the game was doing, every few seconds and at every event) of
             // this run and the two before, and the newest three moments the player marked with "记录问题" (a screenshot each).
-            for (String file : new String[] { "record.txt", "record-1.txt", "record-2.txt" })
+            // ...and the watch (PortHooks' Watch): memory and the game's last log line while it loads, and the stalls.
+            for (String file : new String[] { "record.txt", "record-1.txt", "record-2.txt", "watch.txt", "watch-1.txt" })
             {
                 putFile(zip, file, new File(ext, "logs/" + file));
             }
@@ -948,9 +952,12 @@ final class Diagnostics
         {
             StringBuilder text = new StringBuilder();
             List<Field> top = parse(tombstone, 0, tombstone.length);
-            long crashTid = -1;
+            long crashTid = -1, faultAddress = 0, abortAddress = 0;
+            boolean hasFault = false;
             List<Field> threads = new ArrayList<Field>();
             List<Field> buffers = new ArrayList<Field>();
+            mappings = new ArrayList<Field>();
+            libraries = new java.util.TreeMap<String, String>();
             for (Field f : top)
             {
                 switch (f.number)
@@ -976,11 +983,23 @@ final class Diagnostics
                         if (hasAddress)
                         {
                             text.append(", fault address 0x").append(Long.toHexString(address));
+                            hasFault = true;
+                            faultAddress = address;
                         }
                         text.append('\n');
                         break;
                     }
-                    case 14: text.append("abort message: ").append(f.text()).append('\n'); break;
+                    case 14:
+                    {
+                        text.append("abort message: ").append(f.text()).append('\n');
+                        // Scudo's "corrupted chunk header at address 0x2000071878b0c50": the top byte is the pointer's tag.
+                        java.util.regex.Matcher at = Pattern.compile("address 0x([0-9a-fA-F]+)").matcher(f.text());
+                        if (at.find())
+                        {
+                            abortAddress = new java.math.BigInteger(at.group(1), 16).longValue() & 0x00ffffffffffffffL;
+                        }
+                        break;
+                    }
                     case 15:
                         for (Field c : sub(f))
                         {
@@ -989,9 +1008,20 @@ final class Diagnostics
                         }
                         break;
                     case 16: threads.add(f); break;
+                    case 17: mappings.add(f); break;
                     case 18: buffers.add(f); break;
                     default: break;
                 }
+            }
+            if (hasFault)
+            {
+                // What the address belongs to: a library, the heap (scudo), a GWP-ASan guard page, a thread's stack, JIT
+                // code, or nothing (a wild pointer).
+                text.append("fault address in: ").append(mappingOf(faultAddress)).append('\n');
+            }
+            if (abortAddress != 0)
+            {
+                text.append(String.format(Locale.US, "abort message's address 0x%x in: ", abortAddress)).append(mappingOf(abortAddress)).append('\n');
             }
             text.append("crashing thread: ").append(crashTid).append("\n\n");
             // The crashing thread first, then the others (name and backtrace).
@@ -1011,6 +1041,15 @@ final class Diagnostics
                         continue;
                     }
                     appendThread(text, thread, pass == 0 ? 64 : 24);
+                }
+            }
+            if (!libraries.isEmpty())
+            {
+                // For host/symbolize.sh: the build id of each library in the backtraces finds its symbols.
+                text.append("libraries in the backtraces (build id):\n");
+                for (java.util.Map.Entry<String, String> library : libraries.entrySet())
+                {
+                    text.append("  ").append(library.getKey()).append("  ").append(library.getValue()).append('\n');
                 }
             }
             for (Field buffer : buffers)
@@ -1100,6 +1139,36 @@ final class Diagnostics
             appendFrames(text, frames, maxFrames);
         }
 
+        /** The process's memory mappings (tombstone.proto MemoryMapping) and the libraries the frames named, of the tombstone being read. */
+        private static List<Field> mappings = new ArrayList<Field>();
+        private static java.util.Map<String, String> libraries = new java.util.TreeMap<String, String>();
+
+        /** "name +0xoffset (r-x)" of the mapping that holds an address, or that none does. */
+        private static String mappingOf(long address)
+        {
+            for (Field mapping : mappings)
+            {
+                long begin = 0, end = 0, offset = 0;
+                boolean read = false, write = false, execute = false;
+                String name = "";
+                for (Field m : sub(mapping))
+                {
+                    if (m.number == 1) begin = m.value;
+                    else if (m.number == 2) end = m.value;
+                    else if (m.number == 3) offset = m.value;
+                    else if (m.number == 4) read = m.value != 0;
+                    else if (m.number == 5) write = m.value != 0;
+                    else if (m.number == 6) execute = m.value != 0;
+                    else if (m.number == 7) name = m.text();
+                }
+                if (Long.compareUnsigned(address, begin) >= 0 && Long.compareUnsigned(address, end) < 0)
+                {
+                    return (name.isEmpty() ? "(anonymous)" : name) + String.format(Locale.US, " +0x%x (%c%c%c)", address - begin + offset, read ? 'r' : '-', write ? 'w' : '-', execute ? 'x' : '-');
+                }
+            }
+            return mappings.isEmpty() ? "(no mappings in the tombstone)" : "no mapping (a pointer to nowhere)";
+        }
+
         private static void appendFrames(StringBuilder text, List<Field> frames, int maxFrames)
         {
             int n = 0;
@@ -1111,18 +1180,29 @@ final class Diagnostics
                     break;
                 }
                 long relPc = 0, offset = 0;
-                String function = "", file = "";
+                String function = "", file = "", buildId = "";
                 for (Field f : sub(frame))
                 {
                     if (f.number == 1) relPc = f.value;
                     else if (f.number == 4) function = f.text();
                     else if (f.number == 5) offset = f.value;
                     else if (f.number == 6) file = f.text();
+                    else if (f.number == 8) buildId = f.text();
                 }
                 text.append(String.format(Locale.US, "  #%02d pc %012x  %s", n - 1, relPc, file));
                 if (!function.isEmpty())
                 {
                     text.append(" (").append(function).append('+').append(offset).append(')');
+                }
+                else if (file.isEmpty() || file.startsWith("<anonymous") || file.startsWith("[anon:") || file.contains("doublemapper"))
+                {
+                    // The runtime's compiled code (CoreCLR maps it through memfd "doublemapper"): a managed method,
+                    // whose name the runtime's own report in stderr.txt has when it got to write one.
+                    text.append(" (JIT code, a managed method)");
+                }
+                if (!buildId.isEmpty() && file.endsWith(".so"))
+                {
+                    libraries.put(file.substring(file.lastIndexOf('/') + 1), buildId);
                 }
                 text.append('\n');
             }

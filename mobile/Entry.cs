@@ -153,6 +153,7 @@ namespace PortMobile
 
 		public static void AfterUIRootOnGUI()
 		{
+			PortHooks.Watch.Beat();
 			KeyWheel.OnGui();
 			TypingBar.OnGui();
 			if (!menuTimed && Verse.Current.ProgramState == Verse.ProgramState.Entry && !Verse.LongEventHandler.AnyEventNowOrWaiting)
@@ -161,9 +162,19 @@ namespace PortMobile
 				menuTimed = true;
 				Console.WriteLine("[mobile] main menu " + SecondsSinceProcessStart().ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + " s after the runtime started");
 				ConflictTag.SelfTest();
+				PortHooks.Watch.MainMenu();
 				Console.WriteLine("[mobile] of that: " + WhereTheStartWent());
 				Temporaries.Test();
 				AccessViolationTest();
+				// mobile.txt stallTest=1: the main thread busy for 15 s, for the watch's stall lines (logs/watch.txt).
+				if (Settings.Get("stallTest", 0) == 1)
+				{
+					var busy = System.Diagnostics.Stopwatch.StartNew();
+					while (busy.ElapsedMilliseconds < 15000)
+					{
+					}
+					Console.WriteLine("[mobile] stall test: the main thread was busy for 15 s");
+				}
 				MemTrim.AtMainMenu();
 				PortHooks.JitProfile.AtMainMenu();
 				PortHooks.InlineWatch.Report("main menu", Harmony.GetAllPatchedMethods());
