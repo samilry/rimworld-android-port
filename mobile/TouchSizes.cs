@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using HarmonyLib;
 using RimWorld;
@@ -150,10 +152,13 @@ namespace PortMobile
 				foreach (MethodInfo method in new[] { column, buttons })
 				{
 					Patches patches = Harmony.GetPatchInfo(method);
-					if (patches != null && (patches.Prefixes.Count > 0 || patches.Transpilers.Count > 0))
+					// The port's own patches (GizmoFit measures where the time buttons are) are not a mod's: counted, they had
+					// left the buttons small for everyone since 2026-10-26 (found by the UI smoke test, host/ui-smoke.js).
+					List<string> mods = patches == null ? new List<string>() : patches.Prefixes.Concat(patches.Transpilers).Select(p => p.owner).Where(o => !o.StartsWith("port17.", StringComparison.Ordinal)).Distinct().ToList();
+					if (mods.Count > 0)
 					{
 						AccessTools.StaticFieldRefAccess<Vector2>(AccessTools.Field(typeof(TimeControls), nameof(TimeControls.TimeButSize)))() = timeWas;
-						Console.WriteLine("[mobile] touch sizes: the time controls are patched by a mod (" + string.Join(", ", patches.Owners) + "), left as they are");
+						Console.WriteLine("[mobile] touch sizes: the time controls are patched by a mod (" + string.Join(", ", mods) + "), left as they are");
 						return;
 					}
 				}
