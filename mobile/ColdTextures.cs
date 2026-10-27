@@ -77,6 +77,25 @@ namespace PortMobile
 			}
 		}
 
+		// For the record's snaps (Recorder): textures put up when they were drawn (the engine loads them at first use, and
+		// brings back the ones let go), since the last snap. A tester's "the frame rate jumps since 4990" could not be told
+		// apart from heat or the collector without it.
+		private static int snapLoads;
+		private static double snapLoadsMs, snapSlowestMs;
+
+		/// <summary>"textures put up N (T ms, the slowest S)" since the last snap, or nothing when there were none.</summary>
+		public static string SnapLoads()
+		{
+			if (snapLoads == 0)
+			{
+				return null;
+			}
+			string text = string.Format(CultureInfo.InvariantCulture, "textures put up {0} ({1:F0} ms, the slowest {2:F0})", snapLoads, snapLoadsMs, snapSlowestMs);
+			snapLoads = 0;
+			snapLoadsMs = snapSlowestMs = 0;
+			return text;
+		}
+
 		public static void BeforeEnsure(Texture2D __instance)
 		{
 			ensureStarted = __instance.GpuResource == null ? Stopwatch.GetTimestamp() : 0;
@@ -89,6 +108,9 @@ namespace PortMobile
 				double ms = (Stopwatch.GetTimestamp() - ensureStarted) * 1000.0 / Stopwatch.Frequency;
 				broughtBack++;
 				broughtBackMs += ms;
+				snapLoads++;
+				snapLoadsMs += ms;
+				snapSlowestMs = Math.Max(snapSlowestMs, ms);
 				if (ms > slowestMs)
 				{
 					slowestMs = ms;

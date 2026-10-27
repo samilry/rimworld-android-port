@@ -413,6 +413,7 @@ namespace PortMobile
 			});
 			Part(line, () => string.Format(CultureInfo.InvariantCulture, "jit {0} methods, {1:F0} ms ({2:F0} on the main thread)", System.Runtime.JitInfo.GetCompiledMethodCount() - jitMethodsAtStart,
 				(System.Runtime.JitInfo.GetCompilationTime() - jitAtStart).TotalMilliseconds, (System.Runtime.JitInfo.GetCompilationTime(true) - jitMainAtStart).TotalMilliseconds));
+			Part(line, () => ColdTextures.SnapLoads());
 			Part(line, () => ProcessMemory());
 			Part(line, () => GraphicsMemory());
 			Part(line, () => Temperatures());
