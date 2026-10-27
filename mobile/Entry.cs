@@ -81,6 +81,7 @@ namespace PortMobile
 			MultiplayerFiles.Start(harmony);
 			VideoUrls.Start(harmony);
 			OpenUrl.Start(harmony);
+			AndroidVideo.Start(harmony);
 			SaveImport.Start(harmony);
 			HugsLogFile.Start(harmony);
 			ResolutionChoice.Start(harmony);
@@ -265,6 +266,7 @@ namespace PortMobile
 				Temporaries.Test();
 				AccessViolationTest();
 				CoreLibTest();
+				AndroidVideo.Test();
 				ClipboardTest(true);
 				// mobile.txt stallTest=1: the main thread busy for 15 s, for the watch's stall lines (logs/watch.txt).
 				if (Settings.Get("stallTest", 0) == 1)
