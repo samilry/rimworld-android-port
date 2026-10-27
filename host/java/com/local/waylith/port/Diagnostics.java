@@ -985,6 +985,7 @@ final class Diagnostics
                         for (Field c : sub(f))
                         {
                             if (c.number == 1) text.append("cause: ").append(c.text()).append('\n');
+                            else if (c.number == 2) appendMemoryError(text, c);
                         }
                         break;
                     case 16: threads.add(f); break;
@@ -1039,6 +1040,50 @@ final class Diagnostics
             return text.toString();
         }
 
+        /**
+         * A memory error the system's allocator found (GWP-ASan, which the manifest switches on; MTE): the kind, the
+         * heap object, and where it was allocated and freed (tombstone.proto MemoryError / HeapObject). These name the
+         * code that wrote where it should not, which the crashing thread's own backtrace (often a later free) does not.
+         */
+        private static void appendMemoryError(StringBuilder text, Field error)
+        {
+            String[] tools = { "GWP-ASan", "Scudo" };
+            String[] types = { "unknown", "use after free", "double free", "invalid free", "buffer overflow", "buffer underflow" };
+            long tool = 0, type = 0;
+            Field heap = null;
+            for (Field e : sub(error))
+            {
+                if (e.number == 1) tool = e.value;
+                else if (e.number == 2) type = e.value;
+                else if (e.number == 3) heap = e;
+            }
+            text.append("memory error: ").append(tool < tools.length ? tools[(int) tool] : "tool " + tool).append(", ")
+                .append(type < types.length ? types[(int) type] : "type " + type).append('\n');
+            if (heap == null)
+            {
+                return;
+            }
+            long address = 0, size = 0, allocTid = 0, freeTid = 0;
+            List<Field> alloc = new ArrayList<Field>(), free = new ArrayList<Field>();
+            for (Field h : sub(heap))
+            {
+                if (h.number == 1) address = h.value;
+                else if (h.number == 2) size = h.value;
+                else if (h.number == 3) allocTid = h.value;
+                else if (h.number == 4) alloc.add(h);
+                else if (h.number == 5) freeTid = h.value;
+                else if (h.number == 6) free.add(h);
+            }
+            text.append(String.format(Locale.US, "heap object 0x%x, %d bytes\n", address, size));
+            text.append("allocated by thread ").append(allocTid).append(":\n");
+            appendFrames(text, alloc, 32);
+            if (!free.isEmpty())
+            {
+                text.append("freed by thread ").append(freeTid).append(":\n");
+                appendFrames(text, free, 32);
+            }
+        }
+
         private static void appendThread(StringBuilder text, Field thread, int maxFrames)
         {
             String name = "";
@@ -1052,6 +1097,11 @@ final class Diagnostics
                 else if (t.number == 7) text.append("  note: ").append(t.text()).append('\n');
             }
             text.append("thread ").append(id).append(" \"").append(name).append("\"\n");
+            appendFrames(text, frames, maxFrames);
+        }
+
+        private static void appendFrames(StringBuilder text, List<Field> frames, int maxFrames)
+        {
             int n = 0;
             for (Field frame : frames)
             {

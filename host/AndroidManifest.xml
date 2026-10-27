@@ -11,7 +11,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x403000" android:required="false" />
     <!-- appCategory/isGame: the system (and the maker's game mode on top of it) schedules and cools a declared game as one. -->
+    <!-- gwpAsanMode: the system's sampling memory checker for the native heap (Android 11 and later), every launch. A
+         native write past an allocation, a use after free or a double free of a sampled allocation stops the game at
+         once, and the tombstone names where it was allocated and freed (Diagnostics puts that in the crash report).
+         A tester, 2026-10-27: "Scudo ERROR: corrupted chunk header", found only at a later free of a dead thread's
+         record, by whom it was overwritten unknown. A few percent of memory, no measurable speed. -->
     <application android:allowNativeHeapPointerTagging="false"
+        android:gwpAsanMode="always"
         android:appCategory="game"
         android:isGame="true"
         android:label="Port17"
