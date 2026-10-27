@@ -29,9 +29,24 @@ OBJ=$OUT/obj
 mkdir -p "$LIB" "$OBJ"
 WHAT=${1:-all}
 CXXFLAGS="-std=c++17 -O2 -fPIC -fvisibility=default -static-libstdc++ -Wno-unused-parameter"
-IMGUI_DEFS="-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DIMGUI_USE_WCHAR32 -mms-bitfields"
+# NDEBUG: ImGui's IM_ASSERTs left out, as in the PC's imgui.dll and imgui_freetype.dll (none of their texts are in them;
+# the PC's vma.dll and waylithaudio.dll keep theirs, and so do ours). With them in, an assert the PC never runs ended
+# the game (a tester, 2026-10-27, the mod list of 326 mods: the font atlas's rectangle generation check, see below).
+IMGUI_DEFS="-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DIMGUI_USE_WCHAR32 -mms-bitfields -DNDEBUG"
 
 want() { [ "$WHAT" = all ] || [ "$WHAT" = "$1" ]; }
+
+# ImGui's source with the port's fixes (native/imgui/*.patch) in a copy; downloads/src stays as downloaded.
+#   rect-generation.patch: upstream's fix of 1.92.3 (a309d2d, #8906). A font atlas rectangle slot reused 512 times read
+#   its 10-bit signed Generation back negative: from then on the check failed (the assert above) and, without asserts
+#   as on the PC, the slot's lookups (ImFontAtlasPackGetRectSafe) found nothing. A long list of mod names in several
+#   scripts fills the atlas and re-bakes glyphs often enough to get there in minutes.
+if want imgui || want freetype; then
+  rm -rf "$OBJ/imgui-src"
+  cp -r "$IMGUI" "$OBJ/imgui-src"
+  for p in native/imgui/*.patch; do patch -s -p1 -d "$OBJ/imgui-src" < "$p"; done
+  IMGUI=$OBJ/imgui-src
+fi
 
 if want vma; then
   echo "== vma"
