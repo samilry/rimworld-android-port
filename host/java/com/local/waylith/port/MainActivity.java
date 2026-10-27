@@ -243,7 +243,22 @@ public final class MainActivity extends NativeActivity
         {
             hideSystemBars();
         }
+        // In the trail too, while the app is on the screen: a tester's OPPO opened the recent apps (a swipe up from the bottom
+        // edge) and ended the game there with no onPause before it; the focus went, and then the process. (Only between
+        // onResume and onPause, so the trail's last line after leaving is still the one hooks/Watch.cs looks for.)
+        if (!hasFocus && resumed)
+        {
+            focusLossTrailed = true;
+            Diagnostics.trail(this, "the window lost the focus");
+        }
+        else if (hasFocus && focusLossTrailed)
+        {
+            focusLossTrailed = false;
+            Diagnostics.trail(this, "the window has the focus");
+        }
     }
+
+    private boolean resumed, focusLossTrailed;
 
     // In the trail (logs/import.txt, in the zip of "导出日志"): when the app was away, and when the system wanted memory
     // back, to read a report against (the game's own record, logs/record.txt, shows the gap in its frames).
@@ -251,6 +266,8 @@ public final class MainActivity extends NativeActivity
     protected void onPause()
     {
         super.onPause();
+        resumed = false;
+        focusLossTrailed = false;
         Diagnostics.trail(this, "the app leaves the screen");
     }
 
@@ -258,6 +275,7 @@ public final class MainActivity extends NativeActivity
     protected void onResume()
     {
         super.onResume();
+        resumed = true;
         Diagnostics.trail(this, "the app is on the screen");
         // Copied in another app meanwhile: the listener below hears nothing while this app is away.
         clipboardChanged = true;

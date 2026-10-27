@@ -230,7 +230,44 @@ final class Diagnostics
         }
     }
 
-    private static boolean abnormal(ApplicationExitInfo exit)
+    /** Whether logs/import.txt last saw the process (pid) leave the screen or its window lose the focus (the recent apps). */
+    private static boolean leftTheScreen(Context context, int pid)
+    {
+        String tag = "[" + pid + "] ";
+        boolean away = false;
+        File dir = new File(context.getExternalFilesDir(null), "logs");
+        for (String name : new String[] { "import-prev.txt", "import.txt" })
+        {
+            try
+            {
+                File file = new File(dir, name);
+                if (!file.isFile())
+                {
+                    continue;
+                }
+                for (String line : new String(readAll(new FileInputStream(file), 4 << 20), Charset.forName("UTF-8")).split("\n"))
+                {
+                    if (line.contains(tag))
+                    {
+                        if (line.contains("the app leaves the screen") || line.contains("swiped away") || line.contains("the window lost the focus"))
+                        {
+                            away = true;
+                        }
+                        else if (line.contains("the app is on the screen") || line.contains("the window has the focus") || line.contains("] started"))
+                        {
+                            away = false;
+                        }
+                    }
+                }
+            }
+            catch (Throwable ignored)
+            {
+            }
+        }
+        return away;
+    }
+
+    private static boolean abnormal(Context context, ApplicationExitInfo exit)
     {
         if (exit.getDescription() != null && exit.getDescription().startsWith("exit_self"))
         {
@@ -252,8 +289,11 @@ final class Diagnostics
                 return exit.getImportance() <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_PERCEPTIBLE;
             case ApplicationExitInfo.REASON_SIGNALED:
             case ApplicationExitInfo.REASON_OTHER:
-                // Killed while on the screen: not something the player chose. (In the background the system ends apps all the time.)
-                return exit.getImportance() <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE;
+                // Killed while on the screen: not something the player chose. (In the background the system ends apps all the
+                // time.) The importance alone does not tell: with the game's foreground service it is 125 off the screen too,
+                // and a tester's OPPO reported every swipe-away from the recent apps ("o-stop(40)", a second after the app
+                // left the screen) as a crash. The trail says whether the process had left the screen.
+                return exit.getImportance() <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE && !leftTheScreen(context, exit.getPid());
             default:
                 return false;
         }
@@ -441,7 +481,7 @@ final class Diagnostics
             }
             history.append(describe(exit)).append('\n');
             newestTime = Math.max(newestTime, exit.getTimestamp());
-            if (exit.getTimestamp() > seen && abnormal(exit) && !announced(exit, prefs))
+            if (exit.getTimestamp() > seen && abnormal(context, exit) && !announced(exit, prefs))
             {
                 // A native crash and the Java crash it brings can be recorded in the same second (a tester's Xiaomi): the
                 // native one is reported, its tombstone is where the crash is.
