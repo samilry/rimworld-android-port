@@ -37,7 +37,7 @@ namespace PortMobile
 				harmony.Patch(AccessTools.Method(typeof(GlobalControlsUtility), nameof(GlobalControlsUtility.DrawTpsCounter)), prefix: new HarmonyMethod(typeof(Counters), nameof(DrawTps)));
 				harmony.Patch(AccessTools.Method(typeof(GlobalControlsUtility), nameof(GlobalControlsUtility.DrawFpsCounter)), prefix: new HarmonyMethod(typeof(Counters), nameof(DrawFps)));
 				MethodInfo uiOptions = AccessTools.Method(typeof(Dialog_Options), "DoUIOptions");
-				harmony.Patch(uiOptions, transpiler: new HarmonyMethod(typeof(Counters), nameof(RowAfterClock)), postfix: new HarmonyMethod(typeof(Counters), nameof(RowAtEnd)));
+				harmony.Patch(uiOptions, prefix: new HarmonyMethod(typeof(Counters), nameof(BeforeUIOptions)), transpiler: new HarmonyMethod(typeof(Counters), nameof(RowAfterClock)), postfix: new HarmonyMethod(typeof(Counters), nameof(RowAtEnd)), finalizer: new HarmonyMethod(typeof(Counters), nameof(AfterUIOptions)));
 				if (on)
 				{
 					Show(true);
@@ -82,6 +82,41 @@ namespace PortMobile
 			}
 		}
 
+		// Whether the port's rows were drawn in this call of DoUIOptions, and whether a failure of the page was logged.
+		private static bool rowsDrawn, failureLogged;
+
+		public static void BeforeUIOptions()
+		{
+			rowsDrawn = false;
+		}
+
+		/// <summary>
+		/// Finalizer of DoUIOptions: a page that a mod's patch makes throw part way still ends, with the port's rows. Each
+		/// frame the exception left the window and its scroll view open, and everything after the failing row was gone:
+		/// the camera hole, the input mode and the key wheel could not be switched (a tester, 2026-10-27, with an old copy
+		/// of Shella Backgrounds made for 1.6: "设置没有完全显示"). The game's rows after the failure stay missing, as on a
+		/// PC; the failure is logged once.
+		/// </summary>
+		public static Exception AfterUIOptions(Exception __exception, Listing_Standard listing)
+		{
+			if (__exception == null)
+			{
+				return null;
+			}
+			if (!failureLogged)
+			{
+				failureLogged = true;
+				Log.Error("The interface page of the options threw part way (a mod's patch of Dialog_Options.DoUIOptions); the rest of the page is left out, the port's options are shown after what was drawn: " + __exception);
+			}
+			if (!rowsDrawn && listing != null)
+			{
+				GUI.color = Color.white;
+				Text.Anchor = TextAnchor.UpperLeft;
+				OptionRow(listing);
+			}
+			return null;
+		}
+
 		/// <summary>Postfix of DoUIOptions: the row at the end of the page, where it could not go under the clock.</summary>
 		public static void RowAtEnd(Listing_Standard listing)
 		{
@@ -93,6 +128,7 @@ namespace PortMobile
 
 		public static void OptionRow(Listing_Standard listing)
 		{
+			rowsDrawn = true;
 			try
 			{
 				bool check = on;
