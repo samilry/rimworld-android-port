@@ -753,8 +753,12 @@ namespace PortMobile
 			for (int i = 0; i < windows.Count; i++)
 			{
 				Window window = windows[i];
-				// At leftX, or further right when it was moved with the architect's menu off the camera's hole (Cutout).
-				if (window is ImmediateWindow && (window.ID < OwnWindows || window.ID > OwnWindows + 9) && window.windowRect.x > leftX - 1f && window.windowRect.x < leftX + 400f && Mathf.Abs(window.windowRect.yMax - bottomY) < 1f)
+				// At leftX, or further right when it was moved with the architect's menu off the camera's hole (Cutout). Not the
+				// buttons' own window: the stack holds an immediate window under the negative of its id, and until 2026-10-27
+				// the buttons took their own window of the last frame for the tool's, moved 230 units right each frame and back
+				// (a tester's video: Ascension Megacorp's air-dropped buildings, the buttons jumping and flickering).
+				int id = -window.ID;
+				if (window is ImmediateWindow && (id < OwnWindows || id > OwnWindows + 9) && window.windowRect.x > leftX - 1f && window.windowRect.x < leftX + 400f && Mathf.Abs(window.windowRect.yMax - bottomY) < 1f)
 				{
 					x = Mathf.Max(x, window.windowRect.xMax + Gap);
 				}
