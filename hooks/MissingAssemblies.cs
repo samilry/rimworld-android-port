@@ -20,6 +20,11 @@ namespace PortHooks
 	/// references the runtime follows itself: an explicit Assembly.Load, Type.GetType or LoadFromAssemblyName fails as
 	/// before. Stand-ins are left out of AppDomain.GetAssemblies, so a mod that looks for another mod's assembly there
 	/// still finds none.
+	/// Stand-ins live in a load context of their own, not in the default one, so the name stays free there: a mod that
+	/// loads the real assembly later (RimUnity loads Nivarian_Race from a .rimunity file after NivarianMechCompat had
+	/// asked for it) gets it, as on the PC. Until 2026-10-27 15:30 the stand-in was in the default context, that load
+	/// failed ("The located assembly's manifest definition does not match"), the race's types were missing and the game's
+	/// load gave up and switched all mods off. mobile.txt standInTest=1 tries this at the main menu (Test).
 	/// </summary>
 	public static class MissingAssemblies
 	{
@@ -27,6 +32,7 @@ namespace PortHooks
 		private static readonly Dictionary<string, Assembly> standIns = new Dictionary<string, Assembly>(StringComparer.OrdinalIgnoreCase);
 		private static readonly HashSet<Assembly> hidden = new HashSet<Assembly>();
 		[ThreadStatic] private static bool making;
+		private static readonly Lazy<AssemblyLoadContext> standInContext = new Lazy<AssemblyLoadContext>(() => new AssemblyLoadContext("port17.standins"));
 
 		public static void Start(Harmony harmony)
 		{
@@ -134,7 +140,7 @@ namespace PortHooks
 				var bytes = new MemoryStream();
 				builder.Save(bytes);
 				bytes.Position = 0;
-				return AssemblyLoadContext.Default.LoadFromStream(bytes);
+				return standInContext.Value.LoadFromStream(bytes);
 			}
 			catch (Exception e)
 			{
@@ -144,6 +150,106 @@ namespace PortHooks
 			finally
 			{
 				making = false;
+			}
+		}
+
+		/// <summary>
+		/// mobile.txt standInTest=1, at the main menu: a caller of port17.standintest.lib (not loaded yet) is called (a
+		/// stand-in, TypeLoadException), then the library is loaded with Assembly.LoadFrom (must work), then a second
+		/// caller and the first once more (whether references followed after the real load find it).
+		/// </summary>
+		public static void Test()
+		{
+			if (Textures.Setting("standInTest") != "1")
+			{
+				return;
+			}
+			try
+			{
+				byte[] lib = Library();
+				// The callers need the library's method when they are made: from a context of its own, let go before they run.
+				byte[] caller1, caller2;
+				WeakReference scratch = MakeCallers(lib, out caller1, out caller2);
+				for (int i = 0; i < 20 && scratch.IsAlive; i++)
+				{
+					GC.Collect();
+					GC.WaitForPendingFinalizers();
+				}
+				bool left = AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "port17.standintest.lib");
+				Console.WriteLine("[port17] stand-in test: scratch context " + (scratch.IsAlive ? "still alive" : "gone") + (left ? ", the library is still listed" : ""));
+				Assembly first = AssemblyLoadContext.Default.LoadFromStream(new MemoryStream(caller1));
+				Console.WriteLine("[port17] stand-in test: first caller before the library: " + Run(first));
+				string path = Path.Combine(Path.GetTempPath(), "port17.standintest.lib.dll");
+				File.WriteAllBytes(path, lib);
+				try
+				{
+					Assembly real = Assembly.LoadFrom(path);
+					Console.WriteLine("[port17] stand-in test: Assembly.LoadFrom of the library: loaded (" + AssemblyLoadContext.GetLoadContext(real)?.Name + ")");
+				}
+				catch (Exception e)
+				{
+					Console.WriteLine("[port17] stand-in test: Assembly.LoadFrom of the library: " + e.GetType().Name + ": " + e.Message);
+				}
+				Assembly second = AssemblyLoadContext.Default.LoadFromStream(new MemoryStream(caller2));
+				Console.WriteLine("[port17] stand-in test: second caller after the library: " + Run(second));
+				Console.WriteLine("[port17] stand-in test: first caller again: " + Run(first));
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[port17] stand-in test failed: " + e);
+			}
+		}
+
+		private static byte[] Library()
+		{
+			var builder = new PersistedAssemblyBuilder(new AssemblyName("port17.standintest.lib") { Version = new Version(1, 0, 0, 0) }, typeof(object).Assembly);
+			TypeBuilder type = builder.DefineDynamicModule("port17.standintest.lib").DefineType("Port17StandInTest.Lib", TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
+			ILGenerator il = type.DefineMethod("Value", MethodAttributes.Public | MethodAttributes.Static, typeof(int), Type.EmptyTypes).GetILGenerator();
+			il.Emit(OpCodes.Ldc_I4, 42);
+			il.Emit(OpCodes.Ret);
+			type.CreateType();
+			var bytes = new MemoryStream();
+			builder.Save(bytes);
+			return bytes.ToArray();
+		}
+
+		[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+		private static WeakReference MakeCallers(byte[] lib, out byte[] caller1, out byte[] caller2)
+		{
+			var context = new AssemblyLoadContext("port17.standintest.scratch", true);
+			MethodInfo value = context.LoadFromStream(new MemoryStream(lib)).GetType("Port17StandInTest.Lib").GetMethod("Value");
+			caller1 = Caller("port17.standintest.caller1", value);
+			caller2 = Caller("port17.standintest.caller2", value);
+			context.Unload();
+			return new WeakReference(context);
+		}
+
+		private static byte[] Caller(string name, MethodInfo value)
+		{
+			var builder = new PersistedAssemblyBuilder(new AssemblyName(name), typeof(object).Assembly);
+			TypeBuilder type = builder.DefineDynamicModule(name).DefineType("Port17StandInTest.Caller", TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
+			ILGenerator il = type.DefineMethod("Call", MethodAttributes.Public | MethodAttributes.Static, typeof(int), Type.EmptyTypes).GetILGenerator();
+			il.Emit(OpCodes.Call, value);
+			il.Emit(OpCodes.Ret);
+			type.CreateType();
+			var bytes = new MemoryStream();
+			builder.Save(bytes);
+			return bytes.ToArray();
+		}
+
+		private static string Run(Assembly caller)
+		{
+			try
+			{
+				return "returned " + caller.GetType("Port17StandInTest.Caller").GetMethod("Call").Invoke(null, null);
+			}
+			catch (TargetInvocationException e) when (e.InnerException != null)
+			{
+				return e.InnerException.GetType().Name + ": " + e.InnerException.Message;
+			}
+			catch (Exception e)
+			{
+				return e.GetType().Name + ": " + e.Message;
 			}
 		}
 

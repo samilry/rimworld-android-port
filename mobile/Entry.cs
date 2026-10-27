@@ -310,6 +310,8 @@ namespace PortMobile
 				AndroidVideo.Test();
 				ParityTest();
 				KtxTest.Run();
+				PortHooks.MissingAssemblies.Test();
+				ContentCheck.Run();
 				ClipboardTest(true);
 				// mobile.txt stallTest=1: the main thread busy for 15 s, for the watch's stall lines (logs/watch.txt).
 				if (Settings.Get("stallTest", 0) == 1)

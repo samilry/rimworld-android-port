@@ -461,6 +461,7 @@ internal static class StartupHook
 		PortHooks.AndroidFonts.Start();
 		PortHooks.WindowsLibraries.Start();
 		PortHooks.MissingAssemblies.Start(new HarmonyLib.Harmony("port17.missingassemblies"));
+		PortHooks.LoadRecovery.Start();
 		Console.WriteLine("[port17] startup hook installed (Unity assembly names resolve to UnityStubs)");
 		PortDiag.StartIfRequested();
 	}

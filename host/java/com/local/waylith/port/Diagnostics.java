@@ -722,40 +722,59 @@ final class Diagnostics
         {
             return;
         }
-        long limit = 32L << 20;
+        // A file over 32 MB keeps its first 8 MB and its last 24: how a start went (the start of the game's log) and how it
+        // ended. (Until 2026-10-27 only the end: a log that one error a frame had grown to 372 MB lost how its start went.)
+        long limit = 32L << 20, head = 8L << 20;
+        long length = file.length();
+        long skip = Math.max(0, length - limit);
         FileInputStream in = new FileInputStream(file);
         try
         {
-            long skip = Math.max(0, file.length() - limit);
-            if (skip > 0)
-            {
-                in.skip(skip);
-            }
             zip.putNextEntry(new ZipEntry(name));
+            ByteArrayOutputStream line = new ByteArrayOutputStream();
             if (skip > 0)
             {
-                zip.write(("（前 " + (skip >> 20) + " MB 省略）\n").getBytes(Charset.forName("UTF-8")));
-            }
-            ByteArrayOutputStream line = new ByteArrayOutputStream();
-            byte[] buffer = new byte[65536];
-            int n;
-            while ((n = in.read(buffer)) > 0)
-            {
-                for (int i = 0; i < n; i++)
+                copyMasked(zip, in, head, line);
+                writeMasked(zip, line);
+                long left = length - head - (limit - head);
+                long skipped = 0;
+                while (skipped < left)
                 {
-                    line.write(buffer[i]);
-                    if (buffer[i] == '\n' || line.size() > 65536)
+                    long n = in.skip(left - skipped);
+                    if (n <= 0)
                     {
-                        writeMasked(zip, line);
+                        break;
                     }
+                    skipped += n;
                 }
+                zip.write(("\n（中间 " + (skipped >> 20) + " MB 省略）\n").getBytes(Charset.forName("UTF-8")));
             }
+            copyMasked(zip, in, Long.MAX_VALUE, line);
             writeMasked(zip, line);
             zip.closeEntry();
         }
         finally
         {
             in.close();
+        }
+    }
+
+    /** Up to count bytes of in, line by line through writeMasked (a line left over stays in line). */
+    private static void copyMasked(ZipOutputStream zip, FileInputStream in, long count, ByteArrayOutputStream line) throws IOException
+    {
+        byte[] buffer = new byte[65536];
+        int n;
+        while (count > 0 && (n = in.read(buffer, 0, (int)Math.min(buffer.length, count))) > 0)
+        {
+            count -= n;
+            for (int i = 0; i < n; i++)
+            {
+                line.write(buffer[i]);
+                if (buffer[i] == '\n' || line.size() > 65536)
+                {
+                    writeMasked(zip, line);
+                }
+            }
         }
     }
 
