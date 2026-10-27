@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using UnityEngine;
 using Verse;
+using Verse.Sound;
 
 namespace PortMobile
 {
@@ -27,7 +28,12 @@ namespace PortMobile
 				{
 					Count(mod.GetContentHolder<Texture2D>()?.contentList, out int t, out int te);
 					Count(mod.GetContentHolder<AudioClip>()?.contentList, out int s, out int se);
-					if (mod.IsOfficialMod)
+					if (mod.IsCoreMod)
+					{
+						// Core's own holders stay empty in 1.7: its textures and sounds come from the game's asset pack, as base resources.
+						Console.WriteLine("[mobile] content: Core (" + mod.RootDir + "), from the game's asset pack: " + BaseResources());
+					}
+					else if (mod.IsOfficialMod)
 					{
 						Console.WriteLine("[mobile] content: " + mod.Name + " (" + mod.RootDir + "): " + t + " textures" + (te > 0 ? " (" + te + " empty)" : "") + ", " + s + " sounds" + (se > 0 ? " (" + se + " empty)" : ""));
 					}
@@ -50,6 +56,35 @@ namespace PortMobile
 			{
 				Console.WriteLine("[mobile] content check failed: " + e.GetType().Name + ": " + e.Message);
 			}
+		}
+
+		/// <summary>A few of Core's textures (the folders the tablet's bad starts could not find) and its sounds' grains.</summary>
+		private static string BaseResources()
+		{
+			var parts = new List<string>();
+			foreach (string folder in new[] { "Things/Item/Drug/Beer", "Things/Item/Resource/WoodLog", "Things/Building/Furniture/Bed" })
+			{
+				int found = ContentFinder<Texture2D>.GetAllInFolder(folder).Count(x => x != null && x != BaseContent.BadTex);
+				parts.Add(folder + " " + found);
+			}
+			int defs = 0, silent = 0;
+			foreach (SoundDef sound in DefDatabase<SoundDef>.AllDefsListForReading)
+			{
+				if (sound.modContentPack == null || !sound.modContentPack.IsCoreMod || sound.subSounds == null)
+				{
+					continue;
+				}
+				foreach (SubSoundDef sub in sound.subSounds)
+				{
+					defs++;
+					if (sub.grains != null && sub.grains.Count > 0 && !sub.grains.Any(g => g.GetResolvedGrains().Any()))
+					{
+						silent++;
+					}
+				}
+			}
+			parts.Add(defs + " sound parts, " + silent + " without a sound file");
+			return string.Join(", ", parts);
 		}
 
 		private static void Count(IDictionary list, out int all, out int empty)
@@ -86,6 +121,8 @@ namespace PortMobile
 				int shown = (pack?.GetType().GetProperty("ContentHashes")?.GetValue(pack) as ICollection)?.Count ?? -1;
 				parts.Add((root.StartsWith(game, StringComparison.Ordinal) ? root.Substring(game.Length).TrimStart('/') : root) + " " + shown);
 			}
+			// The game's own pack (not below Mods) first: the mounts are ordered longest root first, which puts it last.
+			parts = parts.OrderBy(p => p.StartsWith("Mods/", StringComparison.Ordinal) ? 1 : 0).ToList();
 			return parts.Count + ": " + string.Join(", ", parts.Take(12)) + (parts.Count > 12 ? ", …" : "");
 		}
 	}
