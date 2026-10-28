@@ -1100,7 +1100,9 @@ final class Diagnostics
             {
                 text.append(String.format(Locale.US, "abort message's address 0x%x in: ", abortAddress)).append(mappingOf(abortAddress)).append('\n');
             }
-            text.append("crashing thread: ").append(crashTid).append("\n\n");
+            // Its stack's size: a stack overflow (EEPolicy::HandleFatalStackOverflow) on a thread whose stack is smaller
+            // than the PC's 1.5 MB is the port's (two of 2026-10-28: the loading thread with bionic's 1 MB).
+            text.append("crashing thread: ").append(crashTid).append(", its stack ").append(stackOf(crashTid)).append("\n\n");
             // The crashing thread first, then the others (name and backtrace).
             for (int pass = 0; pass < 2; pass++)
             {
@@ -1244,6 +1246,28 @@ final class Diagnostics
                 }
             }
             return mappings.isEmpty() ? "(no mappings in the tombstone)" : "no mapping (a pointer to nowhere)";
+        }
+
+        /** "1008 KB": the writable part of a thread's "[anon:stack_and_tls:TID]" mapping (bionic's guard page beside it is not). */
+        private static String stackOf(long tid)
+        {
+            String want = "[anon:stack_and_tls:" + tid + "]";
+            long bytes = 0;
+            for (Field mapping : mappings)
+            {
+                long begin = 0, end = 0;
+                boolean write = false;
+                String name = "";
+                for (Field m : sub(mapping))
+                {
+                    if (m.number == 1) begin = m.value;
+                    else if (m.number == 2) end = m.value;
+                    else if (m.number == 5) write = m.value != 0;
+                    else if (m.number == 7) name = m.text();
+                }
+                if (write && name.equals(want)) bytes += end - begin;
+            }
+            return bytes == 0 ? "not among the mappings" : (bytes >> 10) + " KB";
         }
 
         private static void appendFrames(StringBuilder text, List<Field> frames, int maxFrames)

@@ -104,6 +104,37 @@ static void* stdio_pump(void* arg)
     return NULL;
 }
 
+// The runtime writes its last words to logcat, not to stderr: on Android its fatal errors go through
+// __android_log_write (tag DOTNET, error priority): "Stack overflow.", "Repeated 1000 times:", the frames, "Fatal error.",
+// an unhandled exception. A tester's vivo lets an app read nothing of logcat from the run before, so two stack overflows
+// of 2026-10-28 left no trace. Since Android 11 liblog lets a process see its own messages (__android_log_set_logger):
+// DOTNET's errors are copied to stderr (logs/stderr.txt, kept as stderr-1.txt by the next start) and still reach logcat.
+// Managed Console.Error goes the same way; the engine logs at info priority, which is not copied. At most 4 MB a run.
+typedef void (*port_logger)(const struct __android_log_message*);
+static port_logger logd_logger;
+static volatile int copied_errors;
+
+static void copy_runtime_errors(const struct __android_log_message* message)
+{
+    if (logd_logger) logd_logger(message);
+    if (message->priority < ANDROID_LOG_ERROR || !message->tag || strcmp(message->tag, "DOTNET") != 0 || !message->message)
+    {
+        return;
+    }
+    size_t len = strlen(message->message);
+    if (__sync_add_and_fetch(&copied_errors, (int)len + 1) > (4 << 20)) return;
+    write(2, message->message, len);
+    if (len == 0 || message->message[len - 1] != '\n') write(2, "\n", 1);
+}
+
+static void copy_runtime_log()
+{
+    void (*set_logger)(port_logger) = (void (*)(port_logger))dlsym(RTLD_DEFAULT, "__android_log_set_logger");
+    logd_logger = (port_logger)dlsym(RTLD_DEFAULT, "__android_log_logd_logger");
+    if (set_logger && logd_logger) set_logger(copy_runtime_errors);
+    else fprintf(stderr, "game: the runtime's errors stay in logcat (no __android_log_set_logger before Android 11)\n");
+}
+
 // stdout goes to logcat through the pump; stderr goes straight to a file as well, because the runtime's last words
 // before it aborts the process (an unhandled exception, a fatal error) would otherwise be lost with the process.
 static void redirect_stdio(const char* ext)
@@ -134,6 +165,7 @@ static void redirect_stdio(const char* ext)
     {
         dup2(fileno(f), 2);
         setvbuf(stderr, NULL, _IONBF, 0);
+        copy_runtime_log();
     }
     else
     {
@@ -582,6 +614,13 @@ static void* run_runtime(void* arg)
     // Backgrounds) does List.Add through a wrong reference in the options window: on the PC the window logs an error, on
     // a tester's vivo the game closed every time. Tried with mobile.txt avTest=1 (Entry.AccessViolationTest).
     setenv("DOTNET_legacyCorruptedStateExceptionsPolicy", "1", 1);
+    // The stack of a thread the game or a mod starts without giving a size (new Thread(...)): the loading thread of a
+    // long event (LongEventHandler, loading a save), the XML loader's threads, the thread pool's. The runtime leaves
+    // them bionic's 1 MB; on the PC they get RimWorld.exe's 1.5 MB (the PE header's reserve applies to every such
+    // thread), on Linux 8 MB. A tester's vivo with 148 mods overflowed the loading thread's 1008 KB in World.FinalizeInit
+    // (2026-10-28 040232; the main thread, 16 MB since 10-27, was waiting). 16 MB as the main thread: address space only.
+    // The runtime's name is Thread_DefaultStackSize (DefaultStackSize alone is not read).
+    setenv("DOTNET_Thread_DefaultStackSize", "0x1000000", 1);
     {
         const char* lines[32];
         static char storage[4096];

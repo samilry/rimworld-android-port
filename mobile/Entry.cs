@@ -154,6 +154,33 @@ namespace PortMobile
 		}
 
 		/// <summary>
+		/// mobile.txt stackTest=1: on a thread started without a size, as LongEventHandler starts the loading thread, a
+		/// recursion 4 MB deep (1 KB a frame); the log says how deep it went. Bionic's 1 MB ended the process here before
+		/// host.c gave such threads 16 MB (DOTNET_Thread_DefaultStackSize). stackTest=2 recurses until the stack runs out,
+		/// for the crash report (exit.txt "its stack", stderr-1.txt's "Stack overflow" lines in summary.txt).
+		/// </summary>
+		private static void StackTest()
+		{
+			int mode = Settings.Get("stackTest", 0);
+			if (mode != 1 && mode != 2)
+			{
+				return;
+			}
+			int depth = 0;
+			var thread = new System.Threading.Thread(() => depth = Recurse(mode == 1 ? 4096 : int.MaxValue));
+			thread.Start();
+			thread.Join();
+			Console.WriteLine("[mobile] stack test: a new thread went " + depth + " KB deep");
+		}
+
+		private static unsafe int Recurse(int left)
+		{
+			byte* frame = stackalloc byte[1000];
+			frame[0] = (byte)left;
+			return left <= 1 ? frame[0] & 1 : 1 + Recurse(left - 1) + (frame[999] & 0);
+		}
+
+		/// <summary>
 		/// mobile.txt corelibTest=1: the four WaylithClr switches the phone's CoreLib now has as Ludeon's (patch/Patch.cs
 		/// AddLudeonSwitches), each against what the PC gives. One line each in the log, "ok" or what came instead.
 		/// </summary>
@@ -306,6 +333,7 @@ namespace PortMobile
 				Console.WriteLine("[mobile] of that: " + WhereTheStartWent());
 				Temporaries.Test();
 				AccessViolationTest();
+				StackTest();
 				CoreLibTest();
 				AndroidVideo.Test();
 				ParityTest();
