@@ -2176,6 +2176,13 @@ public final class MainActivity extends NativeActivity
                 {
                     imm.hideSoftInputFromWindow(textInput.getWindowToken(), 0);
                     textInput.setActive(false);
+                    // A view that loses the focus to nothing stays the input method's editor (Android keeps the last
+                    // served view while no other view takes the focus): the input method went on taking the hardware
+                    // keyboard's letters for pinyin after the field had let go, and the game got none (a tester,
+                    // 2026-10-28: after any text field, every letter brought up the floating keyboard; Ctrl or Alt with
+                    // a letter worked; leaving the game and coming back mended it). Started again now, the input method
+                    // finds no editor (onCreateInputConnection gives none), as after the window takes the focus again.
+                    imm.restartInput(textInput);
                 }
             }
         });

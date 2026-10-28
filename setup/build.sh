@@ -12,8 +12,11 @@ mkdir -p build/setup
   echo "-out:build/setup/PortSetup.dll"
   for f in System.Runtime System.Runtime.Loader System.Console System.Collections System.Linq System.Threading System.Security.Cryptography System.Reflection.Primitives System.Private.CoreLib netstandard; do echo "-r:\"$(cygpath -w "$RT/$f.dll")\""; done
   echo "-r:\"$(cygpath -w "$CECIL/Mono.Cecil.dll")\""
+  # Patch.cs uses Rocks (the CoreLib switches, 2026-10-27): without it the build failed and the APKs kept the PortSetup of
+  # 10-22, without the rewrites made since (ModLister.RebuildModList through ReadableModFolders).
+  echo "-r:\"$(cygpath -w "$CECIL/Mono.Cecil.Rocks.dll")\""
   echo "setup/Setup.cs patch/Patch.cs patch/ModPrep.cs"
 } > build/setup.rsp
 dotnet /d/Harness/rimworld/tools/roslyn/pkg/tasks/netcore/bincore/csc.dll @build/setup.rsp
-cp "$CECIL/Mono.Cecil.dll" build/setup/
+cp "$CECIL/Mono.Cecil.dll" "$CECIL/Mono.Cecil.Rocks.dll" build/setup/
 ls -la build/setup/PortSetup.dll | awk '{print "PortSetup.dll", $5, "bytes"}'

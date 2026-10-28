@@ -38,13 +38,28 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 		}
 	}
 
-	protected override void Dispose(bool disposing)
+	/// <summary>How many assemblies are held (patch.dll --mods-import reports it).</summary>
+	public int Cached => resolved.Count;
+
+	/// <summary>
+	/// Lets go of every assembly read, once a mod is prepared (PrepareFolder); the next mod reads what it refers to again.
+	/// Kept, each was a whole file in memory and as much of its model as the checks had touched, and the checks of each
+	/// further mod touched more: a tester's import of 107 mods held 4.5 GB until it ended (2026-10-28, a vivo with 16 GB:
+	/// the collector stopped the game for three seconds every ten, then the system killed it). patch.dll --mods-import
+	/// over 85 Workshop mods: 4.5 GB held and 56 s kept; next to nothing and 39 s let go after each mod.
+	/// </summary>
+	public void Forget()
 	{
 		foreach (AssemblyDefinition assembly in resolved.Values)
 		{
 			assembly.Dispose();
 		}
 		resolved.Clear();
+	}
+
+	protected override void Dispose(bool disposing)
+	{
+		Forget();
 		base.Dispose(disposing);
 	}
 }
@@ -302,6 +317,18 @@ internal static class ModPrep
 
 	/// <summary>Prepares every assembly below the folder in place and stamps the folder.</summary>
 	public static Result PrepareFolder(string root, InMemoryResolver resolver, Action<string> log)
+	{
+		try
+		{
+			return PrepareFolderCore(root, resolver, log);
+		}
+		finally
+		{
+			resolver.Forget();
+		}
+	}
+
+	private static Result PrepareFolderCore(string root, InMemoryResolver resolver, Action<string> log)
 	{
 		var result = new Result();
 		Dictionary<string, (int Original, int Prepared)> before = ReadOriginals(root);

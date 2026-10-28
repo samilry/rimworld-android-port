@@ -299,8 +299,45 @@ namespace PortHooks
 			}
 		}
 
+		/// <summary>
+		/// Engines before 1.7.4990 have no GpuCrashDiagnostics: the engine's own crash report says it instead
+		/// ("Vulkan call to vkDeviceWaitIdle failed with error: VK_ERROR_DEVICE_LOST", Crashes/crash-*.txt). A tester's vivo
+		/// on 1.7.4976 (Adreno 830) lost the device four times in four days, each time just as a new game's map came up,
+		/// and never got the processor path (2026-10-28). Such a report of the last 7 days, newer than the note, is noted.
+		/// </summary>
+		private static void NoteLostGpuFromCrashReports()
+		{
+			try
+			{
+				string home = Environment.GetEnvironmentVariable("HOME");
+				string crashes = string.IsNullOrEmpty(home) ? null : Path.Combine(home, "unity3d", "Ludeon Studios", "RimWorld by Ludeon Studios", "Crashes");
+				if (crashes == null || !Directory.Exists(crashes))
+				{
+					return;
+				}
+				DateTime since = DateTime.UtcNow - TimeSpan.FromDays(7);
+				if (File.Exists(GpuLostNote) && File.GetLastWriteTimeUtc(GpuLostNote) > since)
+				{
+					since = File.GetLastWriteTimeUtc(GpuLostNote);
+				}
+				foreach (string report in Directory.GetFiles(crashes, "crash-*.txt"))
+				{
+					if (File.GetLastWriteTimeUtc(report) > since && new FileInfo(report).Length < (1 << 20) && File.ReadAllText(report).Contains("VK_ERROR_DEVICE_LOST"))
+					{
+						NoteDeviceLost("the engine's crash report " + Path.GetFileName(report));
+						return;
+					}
+				}
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[port17] device lost: crash reports not read: " + e.Message);
+			}
+		}
+
 		private static void WatchDeviceLost()
 		{
+			NoteLostGpuFromCrashReports();
 			try
 			{
 				System.Reflection.MethodInfo capture = AccessTools.Method(AccessTools.TypeByName("Waylith.Graphics.GpuCrashDiagnostics"), "CaptureDeviceLost", new[] { typeof(string) });

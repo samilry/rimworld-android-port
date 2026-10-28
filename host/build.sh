@@ -107,7 +107,7 @@ if [ "$PAYLOAD" = port ]; then
   for f in PortHooks.dll PortMobile.dll 0Harmony.dll Mono.Cecil.dll ModRules.txt; do cp "build/game/$f" "$P/game/"; done
   cp -r build/workshop/. "$P/game/workshop/"
   printf -- "-NoCrashDialog\n-Verbose\n" > "$P/game/args.txt"
-  cp build/setup/PortSetup.dll build/setup/Mono.Cecil.dll "$P/setup/"
+  cp build/setup/PortSetup.dll build/setup/Mono.Cecil.dll build/setup/Mono.Cecil.Rocks.dll "$P/setup/"
   ls build/forwarders | sed 's/\.dll$//' > "$P/setup/forwarders.txt"
   printf "%s\n%s\n" "$(cat build/setup/PortSetup.dll build/game/PortHooks.dll | md5sum | cut -c1-16)" "$(head -1 build/game/Version.txt | cut -d' ' -f1)" > "$P/setup/version.txt"
   BYTES=$(du -sb "$P" | cut -f1)

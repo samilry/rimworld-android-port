@@ -127,6 +127,10 @@ internal static class Patch
 		{
 			return PatchModAssemblies(args[1]);
 		}
+		if (args[0] == "--mods-import")
+		{
+			return PrepareLikeImport(args[1]);
+		}
 		if (args[0] == "--mods-version")
 		{
 			Console.WriteLine(ModPrep.RulesVersion);
@@ -391,6 +395,28 @@ internal static class Patch
 		{
 			Console.WriteLine(ModPrep.PrepareFolder(root, resolver, Console.WriteLine));
 		}
+		return 0;
+	}
+
+	/// <summary>
+	/// Every mod folder under a folder prepared in turn with one resolver, as the phone's mod import does it
+	/// (mobile/ModImport.cs Install: PortPlatform.PrepareModFolder per mod, ReleaseModPrep at the end), with the live
+	/// heap after each: for measuring what an import of many mods holds. Changes the folders' assemblies in place: copies.
+	/// </summary>
+	private static int PrepareLikeImport(string folder)
+	{
+		var watch = System.Diagnostics.Stopwatch.StartNew();
+		using (InMemoryResolver resolver = ModPrep.NewResolver(new[] { "build/game", "build/runtime", "dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0" }))
+		{
+			int n = 0;
+			foreach (string root in Directory.GetDirectories(folder).OrderBy(d => d, StringComparer.Ordinal))
+			{
+				ModPrep.Result result = ModPrep.PrepareFolder(root, resolver, line => { });
+				n++;
+				Console.WriteLine(n + " " + Path.GetFileName(root) + ": " + result.Files + " files; live heap " + (GC.GetTotalMemory(true) >> 20) + " MiB, " + resolver.Cached + " assemblies held, " + watch.ElapsedMilliseconds + " ms");
+			}
+		}
+		Console.WriteLine("released: live heap " + (GC.GetTotalMemory(true) >> 20) + " MiB");
 		return 0;
 	}
 
