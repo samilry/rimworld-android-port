@@ -108,6 +108,10 @@ static void* stdio_pump(void* arg)
 // before it aborts the process (an unhandled exception, a fatal error) would otherwise be lost with the process.
 static void redirect_stdio(const char* ext)
 {
+    // Once a process (should the activity start again in it, its stderr.txt is not cut short or rotated away).
+    static int done;
+    if (done) return;
+    done = 1;
     int fds[2];
     if (pipe(fds) != 0) return;
     dup2(fds[1], 1);
@@ -120,6 +124,11 @@ static void redirect_stdio(const char* ext)
     snprintf(dir, sizeof dir, "%s/logs", ext);
     mkdir(dir, 0775);
     snprintf(path, sizeof path, "%s/stderr.txt", dir);
+    // The run before keeps its file as stderr-1.txt: a report is exported after the restart, and on phones that let an
+    // app read nothing of logcat (a tester's vivo) the runtime's report of a stack overflow is nowhere else.
+    char prev[1100];
+    snprintf(prev, sizeof prev, "%s/stderr-1.txt", dir);
+    rename(path, prev);
     FILE* f = fopen(path, "w");
     if (f)
     {

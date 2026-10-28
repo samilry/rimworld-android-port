@@ -24,7 +24,10 @@ namespace PortHooks
 	/// loads the real assembly later (RimUnity loads Nivarian_Race from a .rimunity file after NivarianMechCompat had
 	/// asked for it) gets it, as on the PC. Until 2026-10-27 15:30 the stand-in was in the default context, that load
 	/// failed ("The located assembly's manifest definition does not match"), the race's types were missing and the game's
-	/// load gave up and switched all mods off. mobile.txt standInTest=1 tries this at the main menu (Test).
+	/// load gave up and switched all mods off. Until 2026-10-28 a mod's own assembly loaded after such a stand-in was
+	/// taken for already loaded (PortPlatform.LoadModAssembly looked in AppDomain.GetAssemblies, which listed stand-ins
+	/// while the mods loaded): a vivo tester's RimTalk, asked for by an add-on sorted before it, never loaded. mobile.txt
+	/// standInTest=1 tries this at the start (EarlyTest) and at the main menu (Test).
 	/// </summary>
 	public static class MissingAssemblies
 	{
@@ -39,16 +42,25 @@ namespace PortHooks
 			try
 			{
 				MethodInfo resolve = typeof(AssemblyLoadContext).GetMethod("OnAssemblyResolve", BindingFlags.NonPublic | BindingFlags.Static);
-				// AppDomain.GetAssemblies only calls this (and may be inlined past a patch of its own).
+				// AppDomain.GetAssemblies only calls this, but its precompiled (ReadyToRun) code has it inlined: until the
+				// method is compiled again at the main menu, a stand-in made while the mods load was listed (measured with
+				// standInTest=1, 2026-10-28). Both are patched: the public method for every caller, this one for the
+				// framework's own inlined copies of the public one.
 				MethodInfo list = typeof(AssemblyLoadContext).GetMethod("GetLoadedAssemblies", BindingFlags.NonPublic | BindingFlags.Static, null, Type.EmptyTypes, null);
-				if (resolve == null || list == null)
+				MethodInfo domainList = typeof(AppDomain).GetMethod("GetAssemblies", Type.EmptyTypes);
+				if (resolve == null || list == null || domainList == null)
 				{
 					Console.WriteLine("[port17] missing assemblies: this runtime's resolver is not as expected, left as it is");
 					return;
 				}
 				harmony.Patch(resolve, postfix: new HarmonyMethod(typeof(MissingAssemblies), nameof(AfterResolve)));
 				harmony.Patch(list, postfix: new HarmonyMethod(typeof(MissingAssemblies), nameof(HideStandIns)));
+				harmony.Patch(domainList, postfix: new HarmonyMethod(typeof(MissingAssemblies), nameof(HideStandIns)));
 				Console.WriteLine("[port17] missing assemblies: references to one fail with TypeLoadException, as on the PC");
+				if (Textures.Setting("standInTest") == "1")
+				{
+					EarlyTest();
+				}
 			}
 			catch (Exception e)
 			{
@@ -155,7 +167,7 @@ namespace PortHooks
 
 		/// <summary>
 		/// mobile.txt standInTest=1, at the main menu: a caller of port17.standintest.lib (not loaded yet) is called (a
-		/// stand-in, TypeLoadException), then the library is loaded with Assembly.LoadFrom (must work), then a second
+		/// stand-in, TypeLoadException), then the library is loaded as a mod's assembly is (must load the real one), then a second
 		/// caller and the first once more (whether references followed after the real load find it).
 		/// </summary>
 		public static void Test()
@@ -179,16 +191,19 @@ namespace PortHooks
 				Console.WriteLine("[port17] stand-in test: scratch context " + (scratch.IsAlive ? "still alive" : "gone") + (left ? ", the library is still listed" : ""));
 				Assembly first = AssemblyLoadContext.Default.LoadFromStream(new MemoryStream(caller1));
 				Console.WriteLine("[port17] stand-in test: first caller before the library: " + Run(first));
+				bool listed = AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "port17.standintest.lib");
+				Console.WriteLine("[port17] stand-in test: AppDomain.GetAssemblies " + (listed ? "lists the stand-in" : "does not list the stand-in"));
 				string path = Path.Combine(Path.GetTempPath(), "port17.standintest.lib.dll");
 				File.WriteAllBytes(path, lib);
 				try
 				{
-					Assembly real = Assembly.LoadFrom(path);
-					Console.WriteLine("[port17] stand-in test: Assembly.LoadFrom of the library: loaded (" + AssemblyLoadContext.GetLoadContext(real)?.Name + ")");
+					// The way a mod's assembly loads (ModAssemblyHandler.ReloadAll): the real library, not the stand-in.
+					Assembly real = PortPlatform.LoadModAssembly(path);
+					Console.WriteLine("[port17] stand-in test: the library loaded as a mod's assembly: " + (IsStandIn(real) ? "the stand-in came back" : "loaded") + " (" + AssemblyLoadContext.GetLoadContext(real)?.Name + ")");
 				}
 				catch (Exception e)
 				{
-					Console.WriteLine("[port17] stand-in test: Assembly.LoadFrom of the library: " + e.GetType().Name + ": " + e.Message);
+					Console.WriteLine("[port17] stand-in test: the library loaded as a mod's assembly: " + e.GetType().Name + ": " + e.Message);
 				}
 				Assembly second = AssemblyLoadContext.Default.LoadFromStream(new MemoryStream(caller2));
 				Console.WriteLine("[port17] stand-in test: second caller after the library: " + Run(second));
@@ -198,6 +213,23 @@ namespace PortHooks
 			{
 				Console.WriteLine("[port17] stand-in test failed: " + e);
 			}
+		}
+
+		/// <summary>standInTest=1 at the start, while the mods load: whether AppDomain.GetAssemblies lists a stand-in then.</summary>
+		private static void EarlyTest()
+		{
+			Assembly early = Make(new AssemblyName("port17.standintest.early") { Version = new Version(1, 0, 0, 0) });
+			if (early == null)
+			{
+				return;
+			}
+			lock (gate)
+			{
+				standIns["port17.standintest.early"] = early;
+				hidden.Add(early);
+			}
+			bool listed = AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "port17.standintest.early");
+			Console.WriteLine("[port17] stand-in test (start): AppDomain.GetAssemblies " + (listed ? "lists the stand-in" : "does not list the stand-in"));
 		}
 
 		private static byte[] Library()
@@ -250,6 +282,19 @@ namespace PortHooks
 			catch (Exception e)
 			{
 				return e.GetType().Name + ": " + e.Message;
+			}
+		}
+
+		/// <summary>Whether an assembly is one of the stand-ins (never a real assembly of that name).</summary>
+		public static bool IsStandIn(Assembly assembly)
+		{
+			if (hidden.Count == 0 || assembly == null)
+			{
+				return false;
+			}
+			lock (gate)
+			{
+				return hidden.Contains(assembly);
 			}
 		}
 

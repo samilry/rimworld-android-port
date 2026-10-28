@@ -56,6 +56,8 @@ final class ReportSummary
             record(text, new File(ext, "logs/record-1.txt"), "record-1.txt（上次运行的记录）");
             watch(text, new File(ext, "logs/watch.txt"), "watch.txt（这次运行：加载和卡住时的内存）");
             watch(text, new File(ext, "logs/watch-1.txt"), "watch-1.txt（上次运行）");
+            runtimeLastWords(text, new File(ext, "logs/stderr-1.txt"), "stderr-1.txt（上次运行：运行时结束进程前的话）");
+            runtimeLastWords(text, new File(ext, "logs/stderr.txt"), "stderr.txt（这次运行）");
         }
         catch (Throwable t)
         {
@@ -308,6 +310,45 @@ final class ReportSummary
         for (String line : tail)
         {
             text.append(cut(line, 400)).append('\n');
+        }
+    }
+
+    /**
+     * What the runtime wrote before it ended the process (a stack overflow with the repeating frames, a fatal error, an
+     * unhandled exception): the tombstone of such an abort shows only the runtime's own frames, and some phones (a
+     * tester's vivo) let an app read nothing of logcat.
+     */
+    private static void runtimeLastWords(StringBuilder text, File file, String title) throws IOException
+    {
+        text.append("\n== ").append(title).append(" ==\n");
+        if (!file.isFile())
+        {
+            text.append("（无）\n");
+            return;
+        }
+        int shown = 0;
+        BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(file), UTF8));
+        try
+        {
+            String line;
+            while ((line = in.readLine()) != null && shown < 60)
+            {
+                if (shown == 0 && !(line.startsWith("Stack overflow") || line.startsWith("Fatal error") || line.startsWith("Unhandled exception")
+                    || line.startsWith("Process terminated")))
+                {
+                    continue;
+                }
+                text.append(cut(line, 300)).append('\n');
+                shown++;
+            }
+        }
+        finally
+        {
+            in.close();
+        }
+        if (shown == 0)
+        {
+            text.append("（运行时没有留下结束进程的原因）\n");
         }
     }
 

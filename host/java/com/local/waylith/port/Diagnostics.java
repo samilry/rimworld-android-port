@@ -586,6 +586,7 @@ final class Diagnostics
                 putFile(zip, file, new File(logs, file));
             }
             putFile(zip, "stderr.txt", new File(ext, "logs/stderr.txt"));
+            putFile(zip, "stderr-1.txt", new File(ext, "logs/stderr-1.txt"));
             putFile(zip, "ModsConfig.xml", new File(data, "Config/ModsConfig.xml"));
             // The import of the player's game (the tester's APK): what was done, what setup said, what is on the phone.
             putFile(zip, "import.txt", new File(ext, "logs/import.txt"));

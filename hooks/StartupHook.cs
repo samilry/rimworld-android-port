@@ -138,8 +138,11 @@ namespace PortHooks
 			string name = Path.GetFileNameWithoutExtension(path);
 			foreach (Assembly candidate in AppDomain.CurrentDomain.GetAssemblies())
 			{
-				// (Each assembly is asked for its name once: that makes an AssemblyName object every time.)
-				if (namesSeen.Add(candidate) && !candidate.IsDynamic)
+				// (Each assembly is asked for its name once: that makes an AssemblyName object every time.) A stand-in
+				// (MissingAssemblies) is not the mod's assembly: a mod loaded earlier asked for this one before it was
+				// there (Rimtalk - Secrets and side quest expansion before RimTalk), and the real one loads now, as on
+				// the PC. Until 2026-10-28 the stand-in was taken for it and RimTalk with its 15 add-ons had no types.
+				if (namesSeen.Add(candidate) && !candidate.IsDynamic && !MissingAssemblies.IsStandIn(candidate))
 				{
 					loadedByName[candidate.GetName().Name] = candidate;
 				}
