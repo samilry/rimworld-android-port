@@ -418,6 +418,11 @@ namespace PortMobile
 	/// (a tester, 2026-10-25: "这个栏的大小会随时变"). Here it is never higher than the room: always at full size, its
 	/// list scrolling when longer. Only the game's own gear tab; other tabs (and mods' gear tabs, laid out their own way)
 	/// keep their fixed sizes, made smaller when they do not fit, which does not change as they are used.
+	///
+	/// The tab sets its size again at the end of every layout pass (FillTab), and a press reaches the window under the
+	/// finger before the game's OnGUI places the tab (GUI.DispatchInputToWindows): that pass drew the tab 450 high again,
+	/// its list as high as its contents or higher, and the engine's scroll view put the list back at the top (a tester,
+	/// 2026-10-28, 960 x 600: every tap in the scrolled list "让滑条位置上升到最高"). The size is held after FillTab too.
 	/// </summary>
 	internal static class GearTabFit
 	{
@@ -429,6 +434,7 @@ namespace PortMobile
 			try
 			{
 				harmony.Patch(AccessTools.Method(typeof(InspectTabBase), "UpdateSize"), postfix: new HarmonyMethod(typeof(GearTabFit), nameof(AfterUpdateSize)));
+				harmony.Patch(AccessTools.Method(typeof(ITab_Pawn_Gear), "FillTab"), postfix: new HarmonyMethod(typeof(GearTabFit), nameof(AfterUpdateSize)));
 			}
 			catch (Exception e)
 			{
@@ -436,7 +442,7 @@ namespace PortMobile
 			}
 		}
 
-		/// <summary>Postfix of InspectTabBase.UpdateSize (TabRect calls it before it places the tab).</summary>
+		/// <summary>Postfix of InspectTabBase.UpdateSize (TabRect calls it before it places the tab) and of ITab_Pawn_Gear.FillTab.</summary>
 		public static void AfterUpdateSize(InspectTabBase __instance)
 		{
 			if (__instance.GetType() != typeof(ITab_Pawn_Gear))
