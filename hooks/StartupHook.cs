@@ -538,6 +538,7 @@ internal static class StartupHook
 		PretendProcessPath();
 		LimitGraphicsMemory();
 		DropAtlasCacheIfAsked();
+		MoveBackslashNames();
 		PortHooks.Textures.Start();
 		PortHooks.UiDescriptors.Start();
 		PortHooks.AndroidFonts.Start();
@@ -595,6 +596,91 @@ internal static class StartupHook
 		{
 			Console.WriteLine("[port17] atlas cache not dropped: " + e.Message);
 		}
+	}
+
+	/// <summary>
+	/// What mods made under names with backslashes before ModPrep read those as separators, as Windows does (rules 14):
+	/// RimTalk's memory patch exported into one folder named "RimTalkMemory\MemoryExports", a mod writing
+	/// SaveDataFolderPath + "\\x.xml" made "RimWorld by Ludeon Studios\x.xml" beside the data folder. Moved, before any mod
+	/// runs, to where the mods look now: the nested folders, without replacing a file that is there already. Looked for
+	/// in the data folder, its folders and the one above it, and in the game's Mods.
+	/// </summary>
+	private static void MoveBackslashNames()
+	{
+		try
+		{
+			string home = Environment.GetEnvironmentVariable("HOME");
+			if (string.IsNullOrEmpty(home))
+			{
+				return;
+			}
+			string data = Path.Combine(home, "unity3d", "Ludeon Studios", "RimWorld by Ludeon Studios");
+			var folders = new List<string> { Path.GetDirectoryName(data), data, Path.Combine(AppContext.BaseDirectory, "Mods") };
+			if (Directory.Exists(data))
+			{
+				folders.AddRange(Directory.GetDirectories(data).Where(d => Path.GetFileName(d).IndexOf('\\') < 0));
+			}
+			foreach (string folder in folders)
+			{
+				if (!Directory.Exists(folder))
+				{
+					continue;
+				}
+				foreach (string entry in Directory.GetFileSystemEntries(folder))
+				{
+					string name = Path.GetFileName(entry);
+					if (name.IndexOf('\\') < 0 || !ModPrep.IsBackslashPath(name))
+					{
+						continue;
+					}
+					string target = Path.Combine(folder, name.Trim('\\').Replace('\\', '/'));
+					int moved = MoveInto(entry, target);
+					bool all = !File.Exists(entry) && !Directory.Exists(entry);
+					Console.WriteLine("[port17] \"" + name + "\" (a mod's path with backslashes): " + moved + " file(s) moved to " + target + (all ? "" : "; the others stay, the same names are there already"));
+				}
+			}
+		}
+		catch (Exception e)
+		{
+			Console.WriteLine("[port17] names with backslashes not moved: " + e.Message);
+		}
+	}
+
+	/// <summary>A file, or what a folder holds, moved to the target, keeping what is there already; returns the files moved.</summary>
+	private static int MoveInto(string source, string target)
+	{
+		Directory.CreateDirectory(Path.GetDirectoryName(target));
+		if (File.Exists(source))
+		{
+			if (File.Exists(target) || Directory.Exists(target))
+			{
+				return 0;
+			}
+			File.Move(source, target);
+			return 1;
+		}
+		if (!Directory.Exists(target) && !File.Exists(target))
+		{
+			int files = Directory.GetFiles(source, "*", SearchOption.AllDirectories).Length;
+			Directory.Move(source, target);
+			return files;
+		}
+		int moved = 0;
+		foreach (string file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+		{
+			string to = Path.Combine(target, Path.GetRelativePath(source, file));
+			if (!File.Exists(to) && !Directory.Exists(to))
+			{
+				Directory.CreateDirectory(Path.GetDirectoryName(to));
+				File.Move(file, to);
+				moved++;
+			}
+		}
+		if (Directory.GetFiles(source, "*", SearchOption.AllDirectories).Length == 0)
+		{
+			Directory.Delete(source, true);
+		}
+		return moved;
 	}
 
 	/// <summary>

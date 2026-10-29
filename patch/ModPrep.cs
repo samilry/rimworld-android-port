@@ -98,7 +98,7 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 internal static class ModPrep
 {
 	/// <summary>Bumped whenever what is done to an assembly changes; part of the stamp, so prepared mods are done again.</summary>
-	public const int RulesVersion = 13;
+	public const int RulesVersion = 14;
 
 	public const string StampName = ".port17-prepared";
 
@@ -500,6 +500,7 @@ internal static class ModPrep
 		}
 		edits += DropAttributesOfMissingTypes(module, label, log);
 		edits += TreatAndroidAsLinux(module, label, log);
+		edits += ReadBackslashesAsSeparators(module, label, log);
 		edits += AdaptChangedSignatures(module, label, log);
 		edits += BridgeChangedOverrides(module, label, log);
 		return edits + PrepareEmbeddedAssemblies(module, resolver, label, result, log);
@@ -562,6 +563,102 @@ internal static class ModPrep
 			log(label + ": " + edits + " platform checks answer Linux for Android");
 		}
 		return edits;
+	}
+
+	/// <summary>
+	/// Windows reads a backslash in a path as a separator, as it reads a slash; Linux and Android read it as a character
+	/// of the name. A mod that writes its paths with backslashes works on the PC and finds nothing on the phone: Gloomy
+	/// Furniture's jukebox lists its songs in RootDirectory + "\\Sounds\\Songs" (none on the phone, "Scanning Error"),
+	/// RimHUD looks for other mods' presets in "RimHUD\\Presets", RimTalk's memory patch exports into
+	/// "RimTalkMemory\\MemoryExports" (on the phone one folder of that name; StartupHook.MoveBackslashNames moves what is
+	/// in it). In a method that calls System.IO, a string that is nothing but such a path (IsBackslashPath) gets slashes.
+	/// A lone "\\" is left alone: it is also how escaping is written (Replace("\\", "\\\\")).
+	/// </summary>
+	private static int ReadBackslashesAsSeparators(ModuleDefinition module, string label, Action<string> log)
+	{
+		int edits = 0;
+		foreach (TypeDefinition type in module.GetTypes())
+		{
+			foreach (MethodDefinition method in type.Methods)
+			{
+				if (!method.HasBody || !CallsFileSystem(method.Body))
+				{
+					continue;
+				}
+				foreach (Instruction instruction in method.Body.Instructions)
+				{
+					if (instruction.OpCode == OpCodes.Ldstr && instruction.Operand is string text && IsBackslashPath(text))
+					{
+						instruction.Operand = text.Replace('\\', '/');
+						edits++;
+					}
+				}
+			}
+		}
+		if (edits > 0)
+		{
+			log(label + ": " + edits + " paths written with backslashes use slashes");
+		}
+		return edits;
+	}
+
+	private static readonly HashSet<string> FileSystemTypes = new HashSet<string> { "File", "Directory", "Path", "FileInfo", "DirectoryInfo", "FileSystemInfo", "FileStream", "StreamReader", "StreamWriter" };
+
+	private static bool CallsFileSystem(Mono.Cecil.Cil.MethodBody body)
+	{
+		foreach (Instruction instruction in body.Instructions)
+		{
+			if ((instruction.OpCode == OpCodes.Call || instruction.OpCode == OpCodes.Callvirt || instruction.OpCode == OpCodes.Newobj) && instruction.Operand is MethodReference called && called.DeclaringType != null && called.DeclaringType.Namespace == "System.IO" && FileSystemTypes.Contains(called.DeclaringType.Name))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/// <summary>
+	/// Names joined by single backslashes, with one before the first or after the last at most ("\\Sounds\\Songs",
+	/// "RimHUD\\Presets\\"): every name two characters or more of letters, digits, '_', '-', '.' and inner spaces, not
+	/// starting with '.'. Regular expressions ("\\d", "\\.png", "\\bword\\b") and escapes ("\\n", "\\u00e9", "\\x41")
+	/// do not look like that.
+	/// </summary>
+	public static bool IsBackslashPath(string text)
+	{
+		if (text.IndexOf('\\') < 0)
+		{
+			return false;
+		}
+		string[] names = text.Split('\\');
+		int named = 0;
+		for (int i = 0; i < names.Length; i++)
+		{
+			string name = names[i];
+			if (name.Length == 0)
+			{
+				if (i == 0 || i == names.Length - 1)
+				{
+					continue;
+				}
+				return false;
+			}
+			if (name.Length < 2 || !(char.IsLetterOrDigit(name[0]) || name[0] == '_') || name[name.Length - 1] == ' ')
+			{
+				return false;
+			}
+			foreach (char c in name)
+			{
+				if (!char.IsLetterOrDigit(c) && c != '_' && c != '-' && c != '.' && c != ' ')
+				{
+					return false;
+				}
+			}
+			if ((name[0] == 'u' || name[0] == 'U' || name[0] == 'x') && name.Length <= 9 && name.Skip(1).All(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+			{
+				return false;
+			}
+			named++;
+		}
+		return named > 0;
 	}
 
 	/// <summary>
