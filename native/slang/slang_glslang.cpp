@@ -195,6 +195,152 @@ std::string RenameWord(const std::string& text, const std::string& word, const s
     return out;
 }
 
+// GLSL's qualifier words that the PC's Slang also takes as names ("vec4 out = ...", "float sample = ..."; measured with
+// the game's slang.dll), by the token glslang names when it meets one where a name belongs: "ERROR: file:50: '' : syntax
+// error, unexpected OUT, expecting COMMA or SEMICOLON".
+const char* const kNameableQualifiers[][2] = {
+    { "IN", "in" }, { "OUT", "out" }, { "INOUT", "inout" }, { "UNIFORM", "uniform" }, { "BUFFER", "buffer" },
+    { "SHARED", "shared" }, { "ATTRIBUTE", "attribute" }, { "VARYING", "varying" }, { "SAMPLE", "sample" },
+    { "SMOOTH", "smooth" }, { "FLAT", "flat" }, { "NOPERSPECTIVE", "noperspective" }, { "PATCH", "patch" },
+    { "CENTROID", "centroid" }, { "COHERENT", "coherent" }, { "VOLATILE", "volatile" }, { "RESTRICT", "restrict" },
+    { "READONLY", "readonly" }, { "WRITEONLY", "writeonly" }, { "INVARIANT", "invariant" }, { "PRECISE", "precise" },
+    { "SUBROUTINE", "subroutine" }, { "HIGH_PRECISION", "highp" }, { "MEDIUM_PRECISION", "mediump" },
+    { "LOW_PRECISION", "lowp" }, { "PRECISION", "precision" },
+};
+
+// The qualifier words a glslang info log finds unexpected, each once.
+std::vector<std::string> UnexpectedQualifiersIn(const std::string& log)
+{
+    std::vector<std::string> words;
+    const std::string mark = "syntax error, unexpected ";
+    for (size_t at = log.find(mark); at != std::string::npos; at = log.find(mark, at + 1))
+    {
+        size_t from = at + mark.size(), end = from;
+        while (end < log.size() && (isupper((unsigned char)log[end]) || log[end] == '_')) end++;
+        std::string token = log.substr(from, end - from);
+        for (const auto& qualifier : kNameableQualifiers)
+        {
+            if (token == qualifier[0] && std::find(words.begin(), words.end(), qualifier[1]) == words.end()) words.push_back(qualifier[1]);
+        }
+    }
+    return words;
+}
+
+bool WordPart(char c) { return isalnum((unsigned char)c) || c == '_'; }
+
+// Past spaces, line ends and comments from at: the first character of the next token (0 at the end).
+char NextTokenStart(const std::string& text, size_t at)
+{
+    while (at < text.size())
+    {
+        if (isspace((unsigned char)text[at])) at++;
+        else if (text.compare(at, 2, "//") == 0) { at = text.find('\n', at); if (at == std::string::npos) return 0; }
+        else if (text.compare(at, 2, "/*") == 0) { at = text.find("*/", at + 2); if (at == std::string::npos) return 0; at += 2; }
+        else return text[at];
+    }
+    return 0;
+}
+
+// The occurrences of a qualifier word in text that stand where a name does, as replacement. A qualifier is always
+// followed by a word (a type, another qualifier, a block's name: "out vec4 color", "in Block {") or, in
+// "layout(triangles) in;", by a ";" after a ")"; anything else after the word ("vec4 out = ...", "return out;",
+// "out.rgb", "f(out)", "vec4 tint(vec4 out)") makes it a name. Comments and the lines of #include, #line, #version,
+// #extension and #pragma stay as they are.
+std::string RenameQualifierUsedAsName(const std::string& text, const std::string& word, const std::string& replacement)
+{
+    std::string out;
+    out.reserve(text.size() + 64);
+    char last = 0; // the last character of the token before, outside comments
+    bool lineStart = true;
+    size_t i = 0;
+    while (i < text.size())
+    {
+        char c = text[i];
+        if (text.compare(i, 2, "//") == 0)
+        {
+            size_t end = text.find('\n', i);
+            if (end == std::string::npos) end = text.size();
+            out.append(text, i, end - i);
+            i = end;
+            continue;
+        }
+        if (text.compare(i, 2, "/*") == 0)
+        {
+            size_t end = text.find("*/", i + 2);
+            end = end == std::string::npos ? text.size() : end + 2;
+            out.append(text, i, end - i);
+            i = end;
+            continue;
+        }
+        if (lineStart && c == '#')
+        {
+            size_t name = text.find_first_not_of(" \t", i + 1), end = text.find('\n', i);
+            if (end == std::string::npos) end = text.size();
+            static const char* const kept[] = { "include", "line", "version", "extension", "pragma" };
+            bool keep = false;
+            for (const char* directive : kept) keep = keep || (name != std::string::npos && text.compare(name, strlen(directive), directive) == 0);
+            if (keep)
+            {
+                out.append(text, i, end - i);
+                i = end;
+                continue;
+            }
+        }
+        if (c == '\n') lineStart = true;
+        else if (!isspace((unsigned char)c)) lineStart = false;
+        if (WordPart(c))
+        {
+            size_t end = i;
+            while (end < text.size() && WordPart(text[end])) end++;
+            bool name = false;
+            if (!isdigit((unsigned char)c) && text.compare(i, end - i, word) == 0 && end - i == word.size())
+            {
+                char next = NextTokenStart(text, end);
+                name = next != 0 && !WordPart(next) && next != '{' && !(next == ';' && last == ')');
+            }
+            if (name) out += replacement;
+            else out.append(text, i, end - i);
+            last = text[end - 1];
+            i = end;
+            continue;
+        }
+        out += c;
+        if (!isspace((unsigned char)c)) last = c;
+        i++;
+    }
+    return out;
+}
+
+// The source lines a glslang info log names for the unit called name ("ERROR: name:50: ..."), up to three, as
+// "  line 50: <the line>", so that a report shows what the phone's compiler stumbled on.
+std::string SourceLinesNamed(const std::string& log, const std::string& name, const std::string& source)
+{
+    std::string said;
+    std::vector<int> lines;
+    const std::string mark = "ERROR: " + name + ":";
+    for (size_t at = log.find(mark); at != std::string::npos && lines.size() < 3; at = log.find(mark, at + 1))
+    {
+        int line = atoi(log.c_str() + at + mark.size());
+        if (line > 0 && std::find(lines.begin(), lines.end(), line) == lines.end()) lines.push_back(line);
+    }
+    for (int line : lines)
+    {
+        size_t from = 0;
+        for (int n = 1; n < line && from != std::string::npos; n++)
+        {
+            from = source.find('\n', from);
+            if (from != std::string::npos) from++;
+        }
+        if (from == std::string::npos || from >= source.size()) continue;
+        size_t end = source.find('\n', from);
+        std::string text = source.substr(from, (end == std::string::npos ? source.size() : end) - from);
+        while (!text.empty() && (text.back() == '\r' || isspace((unsigned char)text.back()))) text.pop_back();
+        if (text.size() > 200) text = text.substr(0, 200) + "...";
+        said += "  line " + std::to_string(line) + ": " + text + "\n";
+    }
+    return said;
+}
+
 bool StageOf(int stage, EShLanguage& out)
 {
     switch (stage)
@@ -276,8 +422,9 @@ bool CompileEntry(Request& request, EntryPoint& entry)
     EShMessages messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules | (hlsl ? EShMsgReadHlsl : 0));
     Includer includer(request);
     std::unique_ptr<glslang::TShader> shader;
-    // A GLSL source that names a variable with a word glslang reserves (a mod's "float common = ..."; the PC's Slang takes
-    // it) is parsed once more with those words renamed, the ones the first parse named only.
+    // A GLSL source that names something with a word glslang reserves (a mod's "float common = ...") or with a qualifier
+    // word ("vec4 out = ..."), both of which the PC's Slang takes, is parsed again with the words the parse named renamed:
+    // a reserved word everywhere, a qualifier only where it stands for a name. One parse names one qualifier at most.
     for (int attempt = 0;; attempt++)
     {
         const char* strings[1] = { text.c_str() };
@@ -296,17 +443,25 @@ bool CompileEntry(Request& request, EntryPoint& entry)
             break;
         }
         std::string log = shader->getInfoLog();
-        std::vector<std::string> words = ReservedWordsIn(log);
-        if (hlsl || attempt > 0 || words.empty())
+        std::string renamed = text;
+        if (!hlsl && attempt < 32)
+        {
+            for (const std::string& word : ReservedWordsIn(log)) renamed = RenameWord(renamed, word, word + "_port17");
+            for (const std::string& word : UnexpectedQualifiersIn(log))
+            {
+                std::string before = renamed;
+                renamed = RenameQualifierUsedAsName(renamed, word, word + "_port17");
+                if (renamed != before) LOGI("slang: %s uses '%s' as a name (the PC's Slang takes it); renamed there", name.c_str(), word.c_str());
+            }
+        }
+        if (renamed == text)
         {
             request.diagnostics += log;
             request.diagnostics += shader->getInfoDebugLog();
+            if (!hlsl) request.diagnostics += SourceLinesNamed(log, name, unit.source);
             return false;
         }
-        for (const std::string& word : words)
-        {
-            text = RenameWord(text, word, word + "_port17");
-        }
+        text = renamed;
     }
     glslang::TProgram program;
     program.addShader(shader.get());
