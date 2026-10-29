@@ -185,6 +185,50 @@ static int file_exists(const char* path)
     return stat(path, &st) == 0;
 }
 
+// The engine keeps the SPIR-V it compiles from sources in <persistent data>/ShaderCache, keyed by the source and by
+// Slang's build tag. Until 2026-10-29 the phone compiled with a glslang stand-in that reported the PC's tag (2026.19),
+// so what it made sits under the same keys as what Slang 2026.19 itself makes now: those entries are let go once
+// (a stamp file says they were), so that every shader the phone uses comes from the PC's compiler.
+static void forget_stand_in_shaders(const char* home)
+{
+    char dir[1200], stamp[1300];
+    snprintf(dir, sizeof dir, "%s/unity3d/Ludeon Studios/RimWorld by Ludeon Studios/ShaderCache", home);
+    snprintf(stamp, sizeof stamp, "%s/.port17-slang-2026.19", dir);
+    if (file_exists(stamp)) return;
+    int count = 0;
+    DIR* d = opendir(dir);
+    if (d)
+    {
+        struct dirent* e;
+        while ((e = readdir(d)) != NULL)
+        {
+            if (!ends_with(e->d_name, ".spv-cache")) continue;
+            char path[1500];
+            snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+            if (unlink(path) == 0) count++;
+        }
+        closedir(d);
+    }
+    else
+    {
+        // A new install: the folder is made now, so that what Slang compiles from the start is not let go later.
+        char part[1200];
+        for (const char* slash = strchr(dir + strlen(home), '/'); slash; slash = strchr(slash + 1, '/'))
+        {
+            snprintf(part, sizeof part, "%.*s", (int)(slash - dir), dir);
+            mkdir(part, 0775);
+        }
+        mkdir(dir, 0775);
+    }
+    FILE* f = fopen(stamp, "w");
+    if (f)
+    {
+        fputs("compiled by Slang 2026.19 since this file exists\n", f);
+        fclose(f);
+    }
+    LOGI("shader cache: %d entries the glslang stand-in compiled let go", count);
+}
+
 // Appends "dir/*.dll" to the list, ':' separated. Files whose name also exists in skipDir are left out, so that the
 // game folder's copies of framework assemblies do not shadow the runtime's.
 static void add_assemblies(char* list, size_t cap, const char* dir, const char* skipDir, int* count)
@@ -570,6 +614,7 @@ static void* run_runtime(void* arg)
     setenv("TMPDIR", tmp, 1);
     setenv("XDG_CONFIG_HOME", home, 1);
     setenv("XDG_DATA_HOME", home, 1);
+    forget_stand_in_shaders(home);
     chdir(game);
 
     // Options for the Vulkan interposer (host/vulkan), from <game>/vulkan.txt: "key=value" per line.

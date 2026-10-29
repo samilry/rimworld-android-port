@@ -547,6 +547,8 @@ internal static class StartupHook
 		PortHooks.SelfContained.CopyRuntime();
 		PortHooks.SelfContained.Start(new HarmonyLib.Harmony("port17.selfcontained"));
 		PortHooks.PortPlatform.PatchLoadFrom(new HarmonyLib.Harmony("port17.loadfrom"));
+		// Slang's sessions hold its core module (about 250 MB each): one at a time, let go when idle.
+		PortHooks.ShaderSessions.Start(new HarmonyLib.Harmony("port17.shadersessions"));
 		PortHooks.LoadRecovery.Start();
 		Console.WriteLine("[port17] startup hook installed (Unity assembly names resolve to UnityStubs)");
 		PortDiag.StartIfRequested();

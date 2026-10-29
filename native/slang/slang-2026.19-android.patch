@@ -1,0 +1,27 @@
+diff --git a/source/core/unix/slang-unix-process.cpp b/source/core/unix/slang-unix-process.cpp
+index dfc463a..22dd35a 100644
+--- a/source/core/unix/slang-unix-process.cpp
++++ b/source/core/unix/slang-unix-process.cpp
+@@ -451,6 +451,14 @@ SlangResult UnixPipeStream::write(const void* buffer, size_t length)
+     {
+         whatFailed = "pipe";
+     }
++#if defined(__ANDROID__) && __ANDROID_API__ < 28
++    // posix_spawn came with Android 9 (API 28): a build for older devices starts no processes (the
++    // compiler needs none to produce SPIR-V).
++    else
++    {
++        whatFailed = "posix_spawn (Android 9 or newer)";
++    }
++#else
+     else
+     {
+         //
+@@ -620,6 +628,7 @@ SlangResult UnixPipeStream::write(const void* buffer, size_t length)
+         }
+     }
+ 
++#endif
+     // Report any error
+     if (whatFailed)
+     {

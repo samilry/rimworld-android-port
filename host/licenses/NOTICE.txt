@@ -90,11 +90,20 @@ The Happy Bunny License (Modified MIT License) or the MIT License. Copyright (c)
 https://github.com/g-truc/gli, https://github.com/g-truc/glm
 → gli-LICENSE.txt, glm-copying.txt
 
-● glslang 11.2 (inside libslang.so, from the Android NDK's sources)
-BSD 3-Clause and the other permissive licenses listed in its license file. Copyright The Khronos Group Inc., 3Dlabs Inc. Ltd., LunarG, Inc., Google Inc. and others.
-https://github.com/KhronosGroup/glslang
-→ glslang-LICENSE.txt
-With shaderc's default resource limits (Apache License 2.0, Copyright Google Inc., https://github.com/google/shaderc → shaderc-LICENSE.txt).
+● Slang 2026.19, the shader compiler of the PC game, built from its sources for Android (libslang-compiler.so, libslang-glsl-module-2026.19.so, libslang-glslang-2026.19.so; libslang.so only points at libslang-compiler.so). The port changes one thing in it: no processes are started on Android before 9 (native/slang/slang-2026.19-android.patch).
+Apache License 2.0 with LLVM Exception. Copyright the Slang project authors and contributors.
+https://github.com/shader-slang/slang
+→ slang-LICENSE.txt
+Built into it:
+- glslang (libslang-glslang): BSD 3-Clause and the other permissive licenses listed in its license file. Copyright The Khronos Group Inc., 3Dlabs Inc. Ltd., LunarG, Inc., Google Inc. and others. https://github.com/KhronosGroup/glslang → glslang-LICENSE.txt
+- SPIRV-Tools (libslang-glslang): Apache License 2.0. Copyright The Khronos Group Inc. and its contributors. https://github.com/KhronosGroup/SPIRV-Tools → SPIRV-Tools-LICENSE.txt
+- SPIRV-Headers: MIT-style. Copyright (c) 2015-2024 The Khronos Group Inc. https://github.com/KhronosGroup/SPIRV-Headers → SPIRV-Headers-LICENSE.txt
+- cmark-gfm: BSD 2-Clause and others. Copyright (c) 2014, John MacFarlane and others. https://github.com/swiftlang/swift-cmark → cmark-gfm-COPYING.txt
+- mimalloc: MIT. Copyright (c) 2018-2021 Microsoft Corporation, Daan Leijen. https://github.com/microsoft/mimalloc → mimalloc-LICENSE.txt
+- miniz: MIT. Copyright 2013-2014 RAD Game Tools and Valve Software, 2010-2014 Rich Geldreich and Tenacious Software LLC. https://github.com/richgel999/miniz → miniz-LICENSE.txt
+- LZ4 library: BSD 2-Clause. Copyright (c) 2011-2020, Yann Collet. https://github.com/lz4/lz4 → lz4-LICENSE.txt
+- unordered_dense: MIT. Copyright (c) 2022 Martin Leitner-Ankerl. https://github.com/martinus/unordered_dense → unordered_dense-LICENSE.txt
+- fast_float: MIT (also Apache 2.0 or BSL 1.0). Copyright The fast_float authors. https://github.com/fastfloat/fast_float → fast_float-LICENSE-MIT.txt
 
 ● miniaudio 0.11.22 (inside libwaylithaudio.so)
 Public domain (Unlicense) or MIT No Attribution. David Reid.
