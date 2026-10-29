@@ -43,10 +43,8 @@ internal static class Patch
 		{
 			["System.Boolean Verse.Steam.SteamManager::get_Initialized()"] = "SteamInitializedForMenu",
 		},
-		["System.Void Verse.ModAssemblyHandler::ReloadAll()"] = new Dictionary<string, string>
-		{
-			["System.Reflection.Assembly System.Reflection.Assembly::LoadFrom(System.String)"] = "LoadModAssembly",
-		},
+		// ModAssemblyHandler.ReloadAll keeps its Assembly.LoadFrom, as on the PC: PurePatcher points that call at its own
+		// loader; the port's handling of mod assemblies is a prefix on Assembly.LoadFrom (hooks/StartupHook.cs, BeforeLoadFrom).
 		// A mod folder whose files the game may not read (copied in by another app) is left out of the list of mods
 		// instead of ending the whole scan (hooks/ModFolders.cs).
 		["System.Void Verse.ModLister::RebuildModList()"] = new Dictionary<string, string>

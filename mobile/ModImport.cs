@@ -117,11 +117,18 @@ namespace PortMobile
 		/// <summary>
 		/// Prefix of Application.Quit ("quit to desktop"): the activity leaves the screen and the process is made to end
 		/// without the C library's exit handlers (the shim's glfwAndroidPrepareExit says why). The engine's own quit goes on.
+		/// When something asked the engine for a restart first (RestartManager.RequestRestart, as PurePatcher does before it
+		/// quits), the PC launches the game again once it has quit: the activity is started again instead of finished
+		/// (PortHooks.SelfContained; a finished activity may no longer start one).
 		/// </summary>
 		internal static void BeforeQuit()
 		{
 			try
 			{
+				if (PortHooks.SelfContained.RestartRequested() && PortHooks.SelfContained.AskRestart("asked of the engine, then quit"))
+				{
+					return;
+				}
 				Console.WriteLine("[mobile] quit: the activity finishes, the process ends when the runtime has shut down");
 				glfwAndroidPrepareExit();
 			}

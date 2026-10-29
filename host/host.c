@@ -643,6 +643,8 @@ static void* run_runtime(void* arg)
     int count = 0;
     add_assemblies(tpa, sizeof tpa, runtime, NULL, &count);
     int runtimeCount = count;
+    // The game folder holds copies of the runtime's assemblies too, as the PC's does (PortHooks' SelfContained): those
+    // names come from the runtime folder.
     add_assemblies(tpa, sizeof tpa, game, runtime, &count);
     LOGI("trusted assemblies: %d from the runtime, %d from the game", runtimeCount, count - runtimeCount);
 

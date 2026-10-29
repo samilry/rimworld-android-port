@@ -123,12 +123,56 @@ namespace PortHooks
 		}
 
 		/// <summary>
-		/// Stands in for Assembly.LoadFrom inside ModAssemblyHandler.ReloadAll. A mod's own copy of 0Harmony.dll (the Harmony
-		/// mod ships one, others bundle it) is not loaded: the copy in the game folder, patched for this runtime (MonoMod's
-		/// Android and glibc assumptions, see patch/Patch.cs), is the one every mod gets. Loading a second copy of the same
-		/// assembly name into the default context would fail anyway.
+		/// Prefix of Assembly.LoadFrom(string), installed by the startup hook: what ModAssemblyHandler.ReloadAll loads (and
+		/// whatever else is loaded by file: a mod's own plugins, PurePatcher's loader in a game it rewrote, SelfContained)
+		/// goes through LoadModAssembly; that method's own loads go to the runtime. Until 2026-10-29 patch/Patch.cs
+		/// rewrote ReloadAll's call instead, and PurePatcher found no Assembly.LoadFrom there to point at its loader.
+		/// </summary>
+		public static bool BeforeLoadFrom(string assemblyFile, ref Assembly __result)
+		{
+			if (portLoad > 0 || string.IsNullOrEmpty(assemblyFile))
+			{
+				return true;
+			}
+			__result = LoadModAssembly(assemblyFile);
+			return false;
+		}
+
+		[ThreadStatic] private static int portLoad;
+
+		internal static void PatchLoadFrom(HarmonyLib.Harmony harmony)
+		{
+			try
+			{
+				MethodInfo loadFrom = typeof(Assembly).GetMethod(nameof(Assembly.LoadFrom), new[] { typeof(string) });
+				harmony.Patch(loadFrom, prefix: new HarmonyLib.HarmonyMethod(typeof(PortPlatform), nameof(BeforeLoadFrom)));
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[port17] Assembly.LoadFrom left as it is (mods load without the port's handling): " + e.Message);
+			}
+		}
+
+		/// <summary>
+		/// What Assembly.LoadFrom does here (BeforeLoadFrom). A mod's own copy of 0Harmony.dll (the Harmony mod ships one,
+		/// others bundle it) is not loaded: the copy in the game folder, patched for this runtime (MonoMod's Android and
+		/// glibc assumptions, see patch/Patch.cs), is the one every mod gets. Loading a second copy of the same assembly
+		/// name into the default context would fail anyway.
 		/// </summary>
 		public static Assembly LoadModAssembly(string path)
+		{
+			portLoad++;
+			try
+			{
+				return LoadModAssemblyNow(path);
+			}
+			finally
+			{
+				portLoad--;
+			}
+		}
+
+		private static Assembly LoadModAssemblyNow(string path)
 		{
 			long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
 			PrepareModBeforeLoad(path);
@@ -499,6 +543,10 @@ internal static class StartupHook
 		PortHooks.AndroidFonts.Start();
 		PortHooks.WindowsLibraries.Start();
 		PortHooks.MissingAssemblies.Start(new HarmonyLib.Harmony("port17.missingassemblies"));
+		// The PC's self-contained game folder, restart and Assembly.LoadFrom, which tools that rewrite the game (PurePatcher) count on.
+		PortHooks.SelfContained.CopyRuntime();
+		PortHooks.SelfContained.Start(new HarmonyLib.Harmony("port17.selfcontained"));
+		PortHooks.PortPlatform.PatchLoadFrom(new HarmonyLib.Harmony("port17.loadfrom"));
 		PortHooks.LoadRecovery.Start();
 		Console.WriteLine("[port17] startup hook installed (Unity assembly names resolve to UnityStubs)");
 		PortDiag.StartIfRequested();
