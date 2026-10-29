@@ -553,6 +553,9 @@ internal static class StartupHook
 		// The chip's name and the native heap figures, which the engine's Linux code reads from places Android has not.
 		PortHooks.HardwareInfo.Start(new HarmonyLib.Harmony("port17.hardwareinfo"));
 		PortHooks.LoadRecovery.Start();
+		// ICU as on the PC unless the host found the system's unusable (host.c system_icu) or runtime.properties says otherwise.
+		bool invariant = AppContext.TryGetSwitch("System.Globalization.Invariant", out bool on) && on;
+		Console.WriteLine("[port17] globalization: " + (invariant ? "invariant (no ICU)" : "ICU, as on the PC (zh-CN October: " + System.Globalization.CultureInfo.GetCultureInfo("zh-CN").DateTimeFormat.GetMonthName(10) + ")"));
 		Console.WriteLine("[port17] startup hook installed (Unity assembly names resolve to UnityStubs)");
 		PortDiag.StartIfRequested();
 	}

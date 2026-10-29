@@ -473,6 +473,36 @@ static void probe_affinity(const char* who)
     fprintf(stderr, "%s\n", text);
 }
 
+// Whether the system's ICU serves the runtime's globalization library (libSystem.Globalization.Native.so) the way it
+// looks for it: libicuuc.so and libicui18n.so (public libraries since Android 7), the functions under the version's
+// suffix ("u_init_76"; the runtime finds it by u_strlen), the data loaded (u_init). Without that the runtime would stop
+// at its start, so the game then keeps the invariant mode. The libraries stay open: the runtime opens the same ones.
+static int system_icu(void)
+{
+    void* uc = dlopen("libicuuc.so", RTLD_LAZY);
+    void* i18n = uc ? dlopen("libicui18n.so", RTLD_LAZY) : NULL;
+    char name[32] = "u_init";
+    void (*init)(int*) = NULL;
+    if (i18n)
+    {
+        init = (void (*)(int*))dlsym(uc, name);
+        for (int v = 50; !init && v <= 255; v++)
+        {
+            snprintf(name, sizeof name, "u_init_%d", v);
+            init = (void (*)(int*))dlsym(uc, name);
+        }
+    }
+    int status = 0; // U_ZERO_ERROR; ICU returns at once when it is a failure already
+    if (init) init(&status);
+    int usable = init != NULL && status <= 0;
+    char text[256];
+    if (usable) snprintf(text, sizeof text, "ICU: the system's (%s)", name);
+    else snprintf(text, sizeof text, "ICU: the system's cannot be used (%s, %d); invariant globalization", !uc || !i18n ? dlerror() : init ? "u_init failed" : "no u_init", status);
+    LOGI("%s", text);
+    fprintf(stderr, "%s\n", text);
+    return usable;
+}
+
 // SetupService.runSetup(ext, root, libdir), in the setup process: the runtime with the framework and setup/ only, running
 // setup/PortSetup.dll (setup/Setup.cs) on the imported game folder (root, "" to prepare the kept assemblies again).
 // Returns its exit code, or a negative number when the runtime did not start (-2: coreclr_initialize failed, its
@@ -727,7 +757,9 @@ static void* run_runtime(void* arg)
         game,
         gameSlash,
         "android-arm64",
-        "true",
+        // ICU, as on the PC: the system's (system_icu). The invariant mode sorted by code point, ignored nothing,
+        // could not normalise, and every culture had the invariant culture's data (2026-10-29, the third PC comparison).
+        system_icu() ? "false" : "true",
         "false",
         "false",
         "true",
@@ -754,10 +786,16 @@ static void* run_runtime(void* arg)
         char* eq = strchr((char*)extraLines[i], '=');
         if (!eq) continue;
         *eq = 0;
-        allKeys[propertyCount] = extraLines[i];
-        allValues[propertyCount] = eq + 1;
-        LOGI("property %s=%s", extraLines[i], eq + 1);
-        propertyCount++;
+        // A key of the defaults takes the new value there: the runtime refuses a key given twice (AppContext.Setup).
+        int at = propertyCount;
+        for (int k = 0; k < propertyCount; k++)
+        {
+            if (strcmp(allKeys[k], extraLines[i]) == 0) { at = k; break; }
+        }
+        allKeys[at] = extraLines[i];
+        allValues[at] = eq + 1;
+        LOGI("property %s=%s%s", extraLines[i], eq + 1, at < propertyCount ? " (instead of the default)" : "");
+        if (at == propertyCount) propertyCount++;
     }
 
     char cryptoPath[1100];

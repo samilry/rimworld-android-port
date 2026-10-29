@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
+using System.Threading;
 using HarmonyLib;
 using RimWorld;
 using UnityEngine;
@@ -19,6 +21,7 @@ namespace PortMobile
 	/// copies the chosen .rws files, and .zip archives holding saves, into files/ModImport, and every save found there is
 	/// put with the saves under its own name (a name already taken gets " (2)", " (3)"...). Saves the game may not read are
 	/// left out of the list (GenFilePaths.AllSavedGameFiles), and the player is told once which, and what to do.
+	/// "导出存档…" at the bottom right is the way back (ChooseExport).
 	/// </summary>
 	internal static class SaveImport
 	{
@@ -58,6 +61,173 @@ namespace PortMobile
 			}
 			TooltipHandler.TipRegion(button, ModImport.Say("从手机里选存档（.rws 文件，或者装着存档的 .zip）放进游戏的存档文件夹。电脑上的存档在 C:\\Users\\你的用户名\\AppData\\LocalLow\\Ludeon Studios\\RimWorld by Ludeon Studios\\Saves。",
 				"Choose saves on the phone (.rws files, or .zip archives holding them) to put with the game's saves. A PC keeps them in C:\\Users\\<you>\\AppData\\LocalLow\\Ludeon Studios\\RimWorld by Ludeon Studios\\Saves."));
+			// Right of the close button: the way out, for a PC or another phone.
+			var export = new Rect(inRect.xMax - 170f, button.y, 170f, button.height);
+			if (Widgets.ButtonText(export, ModImport.Say("导出存档…", "Export saves...")))
+			{
+				ChooseExport();
+			}
+			TooltipHandler.TipRegion(export, ModImport.Say("把存档复制到手机的 Download/RimWorld 文件夹（文件管理器的“下载”里），可以拷到电脑上，或者在聊天软件里发给别人。",
+				"Copy saves into the phone's Download/RimWorld folder (Downloads in a file manager), to take them to a PC or send them to someone."));
+		}
+
+		/// <summary>
+		/// The saves folder is the app's own (Android/data, which no file manager shows since Android 11), where a PC's is
+		/// open in its file manager: a save, or all of them in one .zip (what "导入存档…" takes), is copied into
+		/// Download/RimWorld, which an app may create files in by path; the media store is told (Downloads, a PC by cable).
+		/// </summary>
+		private const string ExportFolder = "/storage/emulated/0/Download/RimWorld";
+
+		private static void ChooseExport()
+		{
+			List<FileInfo> saves;
+			try
+			{
+				saves = GenFilePaths.AllSavedGameFiles.ToList();
+			}
+			catch (Exception e)
+			{
+				Find.WindowStack.Add(new Dialog_MessageBox(ModImport.Say("读不到存档列表：", "The saves could not be listed: ") + e.Message));
+				return;
+			}
+			if (saves.Count == 0)
+			{
+				Messages.Message(ModImport.Say("还没有存档。", "There are no saves yet."), MessageTypeDefOf.RejectInput, false);
+				return;
+			}
+			var options = new List<FloatMenuOption>();
+			if (saves.Count > 1)
+			{
+				options.Add(new FloatMenuOption(ModImport.Say("全部 " + saves.Count + " 个存档（打包成一个 .zip）", "All " + saves.Count + " saves (in one .zip)"), () => Find.WindowStack.Add(new Exporting(saves, true))));
+			}
+			foreach (FileInfo save in saves)
+			{
+				options.Add(new FloatMenuOption(Path.GetFileNameWithoutExtension(save.Name) + "   " + save.LastWriteTime.ToString("yyyy-MM-dd HH:mm"), () => Find.WindowStack.Add(new Exporting(new List<FileInfo> { save }, false))));
+			}
+			Find.WindowStack.Add(new FloatMenu(options, ModImport.Say("导出到手机的 Download/RimWorld", "Export to the phone's Download/RimWorld")));
+		}
+
+		/// <summary>Off the main thread: the copies (or the .zip) in Download/RimWorld; returns the files made.</summary>
+		private static List<string> Export(List<FileInfo> saves, bool zip)
+		{
+			Directory.CreateDirectory(ExportFolder);
+			var made = new List<string>();
+			if (zip)
+			{
+				string name = ModImport.Say("RimWorld 存档 ", "RimWorld saves ") + DateTime.Now.ToString("yyyy-MM-dd HHmm");
+				made.Add(WriteFree(name, ".zip", target =>
+				{
+					using (var archive = new ZipArchive(new FileStream(target, FileMode.CreateNew), ZipArchiveMode.Create))
+					{
+						foreach (FileInfo save in saves)
+						{
+							ZipArchiveEntry entry = archive.CreateEntry(save.Name, CompressionLevel.Fastest);
+							entry.LastWriteTime = save.LastWriteTime;
+							using (Stream from = save.OpenRead())
+							using (Stream to = entry.Open())
+							{
+								from.CopyTo(to);
+							}
+						}
+					}
+				}));
+			}
+			else
+			{
+				foreach (FileInfo save in saves)
+				{
+					made.Add(WriteFree(Path.GetFileNameWithoutExtension(save.Name), save.Extension, target => File.Copy(save.FullName, target)));
+				}
+			}
+			foreach (string file in made)
+			{
+				Screenshots.ScanMedia(file);
+			}
+			return made;
+		}
+
+		/// <summary>
+		/// Writes under the name, or "name (2)"...; a name the media store still has for a file that is gone (deleted
+		/// around it) is refused although File.Exists says false: then with the time added.
+		/// </summary>
+		private static string WriteFree(string name, string extension, Action<string> write)
+		{
+			string target = Path.Combine(ExportFolder, name + extension);
+			for (int n = 2; File.Exists(target); n++)
+			{
+				target = Path.Combine(ExportFolder, name + " (" + n + ")" + extension);
+			}
+			try
+			{
+				write(target);
+			}
+			catch (IOException) when (!File.Exists(target))
+			{
+				target = Path.Combine(ExportFolder, name + "-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + extension);
+				write(target);
+			}
+			return target;
+		}
+
+		/// <summary>Stays up while the saves are copied, then says where they are.</summary>
+		private sealed class Exporting : Window
+		{
+			private volatile bool done;
+			private List<string> made;
+			private string problem;
+
+			public override Vector2 InitialSize => new Vector2(560f, 180f);
+
+			public Exporting(List<FileInfo> saves, bool zip)
+			{
+				forcePause = true;
+				absorbInputAroundWindow = true;
+				closeOnAccept = false;
+				closeOnCancel = false;
+				closeOnClickedOutside = false;
+				doCloseX = false;
+				draggable = false;
+				ThreadPool.QueueUserWorkItem(_ =>
+				{
+					try
+					{
+						made = Export(saves, zip);
+					}
+					catch (Exception e)
+					{
+						problem = e.GetType().Name + ": " + e.Message;
+					}
+					done = true;
+				});
+			}
+
+			public override void DoWindowContents(Rect inRect)
+			{
+				if (done)
+				{
+					Close(false);
+					Report();
+					return;
+				}
+				Text.Font = GameFont.Small;
+				Text.Anchor = TextAnchor.MiddleCenter;
+				Widgets.Label(inRect, ModImport.Say("正在导出存档……", "Exporting saves..."));
+				Text.Anchor = TextAnchor.UpperLeft;
+			}
+
+			private void Report()
+			{
+				Console.WriteLine("[mobile] save export: " + (problem ?? string.Join(", ", made)));
+				if (problem != null)
+				{
+					Find.WindowStack.Add(new Dialog_MessageBox(ModImport.Say("导出存档时出错：\n\n", "Exporting the saves failed:\n\n") + problem));
+					return;
+				}
+				string names = string.Join("\n", made.Select(f => "  " + Path.GetFileName(f)));
+				Find.WindowStack.Add(new Dialog_MessageBox(ModImport.Say(
+					"已导出到手机的 Download/RimWorld 文件夹：\n\n" + names + "\n\n在文件管理器的“下载”（Download）里能找到；用数据线连电脑时在“内部存储\\Download\\RimWorld”。发给别人：在聊天软件里发送文件时从“下载”里选。\n\n电脑上把 .rws 放进 C:\\Users\\你的用户名\\AppData\\LocalLow\\Ludeon Studios\\RimWorld by Ludeon Studios\\Saves 就能读（.zip 要先解压）；另一台手机用“导入存档…”选它（.zip 也可以）。",
+					"Exported into the phone's Download/RimWorld folder:\n\n" + names + "\n\nA file manager shows it under Downloads; over a cable a PC finds it in Internal storage\\Download\\RimWorld. To send it to someone, pick it from Downloads in the chat app.\n\nOn a PC, put the .rws files into C:\\Users\\<you>\\AppData\\LocalLow\\Ludeon Studios\\RimWorld by Ludeon Studios\\Saves (unpack a .zip first); another phone takes them (or the .zip) with \"Import saves...\".")));
+			}
 		}
 
 		private static void Pick(Dialog_FileList dialog)

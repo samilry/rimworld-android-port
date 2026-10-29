@@ -28,6 +28,53 @@ namespace PortMobile
 			{
 				Console.WriteLine("[mobile] links: Application.OpenURL left as it is: " + e.Message);
 			}
+			try
+			{
+				harmony.Patch(AccessTools.Method(typeof(System.Diagnostics.Process), nameof(System.Diagnostics.Process.Start), Type.EmptyTypes), prefix: new HarmonyMethod(typeof(OpenUrl), nameof(BeforeProcessStart)));
+				Console.WriteLine("[mobile] links: what a mod hands to the shell opens as with Application.OpenURL (Process.Start)");
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] links: Process.Start left as it is: " + e.Message);
+			}
+		}
+
+		/// <summary>
+		/// Prefix of Process.Start(), which every Process.Start overload ends in: a link, folder or file a mod hands to the
+		/// shell (UseShellExecute; RimTalk's "open folder" of its prompt presets, 2026-10-29) is opened on Windows, in the
+		/// browser, Explorer or the file's app. Android has no shell for it, nor .NET's Linux way (xdg-open): it goes the way
+		/// of Application.OpenURL here. Programs (UseShellExecute false: MonoMod asks uname) start as they do; a mod's
+		/// Process.Start(folder) without the shell fails on the PC's .NET as well, and is left to fail.
+		/// </summary>
+		public static bool BeforeProcessStart(System.Diagnostics.Process __instance, ref bool __result)
+		{
+			System.Diagnostics.ProcessStartInfo info;
+			try
+			{
+				info = __instance.StartInfo;
+			}
+			catch (Exception)
+			{
+				return true;
+			}
+			if (info == null || !info.UseShellExecute || string.IsNullOrWhiteSpace(info.FileName))
+			{
+				return true;
+			}
+			string target = info.FileName.Trim().Trim('"');
+			int colon = target.IndexOf(':');
+			bool link = colon > 1 && target.Substring(0, colon).IndexOfAny(new[] { '/', '\\', ' ' }) < 0;
+			if (!link && !System.IO.Directory.Exists(target) && !System.IO.File.Exists(target))
+			{
+				return true; // a program by its name: the runtime says why it does not start
+			}
+			Console.WriteLine("[mobile] links: " + target + " handed to the shell (Process.Start)" + (UnityData.IsInMainThread ? "" : ", off the main thread: not shown"));
+			if (UnityData.IsInMainThread)
+			{
+				BeforeOpenURL(target);
+			}
+			__result = false;
+			return false;
 		}
 
 		public static bool BeforeOpenURL(string url)

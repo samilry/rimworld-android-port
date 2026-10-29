@@ -36,6 +36,20 @@ namespace PortMobile
 			}
 		}
 
+		/// <summary>A file the game made in the phone's shared storage told to the media store, which lists it only once scanned (the gallery, Downloads, a PC by cable).</summary>
+		internal static bool ScanMedia(string path)
+		{
+			try
+			{
+				return glfwAndroidScanMedia(Encoding.UTF8.GetBytes(path + "\0")) != 0;
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] media scan of " + path + ": " + e.Message);
+				return false;
+			}
+		}
+
 		public static void BeforeCapture(string filename)
 		{
 			if (string.IsNullOrEmpty(filename))
@@ -85,7 +99,7 @@ namespace PortMobile
 					target = Path.Combine(Gallery, Path.GetFileNameWithoutExtension(file) + "-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + Path.GetExtension(file));
 					File.Copy(file, target);
 				}
-				bool scanned = glfwAndroidScanMedia(Encoding.UTF8.GetBytes(target + "\0")) != 0;
+				bool scanned = ScanMedia(target);
 				Console.WriteLine("[mobile] screenshots: " + Path.GetFileName(file) + " also in the gallery, " + target + (scanned ? "" : " (the media store was not told)"));
 			}
 			catch (Exception e)
