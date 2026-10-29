@@ -539,6 +539,7 @@ internal static class StartupHook
 		LimitGraphicsMemory();
 		DropAtlasCacheIfAsked();
 		MoveBackslashNames();
+		MakeDesktop();
 		PortHooks.Textures.Start();
 		PortHooks.UiDescriptors.Start();
 		PortHooks.AndroidFonts.Start();
@@ -558,6 +559,29 @@ internal static class StartupHook
 		Console.WriteLine("[port17] globalization: " + (invariant ? "invariant (no ICU)" : "ICU, as on the PC (zh-CN October: " + System.Globalization.CultureInfo.GetCultureInfo("zh-CN").DateTimeFormat.GetMonthName(10) + ")"));
 		Console.WriteLine("[port17] startup hook installed (Unity assembly names resolve to UnityStubs)");
 		PortDiag.StartIfRequested();
+	}
+
+	/// <summary>
+	/// The desktop folder, which a Windows PC always has. Harmony's FileLog writes harmony.log.txt there, and its Reset
+	/// deletes that file, which throws DirectoryNotFoundException without the folder: Change DevSpeed calls Reset in its
+	/// transpiler, so its static constructor failed and its patch was never made (a tester, 2026-10-30). On Linux and
+	/// Android .NET puts the desktop at $HOME/Desktop (XDG_DESKTOP_DIR), here inside the app's own files.
+	/// </summary>
+	private static void MakeDesktop()
+	{
+		try
+		{
+			string desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop, Environment.SpecialFolderOption.DoNotVerify);
+			if (!string.IsNullOrEmpty(desktop) && !Directory.Exists(desktop))
+			{
+				Directory.CreateDirectory(desktop);
+				Console.WriteLine("[port17] desktop folder made, as a PC has one (Harmony's log goes there): " + desktop);
+			}
+		}
+		catch (Exception e)
+		{
+			Console.WriteLine("[port17] desktop folder not made: " + e.Message);
+		}
 	}
 
 	/// <summary>

@@ -1177,9 +1177,10 @@ namespace PortMobile
 	/// <summary>
 	/// Designating by dragging (mining, cancelling, cutting plants, zones, walls, floors and every other tool with a
 	/// drawing style) in two steps, like placing a building. A drag only marks its cells: they stay highlighted,
-	/// further drags add to them, and a "confirm" button next to the tool's own controls designates them all at
-	/// once. "Cancel" drops the marked cells, and with none marked it puts the tool away. With a single-cell
-	/// drawing style a tap on a marked cell unmarks it.
+	/// further drags add to them, and a "confirm" button next to the tool's own controls designates them, each drag
+	/// (or tap) on its own, one after the other, as the releases would have with a mouse. "Cancel" drops the marked
+	/// cells, and with none marked it puts the tool away. With a single-cell drawing style a tap on a marked cell
+	/// unmarks it.
 	/// </summary>
 	internal static class DragConfirm
 	{
@@ -1189,6 +1190,8 @@ namespace PortMobile
 		private static Map map;
 		private static readonly List<IntVec3> cells = new List<IntVec3>();
 		private static readonly HashSet<IntVec3> cellSet = new HashSet<IntVec3>();
+		/// <summary>The marked cells by the release that marked them, in order.</summary>
+		private static readonly List<List<IntVec3>> releases = new List<List<IntVec3>>();
 		private static readonly List<CellRect> outlines = new List<CellRect>();
 		private static readonly List<IntVec3> visible = new List<IntVec3>();
 		private static bool cancelled;
@@ -1297,6 +1300,7 @@ namespace PortMobile
 			map = null;
 			cells.Clear();
 			cellSet.Clear();
+			releases.Clear();
 			outlines.Clear();
 		}
 
@@ -1345,16 +1349,27 @@ namespace PortMobile
 					{
 						cellSet.Remove(c);
 						cells.Remove(c);
+						foreach (List<IntVec3> release in releases)
+						{
+							release.Remove(c);
+						}
 					}
+					releases.RemoveAll(release => release.Count == 0);
 				}
 				else
 				{
+					var release = new List<IntVec3>();
 					foreach (IntVec3 c in dragged)
 					{
 						if (cellSet.Add(c))
 						{
 							cells.Add(c);
+							release.Add(c);
 						}
+					}
+					if (release.Count > 0)
+					{
+						releases.Add(release);
 					}
 					if (!single && manager.SelectedStyle.drawOutline)
 					{
@@ -1499,10 +1514,31 @@ namespace PortMobile
 				Messages.Message(Texts.Chinese ? "先在地图上拖出要指定的范围。" : "Drag over the area on the map first.", MessageTypeDefOf.RejectInput, false);
 				return;
 			}
-			var marked = new List<IntVec3>(cells);
+			var marked = new List<List<IntVec3>>(releases);
 			Clear();
-			// What the game does when the mouse button is released after a drag.
-			selected.DesignateMultiCell(marked);
+			// What the game does when the mouse button is released after a drag, once for each release. The PC never hands a
+			// tool the cells of several releases in one call, and a mod may count on that: a confirm of two or more taps on
+			// ED-Embrasures' buildings threw "An item with the same key has already been added" in DesignateMultiCell, which
+			// Mine Sight patches (a tester, 2026-10-30: 6 of 6 such errors, none in 133 confirms of one tap). A tool that put
+			// itself away stops there, as it would with a mouse. The tool's success sound plays once, as before: the
+			// releases' sounds in one frame would make one loud click.
+			SoundDef sound = selected.soundSucceeded;
+			try
+			{
+				for (int i = 0; i < marked.Count; i++)
+				{
+					if (Find.DesignatorManager.SelectedDesignator != selected)
+					{
+						break;
+					}
+					selected.soundSucceeded = i == 0 ? sound : null;
+					selected.DesignateMultiCell(marked[i]);
+				}
+			}
+			finally
+			{
+				selected.soundSucceeded = sound;
+			}
 		}
 
 		private static void Cancel()
