@@ -136,17 +136,7 @@ namespace PortHooks
 			modLoads++;
 			ticksPrepared += t1 - t0;
 			string name = Path.GetFileNameWithoutExtension(path);
-			foreach (Assembly candidate in AppDomain.CurrentDomain.GetAssemblies())
-			{
-				// (Each assembly is asked for its name once: that makes an AssemblyName object every time.) A stand-in
-				// (MissingAssemblies) is not the mod's assembly: a mod loaded earlier asked for this one before it was
-				// there (Rimtalk - Secrets and side quest expansion before RimTalk), and the real one loads now, as on
-				// the PC. Until 2026-10-28 the stand-in was taken for it and RimTalk with its 15 add-ons had no types.
-				if (namesSeen.Add(candidate) && !candidate.IsDynamic && !MissingAssemblies.IsStandIn(candidate))
-				{
-					loadedByName[candidate.GetName().Name] = candidate;
-				}
-			}
+			NoteLoadedNames();
 			if (loadedByName.TryGetValue(name, out Assembly loaded))
 			{
 				// Already loaded (the game folder's patched 0Harmony.dll, or a library another mod bundles too): the
@@ -169,9 +159,54 @@ namespace PortHooks
 			string fixedCopy = FixedArchitectureCopy(path);
 			long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
 			ticksArchitecture += t3 - t2;
-			Assembly assembly = Assembly.LoadFrom(fixedCopy ?? path);
+			Assembly assembly;
+			try
+			{
+				assembly = Assembly.LoadFrom(fixedCopy ?? path);
+			}
+			catch (FileLoadException) when (SameNameLoaded(fixedCopy ?? path, out Assembly same))
+			{
+				// A file of another name holding an assembly that is loaded already (another version of it too): on the
+				// PC Assembly.LoadFrom hands back the loaded one (Ludeon's runtime, measured 2026-10-29 with the PC's own
+				// runtime files), the stock runtime throws, and the game logged "Exception loading ..." and stopped
+				// loading that mod's assemblies. A real case: CeleTech Arsenal MKIII ships two old copies of
+				// CeleTech.Base in 1.7/Assemblies/backup/, which the game loads too, and by name before the real one.
+				Console.WriteLine("[port17] " + Path.GetFileName(path) + " is " + same.GetName().Name + ", which is loaded already; that one is used, as on the PC");
+				assembly = same;
+			}
 			ticksLoad += System.Diagnostics.Stopwatch.GetTimestamp() - t3;
 			return assembly;
+		}
+
+		/// <summary>Whether an assembly of the file's own name (from its metadata, not the file name) is loaded; which one.</summary>
+		private static bool SameNameLoaded(string file, out Assembly loaded)
+		{
+			loaded = null;
+			try
+			{
+				string name = AssemblyName.GetAssemblyName(file).Name;
+				NoteLoadedNames();
+				return name != null && loadedByName.TryGetValue(name, out loaded);
+			}
+			catch (Exception)
+			{
+				return false;
+			}
+		}
+
+		/// <summary>The assemblies loaded so far, by name (each asked once: that makes an AssemblyName object every time).</summary>
+		private static void NoteLoadedNames()
+		{
+			foreach (Assembly candidate in AppDomain.CurrentDomain.GetAssemblies())
+			{
+				// A stand-in (MissingAssemblies) is not the mod's assembly: a mod loaded earlier asked for this one before it
+				// was there (Rimtalk - Secrets and side quest expansion before RimTalk), and the real one loads now, as on the
+				// PC. Until 2026-10-28 the stand-in was taken for it and RimTalk with its 15 add-ons had no types.
+				if (namesSeen.Add(candidate) && !candidate.IsDynamic && !MissingAssemblies.IsStandIn(candidate))
+				{
+					loadedByName[candidate.GetName().Name] = candidate;
+				}
+			}
 		}
 
 		private static readonly HashSet<Assembly> namesSeen = new HashSet<Assembly>();
