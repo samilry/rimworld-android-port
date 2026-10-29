@@ -81,6 +81,7 @@ namespace PortMobile
 			MultiplayerFiles.Start(harmony);
 			VideoUrls.Start(harmony);
 			OpenUrl.Start(harmony);
+			Screenshots.Start(harmony);
 			AndroidVideo.Start(harmony);
 			SaveImport.Start(harmony);
 			HugsLogFile.Start(harmony);

@@ -34,8 +34,9 @@ namespace PortHooks
 
 		/// <summary>
 		/// Copies the runtime's assemblies into the game folder where a copy is missing or differs (size, time). A stamp in
-		/// the game folder (the number of assemblies and the runtime's own CoreLib, which every runtime the port ships
-		/// brings anew) lets later starts skip the comparison.
+		/// the game folder (the number of assemblies, their total size and the runtime's own CoreLib, which every runtime
+		/// the port ships brings anew) lets later starts skip the comparison; the total size notices a single file the port
+		/// replaces in the runtime (BinaryFormatter's implementation).
 		/// </summary>
 		public static void CopyRuntime()
 		{
@@ -49,7 +50,12 @@ namespace PortHooks
 				}
 				string[] files = Directory.GetFiles(runtime, "*.dll");
 				var coreLib = new FileInfo(typeof(object).Assembly.Location);
-				string stamp = files.Length + " " + coreLib.Length + " " + coreLib.LastWriteTimeUtc.Ticks;
+				long total = 0;
+				foreach (string file in files)
+				{
+					total += new FileInfo(file).Length;
+				}
+				string stamp = files.Length + " " + total + " " + coreLib.Length + " " + coreLib.LastWriteTimeUtc.Ticks;
 				string stampFile = Path.Combine(game, ".port17-runtime-copy");
 				if (File.Exists(stampFile) && File.ReadAllText(stampFile).Trim() == stamp)
 				{

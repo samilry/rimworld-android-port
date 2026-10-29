@@ -549,6 +549,8 @@ internal static class StartupHook
 		PortHooks.PortPlatform.PatchLoadFrom(new HarmonyLib.Harmony("port17.loadfrom"));
 		// Slang's sessions hold its core module (about 250 MB each): one at a time, let go when idle.
 		PortHooks.ShaderSessions.Start(new HarmonyLib.Harmony("port17.shadersessions"));
+		// The chip's name and the native heap figures, which the engine's Linux code reads from places Android has not.
+		PortHooks.HardwareInfo.Start(new HarmonyLib.Harmony("port17.hardwareinfo"));
 		PortHooks.LoadRecovery.Start();
 		Console.WriteLine("[port17] startup hook installed (Unity assembly names resolve to UnityStubs)");
 		PortDiag.StartIfRequested();

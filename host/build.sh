@@ -77,6 +77,16 @@ mkdir -p "$OUT/apk/assets/licenses"
 cp host/licenses/* "$OUT/apk/assets/licenses/"
 (cd "$OUT/apk" && "$JDK/bin/jar.exe" uf ../unsigned.apk assets/licenses)
 
+# BinaryFormatter as on the PC: the game ships the NuGet package System.Runtime.Serialization.Formatters 10.0.0, Microsoft's
+# compatibility package with the implementation (MIT; byte for byte the PC game's file), where the runtime pack's copy
+# throws PlatformNotSupportedException. It replaces the pack's copy in the runtime folder (here and in host/stage.sh).
+FORMATTERS=build/runtime/System.Runtime.Serialization.Formatters.dll
+if [ ! -f "$FORMATTERS" ]; then
+  mkdir -p build/runtime downloads/nuget
+  curl -sL -o downloads/nuget/system.runtime.serialization.formatters.10.0.0.nupkg https://api.nuget.org/v3-flatcontainer/system.runtime.serialization.formatters/10.0.0/system.runtime.serialization.formatters.10.0.0.nupkg
+  unzip -p downloads/nuget/system.runtime.serialization.formatters.10.0.0.nupkg lib/net8.0/System.Runtime.Serialization.Formatters.dll > "$FORMATTERS"
+fi
+
 if [ "$PAYLOAD" = 1 ]; then
   # What host/stage.sh puts on the phone, in the layout of the app's external files folder.
   P=$OUT/payload
@@ -84,6 +94,7 @@ if [ "$PAYLOAD" = 1 ]; then
   mkdir -p "$P/runtime" "$P/game/Mods" "$P/game/workshop" "$OUT/apk/assets"
   cp dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0/* "$P/runtime/"
   [ -f build/runtime/System.Private.CoreLib.dll ] && cp build/runtime/System.Private.CoreLib.dll "$P/runtime/"
+  cp "$FORMATTERS" "$P/runtime/"
   cp -r build/game/. "$P/game/"
   cp -r build/workshop/. "$P/game/workshop/"
   # The launch arguments of the phone (build/game's are for headless test runs).
@@ -104,6 +115,7 @@ if [ "$PAYLOAD" = port ]; then
   mkdir -p "$P/runtime" "$P/game/Mods" "$P/game/workshop" "$P/setup" "$OUT/apk/assets"
   cp dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0/* "$P/runtime/"
   [ -f build/runtime/System.Private.CoreLib.dll ] && cp build/runtime/System.Private.CoreLib.dll "$P/runtime/"
+  cp "$FORMATTERS" "$P/runtime/"
   for f in PortHooks.dll PortMobile.dll 0Harmony.dll Mono.Cecil.dll ModRules.txt; do cp "build/game/$f" "$P/game/"; done
   cp -r build/workshop/. "$P/game/workshop/"
   printf -- "-NoCrashDialog\n-Verbose\n" > "$P/game/args.txt"

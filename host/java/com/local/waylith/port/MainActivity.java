@@ -399,6 +399,24 @@ public final class MainActivity extends NativeActivity
         }
     }
 
+    /**
+     * A picture the gallery should list (mobile/Screenshots.cs, through glfw_android.c: the game's screenshots copied
+     * into Pictures/RimWorld). A file an app creates there by path is not in the media store until it is scanned.
+     */
+    public boolean scanMediaUtf8(byte[] path)
+    {
+        try
+        {
+            android.media.MediaScannerConnection.scanFile(getApplicationContext(), new String[] { new String(path, "UTF-8") }, null, null);
+            return true;
+        }
+        catch (Throwable t)
+        {
+            android.util.Log.w("port17", "media scan failed", t);
+            return false;
+        }
+    }
+
     @Override
     public void onTrimMemory(int level)
     {

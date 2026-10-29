@@ -1470,6 +1470,15 @@ API int glfwAndroidOpenUrl(const char* url)
     return ok;
 }
 
+// A picture the gallery should list (MainActivity.scanMediaUtf8), for mobile/Screenshots.cs: a file an app creates in
+// Pictures by path is not in the phone's media store until it is scanned. 1 when the scan was asked.
+API int glfwAndroidScanMedia(const char* path)
+{
+    int ok = 0;
+    if (path && *path) activity_bytes("scanMediaUtf8", "([B)Z", path, &ok);
+    return ok;
+}
+
 // Time
 API double glfwGetTime(void)
 {

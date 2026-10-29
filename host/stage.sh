@@ -27,6 +27,8 @@ if [ "$what" = runtime ] || [ "$what" = all ]; then
   else
     echo "build/runtime/System.Private.CoreLib.dll missing (host/corelib.sh): the pack's CoreLib stays, string hashes change per launch"
   fi
+  # BinaryFormatter's implementation, as the PC game ships it (host/build.sh fetches it).
+  [ -f build/runtime/System.Runtime.Serialization.Formatters.dll ] && "$ADB" push build/runtime/System.Runtime.Serialization.Formatters.dll "$D/runtime/" | tail -1 | cut -c1-100
 fi
 
 if [ "$what" = game ] || [ "$what" = build ] || [ "$what" = all ]; then
@@ -72,7 +74,8 @@ if [ "$what" = build ]; then
   exit 0
 fi
 if [ "$what" = game ] || [ "$what" = all ]; then
-  if [ -n "$("$ADB" shell pidof $PKG | tr -d '')" ]; then
+  if [ -n "$("$ADB" shell pidof $PKG | tr -d '
+')" ]; then
     echo "the game is running: stop it first (the asset pack and the assemblies are in use)"; exit 1
   fi
   "$ADB" shell "mkdir -p $D/game"
