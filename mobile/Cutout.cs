@@ -39,7 +39,8 @@ namespace PortMobile
 	///     user, 2026-10-24: with the tab moved off a hole at the left, the fill stayed at the edge as a black bar. Where
 	///     that window is drawn counts: RimHUD's taller tab window, above the screen's top, is drawn smaller and centred
 	///     on itself (WindowFit). RimHUD draws the row itself, in a prefix of DoTabs that skips the game's: its method is
-	///     rewritten the same way when it is there.
+	///     rewritten the same way when it is there;
+	///   - the main menu's box of translators (left) and pane of buttons and links (right), drawn outside any window.
 	/// Nothing on the map moves: the game and the mods place labels there by the camera's screen position.
 	/// A black band beside the hole (the window kept clear of it, LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER) was tried first and
 	/// turned down by the user ("太难看了").
@@ -90,6 +91,8 @@ namespace PortMobile
 		// Whether the mods that draw the architect's panel themselves were looked for, and how far such a panel is moved now.
 		private static bool modPanelsLooked;
 		private static float modPanelShift;
+		// While the main menu draws itself (BeforeMainMenu).
+		private static bool mainMenu;
 
 		public static void Start(Harmony harmony)
 		{
@@ -113,6 +116,10 @@ namespace PortMobile
 				// First: before a mod's prefix that draws the row in the game's place (RimHUD) and skips the rest.
 				patcher = harmony;
 				harmony.Patch(AccessTools.Method(typeof(InspectPaneUtility), "DoTabs"), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeTabs)) { priority = Priority.First }, finalizer: end, transpiler: new HarmonyMethod(typeof(Cutout), nameof(TabFillerTranspiler)));
+				harmony.Patch(AccessTools.Method(typeof(MainMenuDrawer), nameof(MainMenuDrawer.MainMenuOnGUI)), prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeMainMenu)), finalizer: new HarmonyMethod(typeof(Cutout), nameof(AfterMainMenu)));
+				HarmonyMethod menuPart = new HarmonyMethod(typeof(Cutout), nameof(BeforeMainMenuPart));
+				harmony.Patch(AccessTools.Method(typeof(MainMenuDrawer), nameof(MainMenuDrawer.DoMainMenuControls)), prefix: menuPart);
+				harmony.Patch(AccessTools.Method(typeof(MainMenuDrawer), "DoTranslationInfoRect"), prefix: menuPart);
 				readoutHeight = AccessTools.FieldRefAccess<ResourceReadout, float>("lastDrawnHeight");
 				stackWindows = AccessTools.FieldRefAccess<WindowStack, List<Window>>("windows");
 				Console.WriteLine("[mobile] cutout: the interface keeps clear of the camera's hole" + (on ? "" : " (switched off in the options)"));
@@ -636,6 +643,31 @@ namespace PortMobile
 		}
 
 		/// <summary>Prefix of ResourceReadout.ResourceReadoutOnGUI: to the right of a hole at the left edge the list reaches.</summary>
+		/// <summary>
+		/// The main menu is drawn outside any window (MainMenuDrawer.MainMenuOnGUI): the box of translators at the left (8,
+		/// 100, 300 x 400; a hole in the middle of the left side covered its lower part and its buttons, a tester's OPPO
+		/// 2026-10-29) and the pane of buttons and links at the right (where the hole is with the phone turned over) are kept
+		/// clear as a window is. DoMainMenuControls also draws the game's menu tab, inside that window (which is moved as a
+		/// window): only the main menu's own call is moved.
+		/// </summary>
+		public static void BeforeMainMenu()
+		{
+			mainMenu = true;
+		}
+
+		public static void AfterMainMenu()
+		{
+			mainMenu = false;
+		}
+
+		public static void BeforeMainMenuPart(ref Rect __0)
+		{
+			if (on && mainMenu && holes.Count > 0)
+			{
+				KeepClear(ref __0);
+			}
+		}
+
 		public static void BeforeReadout(ResourceReadout __instance)
 		{
 			long start = timing ? Stopwatch.GetTimestamp() : 0;
