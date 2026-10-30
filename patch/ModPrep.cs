@@ -1936,26 +1936,41 @@ internal static class ModPrep
 	/// The PE machine type AMD64 becomes ARM64. An IL-only image marked for 32-bit processes only (x86: the CLR header's
 	/// 32BITREQUIRED without 32BITPREFERRED) becomes AnyCPU: Expanded Prosthetics and Organ Engineering's EPIA.dll is built
 	/// that way, which Mono and the PC's runtime let pass and this one refuses ("The assembly architecture is not
-	/// compatible with the current process"; a tester, 2026-10-25).
+	/// compatible with the current process"; a tester, 2026-10-25). An AMD64 image is changed only when it is IL only
+	/// too: native code (a native library, a mixed-mode assembly) runs here under no mark, and until 2026-10-30 such a
+	/// file was marked ARM64 all the same.
 	/// </summary>
 	public static bool FixMachineType(byte[] bytes)
+	{
+		return FixMachineType(bytes, true);
+	}
+
+	/// <summary>Whether FixMachineType would change the image; the bytes stay as they are.</summary>
+	public static bool MarkedForOneProcessor(byte[] bytes)
+	{
+		return FixMachineType(bytes, false);
+	}
+
+	private static bool FixMachineType(byte[] bytes, bool change)
 	{
 		if (bytes.Length < 0x40 || bytes[0] != (byte)'M' || bytes[1] != (byte)'Z') return false;
 		int pe = BitConverter.ToInt32(bytes, 0x3c);
 		if (pe < 0 || pe + 24 > bytes.Length || bytes[pe] != (byte)'P' || bytes[pe + 1] != (byte)'E') return false;
 		ushort machine = BitConverter.ToUInt16(bytes, pe + 4);
-		if (machine == 0x8664)
-		{
-			bytes[pe + 4] = 0x64;
-			bytes[pe + 5] = 0xaa;
-			return true;
-		}
-		int flags = machine == 0x14c ? ClrFlagsOffset(bytes, pe) : -1;
+		int flags = machine == 0x8664 || machine == 0x14c ? ClrFlagsOffset(bytes, pe) : -1;
 		if (flags < 0 || flags + 4 > bytes.Length) return false;
 		uint value = BitConverter.ToUInt32(bytes, flags);
 		const uint ilOnly = 0x1, required32 = 0x2, preferred32 = 0x20000;
-		if ((value & ilOnly) == 0 || (value & required32) == 0 || (value & preferred32) != 0) return false;
-		BitConverter.GetBytes(value & ~required32).CopyTo(bytes, flags);
+		if ((value & ilOnly) == 0 || (machine == 0x14c && ((value & required32) == 0 || (value & preferred32) != 0))) return false;
+		if (change && machine == 0x8664)
+		{
+			bytes[pe + 4] = 0x64;
+			bytes[pe + 5] = 0xaa;
+		}
+		else if (change)
+		{
+			BitConverter.GetBytes(value & ~required32).CopyTo(bytes, flags);
+		}
 		return true;
 	}
 

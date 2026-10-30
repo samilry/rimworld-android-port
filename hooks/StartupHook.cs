@@ -151,6 +151,22 @@ namespace PortHooks
 			{
 				Console.WriteLine("[port17] Assembly.LoadFrom left as it is (mods load without the port's handling): " + e.Message);
 			}
+			try
+			{
+				// Both overloads of each: the short one only calls the long one, which its precompiled code may hold inlined.
+				foreach (Type[] parameters in new[] { new[] { typeof(byte[]) }, new[] { typeof(byte[]), typeof(byte[]) } })
+				{
+					harmony.Patch(typeof(Assembly).GetMethod(nameof(Assembly.Load), parameters), prefix: new HarmonyLib.HarmonyMethod(typeof(PortPlatform), nameof(BeforeLoadBytes)));
+				}
+				foreach (Type[] parameters in new[] { new[] { typeof(Stream) }, new[] { typeof(Stream), typeof(Stream) } })
+				{
+					harmony.Patch(typeof(AssemblyLoadContext).GetMethod(nameof(AssemblyLoadContext.LoadFromStream), parameters), prefix: new HarmonyLib.HarmonyMethod(typeof(PortPlatform), nameof(BeforeLoadStream)));
+				}
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[port17] assemblies loaded from bytes keep their processor mark: " + e.Message);
+			}
 		}
 
 		/// <summary>
@@ -405,6 +421,75 @@ namespace PortHooks
 				Console.WriteLine("[port17] could not check the architecture of " + path + ": " + e.Message);
 				return null;
 			}
+		}
+
+		/// <summary>
+		/// Prefix of Assembly.Load(byte[]) and Load(byte[], byte[]), installed with the one of LoadFrom (PatchLoadFrom). An
+		/// image marked for one processor is refused from bytes as from a file, and Ludeon's runtime takes any mark
+		/// (WaylithClr.LaxAssemblyArchitecture). Files get a loadable mark from the preparation or FixedArchitectureCopy;
+		/// an image a mod unpacks or makes itself (Costura's compressed resources, a zip, a download) passes neither, so a
+		/// copy of its bytes with the mark fixed loads instead. The caller's array stays as it was.
+		/// </summary>
+		public static void BeforeLoadBytes(ref byte[] rawAssembly)
+		{
+			byte[] loadable = LoadableCopy(rawAssembly);
+			if (loadable != null)
+			{
+				rawAssembly = loadable;
+			}
+		}
+
+		/// <summary>
+		/// The same for AssemblyLoadContext.LoadFromStream(Stream) and (Stream, Stream). The image is read here from where
+		/// the stream stands, as the runtime reads it (to the end; a stream that cannot seek is left to the runtime, which
+		/// refuses it as on the PC); one with such a mark goes on as a fixed copy in a MemoryStream, any other is read by
+		/// the runtime again from where it stood.
+		/// </summary>
+		public static void BeforeLoadStream(ref Stream assembly)
+		{
+			Stream given = assembly;
+			if (given == null || !given.CanSeek)
+			{
+				return;
+			}
+			long start = 0;
+			try
+			{
+				start = given.Position;
+				var image = new byte[given.Length - start];
+				given.ReadExactly(image);
+				byte[] loadable = LoadableCopy(image);
+				if (loadable != null)
+				{
+					assembly = new MemoryStream(loadable, 0, loadable.Length, false, true);
+					return;
+				}
+				given.Position = start;
+			}
+			catch (Exception)
+			{
+				try
+				{
+					given.Position = start;
+				}
+				catch (Exception)
+				{
+					// the runtime gets the stream as it is now
+				}
+			}
+		}
+
+		/// <summary>A copy of an image marked for one processor, marked for any (ModPrep.FixMachineType); null for any other image.</summary>
+		private static byte[] LoadableCopy(byte[] image)
+		{
+			if (image == null || !ModPrep.MarkedForOneProcessor(image))
+			{
+				return null;
+			}
+			var copy = (byte[])image.Clone();
+			ModPrep.FixMachineType(copy);
+			Console.WriteLine("[port17] an assembly loaded from bytes (" + copy.Length + " bytes) is marked for one processor (AMD64 or x86 only); a copy marked for this runtime loads");
+			return copy;
 		}
 
 		/// <summary>
