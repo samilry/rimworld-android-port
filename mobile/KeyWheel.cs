@@ -45,8 +45,7 @@ namespace PortMobile
 
 		// The phone's own keys (their names in keyWheelKeys).
 		internal const string ShiftName = "@Shift", CtrlName = "@Ctrl", AltName = "@Alt", MouseMiddleName = "@MouseMiddle";
-		// The left and the right mouse button, keys of the wheel until they were buttons of their own (MouseButtons): no key
-		// has these names now.
+		// The left and the right mouse button, keys of the wheel until keyWheelVersion 3: only taken out of the keys kept.
 		private const string MouseLeftName = "@MouseLeft", MouseRightName = "@MouseRight";
 		// Not a switch: a tap records the moment for a report (Recorder.Mark: a screenshot and the game's state).
 		internal const string ReportName = "@Report";
@@ -138,15 +137,30 @@ namespace PortMobile
 			enabled = Settings.Get("keyWheel", true);
 			string list = Settings.Get("keyWheelKeys", null);
 			names = list != null ? list.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim()).ToList() : Defaults.ToList();
-			if (list != null && Settings.Get("keyWheelVersion", 1) < 2 && !names.Any(n => n.StartsWith("@")))
+			int version = Settings.Get("keyWheelVersion", 1);
+			if (list != null && version < 3)
 			{
-				// Keys chosen before the wheel had keys of its own (the Shift button was apart then): those go in, once.
-				names.InsertRange(Math.Min(4, names.Count), new[] { ShiftName, MouseLeftName, MouseRightName, MouseMiddleName });
-				Settings.Set("keyWheelKeys", string.Join(",", names));
+				int before = names.Count;
+				if (version < 2 && !names.Any(n => n.StartsWith("@")))
+				{
+					// Keys chosen before the wheel had keys of its own (the Shift button was apart then): those go in, once. Of
+					// the mouse buttons that version added, the middle one is left (below).
+					names.InsertRange(Math.Min(4, names.Count), new[] { ShiftName, MouseMiddleName });
+				}
+				// The left and the right mouse button are buttons of their own since version 3 (MouseButtons): they leave the
+				// keys chosen before, and the rest stays as the player had it (the order, combinations, names given to keys).
+				if (names.RemoveAll(n => n == MouseLeftName || n == MouseRightName) > 0)
+				{
+					Console.WriteLine("[mobile] key wheel: the left and right mouse buttons are buttons of their own now, out of the keys");
+				}
+				if (names.Count != before)
+				{
+					Settings.Set("keyWheelKeys", string.Join(",", names));
+				}
 			}
-			if (Settings.Get("keyWheelVersion", 1) < 2)
+			if (version < 3)
 			{
-				Settings.Set("keyWheelVersion", "2");
+				Settings.Set("keyWheelVersion", "3");
 			}
 			if (TryParsePlace(Settings.Get("keyWheelAt", null), out Vector2 at))
 			{
