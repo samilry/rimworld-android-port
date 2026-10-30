@@ -113,6 +113,8 @@ namespace PortMobile
 		private static Vector2 pressAt, cursorOffset;
 		private static bool dragged;
 		private static bool steady = true;
+		// A finger that rested has begun to drag: the engine's mouse sets off from the press by a few pixels first (MoveCursor).
+		private static bool setOff;
 		// The list the current touch began in: the directions it scrolls in, and where it begins on the screen.
 		private static bool listDown, listAcross;
 		private static float listX, listY;
@@ -211,6 +213,10 @@ namespace PortMobile
 
 		// A movement of about 2 mm separates a drag from an unsteady tap.
 		private static float DragThreshold => Mathf.Max(12f, density * 160f * 0.08f);
+		// How far the mouse sets off in the frame a hold turns into a drag (pixels): past the 4.5 (a square of 20) within
+		// which the game's draggable button and DragSelect's see no drag yet, and well inside the smallest box a finger
+		// rests on (a work box is 25 units).
+		private const float HeldDragStep = 6f;
 
 		private static bool Playing => Current.ProgramState == ProgramState.Playing;
 
@@ -484,7 +490,7 @@ namespace PortMobile
 				Interface.FingerLanded(pressAt);
 				Recorder.TouchBegan(first.pos, WindowAt(first.start)?.GetType().Name);
 				cursorOffset = Vector2.zero;
-				dragged = false;
+				dragged = setOff = false;
 				Cursor(pressAt);
 				int button = MouseButtons.TapButton(pressAt);
 				if (button != Left)
@@ -527,6 +533,7 @@ namespace PortMobile
 				dragged = true;
 				cursorOffset = pressAt - first.pos;
 				DoubleTap.Forget();
+				setOff = mode == Mode.Held;
 			}
 			bool moved = dragged;
 			bool held = Now - first.downTime > HoldSeconds;
@@ -611,6 +618,7 @@ namespace PortMobile
 							if (mode == Mode.ListHeld)
 							{
 								Interface.HoldBecameDrag();
+								setOff = true;
 							}
 							mode = Mode.Interface;
 							Button(Left, true);
@@ -657,7 +665,8 @@ namespace PortMobile
 		/// stays where the press went: a tap is released on the control it pressed, however the fingertip rolls while it
 		/// lifts (a button fires only when press and release are both on it). Once the finger drags, on the interface the
 		/// mouse goes on from where it was and closes in on the finger within a few frames, so that a list or a slider
-		/// does not jump by the threshold; on the map it is under the finger at once. mobile.txt: tapSteady=0 lets the
+		/// does not jump by the threshold; after a hold (on the interface, in a list) it sets off a few pixels from the press
+		/// first, as a mouse held still does; on the map it is under the finger at once. mobile.txt: tapSteady=0 lets the
 		/// mouse follow every movement as before.
 		/// </summary>
 		private static void MoveCursor(Finger finger, bool changed)
@@ -667,6 +676,33 @@ namespace PortMobile
 				if (!steady && changed)
 				{
 					Cursor(finger.pos + (pressAt - finger.start));
+				}
+				return;
+			}
+			if (setOff)
+			{
+				// A finger that rested has begun to drag. A mod that tells a drag from the mouse itself sees one begin once
+				// the mouse is 4.5 pixels from where it was pressed, on what is under it then: the mouse that jumped the
+				// threshold at once (after a hold on the interface, which pressed nothing) or a third of it and more (after
+				// one in a list, which presses now) had left the box the hold began on, and DragSelect set the boxes from the
+				// next one on (the side-by-side test, 2026-10-30). A mouse held still and then moved sets off from the press:
+				// here it moves a few pixels the way the finger went first, and from the next frame on goes on as before.
+				setOff = false;
+				if (steady)
+				{
+					Vector2 to = pressAt + (finger.pos - finger.start).normalized * HeldDragStep;
+					cursorOffset = mode == Mode.Held ? Vector2.zero : to - finger.pos;
+					Cursor(to);
+					return;
+				}
+			}
+			if (mode == Mode.Held)
+			{
+				// Nothing was pressed: the mouse is under the finger, from the frame after it set off too.
+				cursorOffset = Vector2.zero;
+				if (cursorAt != finger.pos)
+				{
+					Cursor(finger.pos);
 				}
 				return;
 			}
