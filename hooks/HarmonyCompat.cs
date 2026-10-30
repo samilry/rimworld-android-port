@@ -42,9 +42,11 @@ namespace PortHooks
 	///     method then too ("Stack should be empty after tailcall").
 	///   - a jump out of a try block or a catch handler: Harmony turns a transpiler's "ret" there into a "br" to the end
 	///     of the original, and the PC's JIT runs such a jump as a leave (WaylithClr's JitLaxRetInTry; finally blocks
-	///     run). With nothing on the stack it becomes a leave here. A jump that carries a value out (the return value of
-	///     a "ret" in a try) is left as it is: there the PC loses the value (0 or null comes back) or, with a finally,
-	///     refuses the method.
+	///     run). With nothing on the stack it becomes a leave here, and so does one in code no path reaches (the JIT
+	///     checks every jump, reached or not). A jump that carries a value out (the return value of a "ret" in a try) is
+	///     left as it is: the PC runs some such methods, the value lost on that path (the type's default comes back), and
+	///     refuses others ("stack underflow"), with or without a finally, by how the code around the jump is laid out (21
+	///     shapes measured: 11 run, 10 refused), not by a rule that could be followed here.
 	/// Where the original's returns meet, a method that returns something keeps the return value on top and what a
 	/// transpiler left over under it, so paths that arrive there with different depths get no pops: the PC's Harmony
 	/// refuses that method, and here Harmony is left to refuse it too. Until 2026-10-30 the pops took the return value
@@ -266,7 +268,9 @@ namespace PortHooks
 				CodeInstruction code = codes[i];
 				int t = labels[(Label)code.operand];
 				Effect(code, out int pop, out int push);
-				if (depth[i] == Unvisited || depth[i] - pop + push != 0 || depth[t] != 0)
+				// A jump in code no path reaches becomes a leave too, whatever it would carry: the JIT refuses the method for
+				// it all the same (the PC's runs it), and it never runs.
+				if (depth[i] != Unvisited && (depth[i] - pop + push != 0 || depth[t] != 0))
 				{
 					continue;
 				}
