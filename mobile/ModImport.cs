@@ -325,28 +325,39 @@ namespace PortMobile
 		}
 
 		/// <summary>
-		/// The folders in Mods that the game does not list because a listed mod has their package id (the game keeps the
-		/// first it finds and logs the others as duplicates): other Workshop items of one package id, which the import
-		/// puts beside each other as the PC keeps them. No row on the mod screen selects them, so they are offered here.
+		/// The folders in Mods that the game neither lists nor runs because a listed mod has their package id (the game
+		/// keeps the first it finds and logs the others as duplicates): other Workshop items of one package id, which the
+		/// import puts beside each other as the PC keeps them. No row on the mod screen selects them, so they are offered here.
 		/// </summary>
 		private static List<(string name, string folder)> UnlistedDuplicates()
 		{
 			var unlisted = new List<(string, string)>();
 			try
 			{
-				var listed = new HashSet<string>(StringComparer.Ordinal);
+				var kept = new HashSet<string>(StringComparer.Ordinal);
 				foreach (ModMetaData mod in ModLister.AllInstalledMods)
 				{
 					if (mod?.RootDir != null)
 					{
-						listed.Add(Path.GetFullPath(mod.RootDir.FullName).TrimEnd(Path.DirectorySeparatorChar));
+						kept.Add(Path.GetFullPath(mod.RootDir.FullName).TrimEnd(Path.DirectorySeparatorChar));
+					}
+				}
+				// A mod loaded at start runs from its folder until the game starts again, listed or not (1.7 reads a texture's
+				// file when it is first shown). After an import the mod page may list the other copy, since the phone reads
+				// the folders in the order the file system keeps them: the copy loaded at start is offered after the next
+				// start, once it is neither listed nor loaded.
+				foreach (ModContentPack running in LoadedModManager.RunningModsListForReading)
+				{
+					if (running?.RootDir != null)
+					{
+						kept.Add(Path.GetFullPath(running.RootDir).TrimEnd(Path.DirectorySeparatorChar));
 					}
 				}
 				foreach (string folder in Directory.GetDirectories(GenFilePaths.ModsFolderPath))
 				{
 					try
 					{
-						string about = listed.Contains(Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar)) ? null : AboutFile(folder, false);
+						string about = kept.Contains(Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar)) ? null : AboutFile(folder, false);
 						if (about == null)
 						{
 							continue;
