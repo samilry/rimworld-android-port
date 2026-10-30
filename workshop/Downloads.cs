@@ -179,8 +179,18 @@ namespace PortWorkshop
 			}
 			else
 			{
-				item.State = stamp.Manifest == item.Manifest || (item.Manifest == 0 && stamp.Updated >= item.Updated) ? ItemState.Installed : ItemState.Outdated;
+				item.State = UpToDate(stamp, item.Manifest, item.Updated) ? ItemState.Installed : ItemState.Outdated;
 			}
+		}
+
+		/// <summary>
+		/// Whether a mod's .workshop records the version the Workshop has: by the manifest of its content, or, for an old
+		/// item that is one file on Steam's servers, by the time of the version. Such an item has no manifest, and its
+		/// .workshop records none either: compared by manifest first, it was always up to date.
+		/// </summary>
+		private static bool UpToDate(Stamp stamp, ulong manifest, uint updated)
+		{
+			return manifest != 0 ? stamp.Manifest == manifest : stamp.Updated >= updated;
 		}
 
 		/// <summary>Looks the ids up and puts them into the list, a collection's items and an item's required items with them.</summary>
