@@ -10,8 +10,8 @@
 //   voices   one ma_sound each, with optional low-pass, high-pass and echo nodes between it and its group
 //   groups   ma_sound_group; handle 0 is the engine's endpoint
 // Handles are indices with a generation, so that a voice the engine still refers to after its automatic release
-// is harmless. Reverb is a Freeverb node of our own (the engine passes Freeverb-style parameters); the mix matrix
-// is accepted and ignored.
+// is harmless. Reverb is a Freeverb node of our own (the engine passes Freeverb-style parameters), and so is the mix
+// matrix (the engine's panning of mono clips, as the PC's library does it).
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -110,6 +110,8 @@ typedef struct Voice
     TapNode* tap;
     struct ReverbNode* reverb;
     int reverbOn;
+    struct MixNode* mix;
+    int mixOn;
 } Voice;
 
 typedef struct Group
@@ -132,7 +134,7 @@ static uint32_t g_rate = 48000, g_channels = 2;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static Voice g_voices[MAX_VOICES];
 static Group g_groups[MAX_GROUPS];
-static uint64_t g_voicesCreated, g_updates;
+static uint64_t g_voicesCreated, g_updates, g_mixMatrices;
 static int g_lazy = 1, g_checkProbe;
 static uint64_t g_probesChecked;
 static void* (*g_alloc)(size_t);
@@ -787,17 +789,72 @@ static void rv_destroy(ReverbNode* r)
     free(r);
 }
 
+// ---- the mix matrix: a node at the end of the voice ----
+// AudioSource.ApplyPan pans a mono clip with the matrix [cos, sin] of the pan angle (0.707 to each side in the
+// middle) and folds a stereo clip marked ForceToMono to mono with half of that for each channel; other clips get
+// wa_voice_set_pan. The PC's library applies the matrix to what the sound puts out in the engine's channels (a mono
+// clip duplicated to both) as the voice's last stage, after the effects; set_pan and set_3d turn it off again.
+// Without it a mono sound played 3 dB louder than on the PC and could not be panned.
+#define MIX_MAX_CHANNELS 8
+
+typedef struct MixNode
+{
+    ma_node_base base;
+    uint32_t channels;
+    float matrix[MIX_MAX_CHANNELS * MIX_MAX_CHANNELS]; // [out][in], both in the engine's channels
+} MixNode;
+
+static void mix_process(ma_node* node, const float** in, ma_uint32* inFrames, float** out, ma_uint32* outFrames)
+{
+    MixNode* m = (MixNode*)node;
+    ma_uint32 frames = *inFrames < *outFrames ? *inFrames : *outFrames;
+    uint32_t ch = m->channels;
+    for (ma_uint32 f = 0; f < frames; f++)
+    {
+        const float* x = in[0] + (size_t)f * ch;
+        float* y = out[0] + (size_t)f * ch;
+        for (uint32_t o = 0; o < ch; o++)
+        {
+            float sum = 0.0f;
+            for (uint32_t i = 0; i < ch; i++) sum += m->matrix[o * ch + i] * x[i];
+            y[o] = sum;
+        }
+    }
+    *inFrames = frames;
+    *outFrames = frames;
+}
+static ma_node_vtable g_mixVtable = { mix_process, NULL, 1, 1, 0 };
+
+static MixNode* mix_create(void)
+{
+    if (g_channels > MIX_MAX_CHANNELS) return NULL;
+    MixNode* m = (MixNode*)calloc(1, sizeof(MixNode));
+    m->channels = g_channels;
+    ma_node_config cfg = ma_node_config_init();
+    ma_uint32 channels = g_channels;
+    cfg.vtable = &g_mixVtable;
+    cfg.pInputChannels = &channels;
+    cfg.pOutputChannels = &channels;
+    if (ma_node_init(ma_engine_get_node_graph(&g_engine), &cfg, &g_allocCallbacks, m) != MA_SUCCESS)
+    {
+        free(m);
+        return NULL;
+    }
+    return m;
+}
+
 // ---- voices ----
 static void voice_rebuild_chain(Voice* v)
 {
     ma_node* target = v->group ? (ma_node*)v->group : ma_engine_get_endpoint(&g_engine);
-    ma_node* nodes[5];
+    ma_node* nodes[6];
     int n = 0;
     if (v->lpfOn) nodes[n++] = &v->lpf;
     if (v->hpfOn) nodes[n++] = &v->hpf;
     if (v->echoOn) nodes[n++] = &v->delay;
     if (v->reverbOn && v->reverb) nodes[n++] = v->reverb;
     if (v->tap) nodes[n++] = v->tap;
+    if (v->mixOn && v->mix) nodes[n++] = v->mix; // last, and after the tap: the PC's tap sees the signal before it
     ma_node* next = target;
     for (int i = n - 1; i >= 0; i--)
     {
@@ -809,6 +866,14 @@ static void voice_rebuild_chain(Voice* v)
     if (!v->hpfOn && v->hpfInit) ma_node_detach_output_bus(&v->hpf, 0);
     if (!v->echoOn && v->delayInit) ma_node_detach_output_bus(&v->delay, 0);
     if (!v->reverbOn && v->reverb) ma_node_detach_output_bus(v->reverb, 0);
+    if (!v->mixOn && v->mix) ma_node_detach_output_bus(v->mix, 0);
+}
+
+// A pan (wa_voice_set_pan) or 3D (wa_voice_set_3d) takes the matrix's place, as in the PC's library; 3D voices are
+// panned by miniaudio's spatializer here.
+static void voice_mix_off(Voice* v)
+{
+    if (v->mixOn) { v->mixOn = 0; voice_rebuild_chain(v); }
 }
 
 static void voice_release_locked(Voice* v)
@@ -820,6 +885,7 @@ static void voice_release_locked(Voice* v)
     if (v->delayInit) { ma_delay_node_uninit(&v->delay, &g_allocCallbacks); v->delayInit = 0; }
     if (v->tap) { ma_node_uninit(v->tap, &g_allocCallbacks); free(v->tap->ring); free(v->tap); v->tap = NULL; }
     if (v->reverb) { rv_destroy(v->reverb); v->reverb = NULL; }
+    if (v->mix) { ma_node_uninit(v->mix, &g_allocCallbacks); free(v->mix); v->mix = NULL; }
     if (v->decoderInit) { ma_decoder_uninit(&v->decoder); v->decoderInit = 0; }
     if (v->userInit) { ma_data_source_uninit(&v->userSource); v->userInit = 0; }
     if (v->usesPcm && v->sound) { v->sound->pcmUsers--; v->usesPcm = 0; }
@@ -974,18 +1040,39 @@ EXPORT int wa_voice_set_position_frames(uint64_t voice, uint64_t frame)
 EXPORT void wa_voice_set_volume(uint64_t voice, float volume) { WITH_VOICE({ v->volume = volume; if (!v->muted) ma_sound_set_volume(&v->snd, volume); }); }
 EXPORT void wa_voice_set_mute(uint64_t voice, int mute) { WITH_VOICE({ v->muted = mute; ma_sound_set_volume(&v->snd, mute ? 0.0f : v->volume); }); }
 EXPORT void wa_voice_set_pitch(uint64_t voice, float pitch) { WITH_VOICE({ ma_sound_set_pitch(&v->snd, pitch > 0.001f ? pitch : 0.001f); }); }
-EXPORT void wa_voice_set_pan(uint64_t voice, float pan) { WITH_VOICE({ ma_sound_set_pan(&v->snd, pan); }); }
+EXPORT void wa_voice_set_pan(uint64_t voice, float pan) { WITH_VOICE({ voice_mix_off(v); ma_sound_set_pan(&v->snd, pan); }); }
 EXPORT void wa_voice_set_loop(uint64_t voice, int loop) { WITH_VOICE({ ma_sound_set_looping(&v->snd, loop ? MA_TRUE : MA_FALSE); }); }
 EXPORT void wa_voice_set_priority(uint64_t voice, int priority) { (void)voice; (void)priority; }
 EXPORT void wa_voice_set_doppler(uint64_t voice, float factor) { WITH_VOICE({ ma_sound_set_doppler_factor(&v->snd, factor); }); }
 EXPORT void wa_voice_set_paused(uint64_t voice, int paused) { WITH_VOICE({ if (paused) ma_sound_stop(&v->snd); else ma_sound_start(&v->snd); }); }
 EXPORT void wa_voice_set_start_time(uint64_t voice, uint64_t absoluteFrames) { WITH_VOICE({ ma_sound_set_start_time_in_pcm_frames(&v->snd, absoluteFrames); }); }
 EXPORT void wa_voice_set_group(uint64_t voice, uint64_t group) { WITH_VOICE({ Group* g = group_of(group); v->group = g ? &g->group : NULL; voice_rebuild_chain(v); }); }
-EXPORT void wa_voice_set_mix_matrix(uint64_t voice, float* matrix, uint32_t outChannels, uint32_t inChannels) { (void)voice; (void)matrix; (void)outChannels; (void)inChannels; }
+// The engine's matrix is outChannels x inChannels, row by row (the clip's channels in); it is laid onto the engine's
+// channels as the PC's library does, and what does not fit is left out. The sound's own pan goes back to the middle.
+EXPORT void wa_voice_set_mix_matrix(uint64_t voice, float* matrix, uint32_t outChannels, uint32_t inChannels)
+{
+    WITH_VOICE({
+        if (matrix && !v->mix) v->mix = mix_create();
+        if (matrix && v->mix)
+        {
+            uint32_t ch = v->mix->channels;
+            uint32_t outs = outChannels < ch ? outChannels : ch;
+            uint32_t ins = inChannels < ch ? inChannels : ch;
+            float m[MIX_MAX_CHANNELS * MIX_MAX_CHANNELS] = { 0 };
+            for (uint32_t o = 0; o < outs; o++)
+                for (uint32_t i = 0; i < ins; i++) m[o * ch + i] = matrix[o * inChannels + i];
+            memcpy(v->mix->matrix, m, sizeof m);
+            ma_sound_set_pan(&v->snd, 0.0f);
+            if (!v->mixOn) { v->mixOn = 1; voice_rebuild_chain(v); }
+            if (++g_mixMatrices <= 4 && ch >= 2) LOGI("audio: mix matrix %ux%u on voice %u: left %.3f %.3f, right %.3f %.3f", outChannels, inChannels, (unsigned)(v - g_voices) + 1, m[0], m[1], m[ch], m[ch + 1]);
+        }
+    });
+}
 EXPORT void wa_voice_set_3d_position(uint64_t voice, float x, float y, float z) { WITH_VOICE({ ma_sound_set_position(&v->snd, x, y, z); }); }
 EXPORT void wa_voice_set_3d(uint64_t voice, int enabled, float minDistance, float maxDistance, int rolloff)
 {
     WITH_VOICE({
+        voice_mix_off(v);
         ma_sound_set_spatialization_enabled(&v->snd, enabled ? MA_TRUE : MA_FALSE);
         if (enabled)
         {
