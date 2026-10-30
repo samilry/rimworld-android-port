@@ -29,7 +29,7 @@ namespace PortMobile
 	///   the soft keyboard's Done (or Enter) finishes the typing: the field lets go of the focus and the keyboard goes
 	///   down. It is not the game's Enter, which accepts or closes the window the field is in (testers, 2026-10-22: a
 	///   number typed in the caravan's window cancelled it, a search box kept the keyboard, the debug actions' search ran
-	///   the first action). Only a chat's field ("chat_input": Multiplayer's) gets the Enter, which sends.
+	///   the first action). Only a chat's field gets the Enter, which sends (EnterFields).
 	/// With a mouse or a keyboard connected the tooltips, the search boxes' focus and the soft keyboard are the game's
 	/// again (InputMode).
 	/// </summary>
@@ -40,7 +40,10 @@ namespace PortMobile
 		[System.Runtime.InteropServices.DllImport("glfw")] private static extern void glfwAndroidKeyboardForced(int forced);
 
 		private const int GlfwKeyEnter = 257, GlfwPress = 1, GlfwRelease = 0;
-		private static readonly HashSet<string> EnterFields = new HashSet<string> { "chat_input" };
+		// The chats' fields, by the names they are given: there the keyboard's Done is the Enter that sends (Multiplayer's
+		// chat; Phinix's chat and RimTalk's talk window, which send on Enter or with their button: the Done only took the
+		// focus away, and they gave it straight back; the compatibility audit, 2026-10-30).
+		private static readonly HashSet<string> EnterFields = new HashSet<string> { "chat_input", "Phinix_chatMessageField", "CustomTalkTextField" };
 
 		/// <summary>The soft keyboard is up (asked for: a text field has the focus).</summary>
 		public static bool KeyboardShown => keyboardShown;
