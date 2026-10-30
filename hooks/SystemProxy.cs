@@ -62,9 +62,13 @@ namespace PortHooks
 			{
 				return null;
 			}
+			// A WebSocket's ws and wss are asked as http and https, as the PC's runtime asks Windows (WinInetProxyHelper):
+			// Android's selector has an entry for neither and answers "direct", so SteamKit's and mods' WebSockets went
+			// around the proxy.
+			string scheme = destination.Scheme == "wss" ? "https" : destination.Scheme == "ws" ? "http" : destination.Scheme;
 			// Only the scheme, host and port: the path and query (an API key in a URL) are no business of a PAC script.
 			string host = destination.IdnHost;
-			string address = destination.Scheme + "://" + (host.Contains(':') ? "[" + host + "]" : host) + ":" + destination.Port + "/";
+			string address = scheme + "://" + (host.Contains(':') ? "[" + host + "]" : host) + ":" + destination.Port + "/";
 			var answer = new byte[512];
 			int length = glfwAndroidProxyFor(address, answer, answer.Length);
 			if (length <= 0 || !Uri.TryCreate(Encoding.UTF8.GetString(answer, 0, length), UriKind.Absolute, out Uri proxy))
