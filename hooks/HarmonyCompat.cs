@@ -33,12 +33,18 @@ namespace PortHooks
 	/// in front of the try block (outside it) or of the return.
 	///
 	/// Harmony 3 follows the stack itself before the JIT sees the method (DynamicMethodBodyWriter.MaximumStack throws
-	/// "Inconsistent stack depth" where two paths bring different depths), on the PC as here. Values under the return
-	/// value of a method that returns something, as many on every path, get past it; the PC's JIT returns the top one
-	/// and this one refuses the method (measured 2026-10-30 with the same Harmony on both runtimes, the PC's own
-	/// runtime files, and transpilers that leave each shape). Here the return value is put aside in a local while the
-	/// others are popped. Not where the return comes right after a call: the JIT takes "call; ret" for a tail call and
-	/// wants nothing else on the stack, and the PC refuses the method then too ("Stack should be empty after tailcall").
+	/// "Inconsistent stack depth" where two paths bring different depths), on the PC as here. Two more shapes get past
+	/// it that the PC's JIT runs and this one refuses (measured 2026-10-30 with the same Harmony on both runtimes, the
+	/// PC's own runtime files, and transpilers that leave each shape); here they run as they do there:
+	///   - values under the return value of a method that returns something, as many on every path: the PC returns the
+	///     top one. Here it is put aside in a local while the others are popped. Not where the return comes right after
+	///     a call: the JIT takes "call; ret" for a tail call and wants nothing else on the stack, and the PC refuses the
+	///     method then too ("Stack should be empty after tailcall").
+	///   - a jump out of a try block or a catch handler: Harmony turns a transpiler's "ret" there into a "br" to the end
+	///     of the original, and the PC's JIT runs such a jump as a leave (WaylithClr's JitLaxRetInTry; finally blocks
+	///     run). With nothing on the stack it becomes a leave here. A jump that carries a value out (the return value of
+	///     a "ret" in a try) is left as it is: there the PC loses the value (0 or null comes back) or, with a finally,
+	///     refuses the method.
 	/// Where the original's returns meet, a method that returns something keeps the return value on top and what a
 	/// transpiler left over under it, so paths that arrive there with different depths get no pops: the PC's Harmony
 	/// refuses that method, and here Harmony is left to refuse it too. Until 2026-10-30 the pops took the return value
@@ -54,6 +60,13 @@ namespace PortHooks
 			{
 				return;
 			}
+			Balance(creator, codes);
+			LeaveRegions(creator, codes);
+		}
+
+		/// <summary>The pops in front of jumps, try blocks and returns, and under a return value, that leave the stack as this runtime wants it.</summary>
+		private static void Balance(object creator, List<CodeInstruction> codes)
+		{
 			Dictionary<Label, int> labels = LabelsOf(codes);
 			int[] depth = Follow(codes, labels, out bool certain);
 			if (!certain)
@@ -198,6 +211,155 @@ namespace PortHooks
 		private static int InsertOrder(int kind)
 		{
 			return kind == TryEntry ? 0 : kind == Fall ? 2 : 1;
+		}
+
+		/// <summary>
+		/// Jumps out of a try block or a catch handler with nothing on the stack become leaves (see the class notes). A
+		/// conditional one jumps to a leave of its own, put right after it, and the way on is jumped to around that.
+		/// </summary>
+		private static void LeaveRegions(object creator, List<CodeInstruction> codes)
+		{
+			if (!codes.Exists(BeginsTry))
+			{
+				return;
+			}
+			List<(int Parent, ExceptionBlockType Kind)> parts = PartsOf(codes, out int[] part);
+			if (parts == null)
+			{
+				return;
+			}
+			Dictionary<Label, int> labels = LabelsOf(codes);
+			var exits = new List<int>();
+			for (int i = 0; i < codes.Count; i++)
+			{
+				OpCode op = codes[i].opcode;
+				bool jump = (op.FlowControl == FlowControl.Branch && op != OpCodes.Leave && op != OpCodes.Leave_S) || (op.FlowControl == FlowControl.Cond_Branch && op != OpCodes.Switch);
+				if (jump && codes[i].operand is Label target && labels.TryGetValue(target, out int t) && Leaves(parts, part[i], part[t]))
+				{
+					exits.Add(i);
+				}
+			}
+			if (exits.Count == 0)
+			{
+				return;
+			}
+			int[] depth = Follow(codes, labels, out bool certain);
+			if (!certain)
+			{
+				return;
+			}
+			ILGenerator il = null;
+			var repaired = new List<CodeInstruction>(codes);
+			int made = 0;
+			// From the end backwards, so that the places stay right.
+			for (int e = exits.Count - 1; e >= 0; e--)
+			{
+				int i = exits[e];
+				CodeInstruction code = codes[i];
+				int t = labels[(Label)code.operand];
+				Effect(code, out int pop, out int push);
+				if (depth[i] == Unvisited || depth[i] - pop + push != 0 || depth[t] != 0)
+				{
+					continue;
+				}
+				if (code.opcode.FlowControl == FlowControl.Branch)
+				{
+					repaired[i] = new CodeInstruction(OpCodes.Leave, code.operand) { labels = new List<Label>(code.labels), blocks = new List<ExceptionBlock>(code.blocks) };
+					made++;
+					continue;
+				}
+				// "brX target" becomes "brX pad; br on; pad: leave target; on: ...", all inside the part the jump is in.
+				if (i + 1 >= codes.Count || part[i + 1] != part[i] || Ends(code) || BeginsTry(codes[i + 1]) || BeginsHandler(codes[i + 1]) || (il = il ?? IlOf(creator)) == null)
+				{
+					continue;
+				}
+				Label pad = il.DefineLabel(), on = il.DefineLabel();
+				var leave = new CodeInstruction(OpCodes.Leave, code.operand);
+				leave.labels.Add(pad);
+				var next = new CodeInstruction(repaired[i + 1]);
+				next.labels.Add(on);
+				repaired[i] = new CodeInstruction(code.opcode, pad) { labels = new List<Label>(code.labels), blocks = new List<ExceptionBlock>(code.blocks) };
+				repaired[i + 1] = next;
+				repaired.InsertRange(i + 1, new[] { new CodeInstruction(OpCodes.Br, on), leave });
+				made++;
+			}
+			if (made == 0 || !Balanced(repaired, ReturnTypeOf(creator) is Type type ? type == typeof(void) : (bool?)null))
+			{
+				return;
+			}
+			codes.Clear();
+			codes.AddRange(repaired);
+			Console.WriteLine("[port17] a patch of " + NameOf(creator) + " jumps out of a try block or catch handler at " + made + " place(s); made leaves (the PC's runtime runs such jumps as leaves, this runtime refuses the method)");
+		}
+
+		/// <summary>
+		/// The parts of the try statements in the list (a try block or one of its handlers: the part around it, -1 for
+		/// none, and the marker that began it) and, for each instruction, the innermost part it is in; null when the
+		/// markers do not nest.
+		/// </summary>
+		private static List<(int Parent, ExceptionBlockType Kind)> PartsOf(List<CodeInstruction> codes, out int[] part)
+		{
+			var parts = new List<(int Parent, ExceptionBlockType Kind)>();
+			part = new int[codes.Count];
+			var open = new Stack<int>();
+			int current = -1;
+			for (int i = 0; i < codes.Count; i++)
+			{
+				foreach (ExceptionBlock block in codes[i].blocks)
+				{
+					if (block.blockType == ExceptionBlockType.BeginExceptionBlock)
+					{
+						parts.Add((current, block.blockType));
+					}
+					else if (block.blockType != ExceptionBlockType.EndExceptionBlock && open.Count > 0)
+					{
+						// A handler: the next part of the same statement, around which is what was around the block before it.
+						parts.Add((parts[open.Pop()].Parent, block.blockType));
+					}
+					else if (block.blockType != ExceptionBlockType.EndExceptionBlock)
+					{
+						return null;
+					}
+					else
+					{
+						continue;
+					}
+					current = parts.Count - 1;
+					open.Push(current);
+				}
+				part[i] = current;
+				// The end of a statement is marked on the last instruction of its last handler.
+				foreach (ExceptionBlock block in codes[i].blocks)
+				{
+					if (block.blockType == ExceptionBlockType.EndExceptionBlock)
+					{
+						if (open.Count == 0)
+						{
+							return null;
+						}
+						current = parts[open.Pop()].Parent;
+					}
+				}
+			}
+			return open.Count == 0 ? parts : null;
+		}
+
+		/// <summary>Whether a jump from one part to another leaves try blocks and catch handlers only (what a leave can leave), and at least one.</summary>
+		private static bool Leaves(List<(int Parent, ExceptionBlockType Kind)> parts, int from, int to)
+		{
+			if (from == to)
+			{
+				return false;
+			}
+			for (int p = from; p != to; p = parts[p].Parent)
+			{
+				// -1 before reaching the target's part: the jump would go into a part it is not in (not a leave's).
+				if (p < 0 || (parts[p].Kind != ExceptionBlockType.BeginExceptionBlock && parts[p].Kind != ExceptionBlockType.BeginCatchBlock))
+				{
+					return false;
+				}
+			}
+			return true;
 		}
 
 		private static Dictionary<Label, int> LabelsOf(List<CodeInstruction> codes)
