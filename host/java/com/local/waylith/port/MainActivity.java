@@ -400,6 +400,45 @@ public final class MainActivity extends NativeActivity
     }
 
     /**
+     * A folder a mod opens (mobile/OpenUrl.cs, through glfw_android.c: its "open folder" button), shown in the system's
+     * Files app as the PC shows it in Explorer, when it is in the game's data folder or its Mods (the places of
+     * FilesProvider); a file opens the folder it is in. False for any other path, or when the phone has no Files app
+     * for it: the game names the folder then.
+     */
+    public boolean openFolderUtf8(byte[] path)
+    {
+        try
+        {
+            final Intent intent = FilesProvider.folderIntent(this, new File(new String(path, "UTF-8")));
+            if (intent == null)
+            {
+                return false;
+            }
+            runOnUiThread(new Runnable()
+            {
+                @Override
+                public void run()
+                {
+                    try
+                    {
+                        startActivity(intent);
+                    }
+                    catch (Throwable t)
+                    {
+                        Toast.makeText(MainActivity.this, "系统的「文件」应用打不开这个文件夹", Toast.LENGTH_SHORT).show();
+                    }
+                }
+            });
+            return true;
+        }
+        catch (Throwable t)
+        {
+            android.util.Log.w("port17", "open folder failed", t);
+            return false;
+        }
+    }
+
+    /**
      * A picture the gallery should list (mobile/Screenshots.cs, through glfw_android.c: the game's screenshots copied
      * into Pictures/RimWorld). A file an app creates there by path is not in the media store until it is scanned.
      */

@@ -1517,6 +1517,15 @@ API int glfwAndroidOpenUrl(const char* url)
     return ok;
 }
 
+// A folder opened in the system's Files app (MainActivity.openFolderUtf8), for mobile/OpenUrl.cs: 1 when it is in the
+// game's data folder or its Mods, the places of the APK's files provider, and the Files app was asked to show it.
+API int glfwAndroidOpenFolder(const char* path)
+{
+    int ok = 0;
+    if (path && *path) activity_bytes("openFolderUtf8", "([B)Z", path, &ok);
+    return ok;
+}
+
 // A picture the gallery should list (MainActivity.scanMediaUtf8), for mobile/Screenshots.cs: a file an app creates in
 // Pictures by path is not in the phone's media store until it is scanned. 1 when the scan was asked.
 API int glfwAndroidScanMedia(const char* path)

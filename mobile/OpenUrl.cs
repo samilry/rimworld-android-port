@@ -11,13 +11,15 @@ namespace PortMobile
 	/// Application.OpenURL on the phone. The game's Linux path starts xdg-open, which Android has not, so nothing opened:
 	/// the main menu's links (wiki, Reddit, Ludeon's blog...), the mod page's Workshop and author links, mods' "open the
 	/// page" buttons (2026-10-27, from comparing with the PC, whose Windows path opens the browser). A web address (or any
-	/// other link with a scheme: mailto:) goes to the phone's app for it (MainActivity.openUrlUtf8); a folder or a file of
-	/// the game's own, which no other app may open on Android, is named in a message instead. Steam's links and the pages
-	/// of Workshop items go their own way (SteamLink).
+	/// other link with a scheme: mailto:) goes to the phone's app for it (MainActivity.openUrlUtf8). A folder or a file in
+	/// the game's data folder or its Mods opens in the system's Files app, as Explorer opens it on the PC (InFilesApp);
+	/// any other folder of the game's, which no other app may open on Android, is named in a message instead. Steam's
+	/// links and the pages of Workshop items go their own way (SteamLink).
 	/// </summary>
 	public static class OpenUrl
 	{
 		[DllImport("glfw")] private static extern int glfwAndroidOpenUrl(byte[] url);
+		[DllImport("glfw")] private static extern int glfwAndroidOpenFolder(byte[] path);
 
 		// steam://openurl/<address> has Steam's browser open the address; openurl_external, the system's browser.
 		private static readonly Regex SteamOpenUrl = new Regex("^steam://openurl(?:_external)?/(.*)$", RegexOptions.IgnoreCase | RegexOptions.Singleline);
@@ -109,9 +111,33 @@ namespace PortMobile
 			{
 				path = "/" + path;
 			}
+			if (InFilesApp(path))
+			{
+				Console.WriteLine("[mobile] link to a folder or file, opened in the Files app: " + path);
+				return false;
+			}
 			Console.WriteLine("[mobile] link to a folder or file, named instead: " + path);
 			Messages.Message(Texts.Chinese ? "手机上不能直接打开游戏的文件夹，它在：" + path : "The game's folders cannot be opened on the phone; this one is " + path, MessageTypeDefOf.NeutralEvent, false);
 			return false;
+		}
+
+		/// <summary>
+		/// A folder in the game's data folder or its Mods (for a file, the folder it is in) shown in the system's Files app:
+		/// the APK's files provider has those two as places there (host/java FilesProvider, MainActivity.openFolderUtf8,
+		/// 2026-10-30). False for any other folder, when the phone has no Files app for it, and with an APK from before the
+		/// provider, which has no glfwAndroidOpenFolder.
+		/// </summary>
+		private static bool InFilesApp(string path)
+		{
+			try
+			{
+				return glfwAndroidOpenFolder(System.Text.Encoding.UTF8.GetBytes(path + "\0")) != 0;
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] links: the Files app not asked: " + e.Message);
+				return false;
+			}
 		}
 
 		/// <summary>
