@@ -19,10 +19,26 @@ namespace PortMobile
 	///     preview is made; Geological Landforms' patch of MapGenerator.GenerateContentsIntoMap, made at startup, had
 	///     Rand.PopState in it: "Stack empty", no preview).
 	/// So: every method the first time it is patched (Harmony's PatchFunctions.UpdateWrapper, which every patch goes
-	/// through) is looked up among the methods patched before it. Those whose code calls it, straight or through one
-	/// small method of the game that could be copied into them, get their replacement made again (by Harmony itself,
-	/// with their patches as they are): a patched method is not copied into code compiled after it was patched.
-	/// While the port puts its own patches in, this waits and is done once for all of them at the end.
+	/// through) is looked up among the methods patched before it. Those whose replacement may hold a copy of it get their
+	/// replacement made again (by Harmony itself, with their patches as they are): a patched method is not copied into
+	/// code compiled after it was patched. While the port puts its own patches in, this waits and is done once for all of
+	/// them at the end.
+	///
+	/// What a replacement may hold is what the stock JIT (.NET 10.0.12) copies into one, measured 2026-10-30 with its
+	/// inlining events: what the replacement's code calls (Harmony's final instruction list, kept by PortHooks: the
+	/// original as transpiled, and the prefixes, postfixes and finalizers, which are copied in too), what those call, and
+	/// so on, 20 levels deep (DEFAULT_MAX_INLINE_DEPTH; ten were measured); a method of up to 128 IL bytes
+	/// (JitExtDefaultPolicyMaxIL), of up to 1024 (JitExtDefaultPolicyMaxILProf) where the replacement is one straight run
+	/// of code with few calls (a postfix on a getter), of any size where it asks for it (AggressiveInlining); never one
+	/// with a try block, a NoInlining or synchronized one, nor one called virtually that the JIT cannot resolve. Until
+	/// 2026-10-30 only the original's own code was looked at, two levels and 100 bytes deep: a postfix's call of
+	/// Rand.Value (Vanilla Expanded), a transpiler's call, or Bombardment.TryDoExplosion -> FloatRange.RandomInRange ->
+	/// Rand.Range -> Rand.Value were missed. The framework's code is not followed (it does not call the game), and on the
+	/// PC its methods are copied into replacements as here. Measured on the PC's stock .NET 10.0.12 with the game, the
+	/// 1049 methods the owner's 130 mods patch (each given an empty postfix, in their order) and then the port's own
+	/// targets: the old way left 22 copies of patched methods in 22 replacements, this one none (PortHooks' InlineWatch,
+	/// overload by overload); 491 replacements are made again instead of 432, in about the same 2.5 s, as fewer of the
+	/// port's are taken (only what the JIT can copy); reading the code takes 200 ms instead of 110.
 	///
 	/// The engine's own code is the other half. Its per-frame methods are compiled at full optimisation during the
 	/// loading screens, before the port is there, and they may hold a copy of a small engine method the port patches
@@ -35,20 +51,25 @@ namespace PortMobile
 	{
 		private static readonly object sync = new object();
 		private static readonly HashSet<MethodBase> patched = new HashSet<MethodBase>();
-		// A method -> the patched methods whose code calls it (or calls a small game method that calls it).
+		// A method -> the patched methods whose replacement may hold a copy of it.
 		private static readonly Dictionary<MethodBase, HashSet<MethodBase>> callers = new Dictionary<MethodBase, HashSet<MethodBase>>();
-		private static readonly Dictionary<MethodBase, List<MethodBase>> calleesOf = new Dictionary<MethodBase, List<MethodBase>>();
+		// A method -> what its IL calls, and of that what the JIT can bind where it is called (see Callees).
+		private static readonly Dictionary<MethodBase, (List<MethodBase> All, List<MethodBase> Direct)> calleesOf = new Dictionary<MethodBase, (List<MethodBase>, List<MethodBase>)>();
+		// A method -> its IL size for the copy limits; 0 for one that asks to be copied, -1 for one the JIT never copies.
+		private static readonly Dictionary<MethodBase, int> sizes = new Dictionary<MethodBase, int>();
+		private static readonly Dictionary<Assembly, bool> framework = new Dictionary<Assembly, bool>();
 		private static readonly Dictionary<(Module, int), MethodBase> resolved = new Dictionary<(Module, int), MethodBase>();
 		private static readonly Dictionary<short, OpCode> oneByte = new Dictionary<short, OpCode>();
 		private static readonly Dictionary<short, OpCode> twoByte = new Dictionary<short, OpCode>();
 		private static HashSet<MethodBase> deferred = new HashSet<MethodBase>();
-		private static Assembly game;
 		private static MethodInfo updateWrapper, getPatchInfo;
 		[ThreadStatic] private static int rebuilding;
 		private static int rebuiltInAll;
 
-		// The compiler copies a method into its callers only up to this much IL (RyuJIT's DEFAULT_MAX_INLINE_SIZE), unless the method asks for it.
-		private const int MaxInlineSize = 100;
+		// The copy limits of the stock JIT (see the class notes): IL bytes into a replacement, and into one without jumps
+		// and with at most this many calls (measured: with nine calls a 308-byte method was copied in, with ten it was not;
+		// twelve leaves a margin); levels.
+		private const int MaxInlineSize = 128, MaxInlineSizeStraight = 1024, MaxStraightCalls = 12, MaxInlineDepth = 20;
 
 		/// <summary>First thing at the port's start: what is patched so far, and the watch on every patch from now on.</summary>
 		public static void Start(Harmony harmony)
@@ -56,7 +77,6 @@ namespace PortMobile
 			var clock = Stopwatch.StartNew();
 			try
 			{
-				game = typeof(Verse.Thing).Assembly;
 				Type functions = AccessTools.TypeByName("HarmonyLib.PatchFunctions");
 				Type shared = AccessTools.TypeByName("HarmonyLib.HarmonySharedState");
 				updateWrapper = AccessTools.Method(functions, "UpdateWrapper");
@@ -87,16 +107,16 @@ namespace PortMobile
 				}
 				long indexed = clock.ElapsedMilliseconds;
 				harmony.Patch(updateWrapper, postfix: new HarmonyMethod(typeof(InlineGuard), nameof(AfterUpdateWrapper)));
-				Console.WriteLine("[mobile] inline guard: " + count + " patched methods looked through, " + callers.Count + " methods they call (" + indexed + " ms); watching new patches");
+				Console.WriteLine("[mobile] inline guard: " + count + " patched methods looked through, " + callers.Count + " methods their replacements may hold, " + sizes.Count + " read (" + indexed + " ms); watching new patches");
 				// The mods patched before the port was there: one that patched a method and then a small method it calls
 				// left the first one's replacement with its own copy of the second (Multiplayer: Map.ExposeData, then
 				// MapFileCompressor.ExposeData, whose prefix makes the save's compressibility decider; hosting a game threw
-				// for every rock and plant). Which came first is not known here: every patched method that calls a
-				// patched method that could be copied into it is made again, once.
+				// for every rock and plant). Which came first is not known here: every patched method whose replacement
+				// may hold a patched method is made again, once.
 				HashSet<MethodBase> early;
 				lock (sync)
 				{
-					early = new HashSet<MethodBase>(patched.Where(m => callers.ContainsKey(m) && Inlinable(m)));
+					early = new HashSet<MethodBase>(patched.Where(m => callers.ContainsKey(m)));
 				}
 				Rebuild(early, "the patches made before the port", includeBatch: true);
 			}
@@ -122,23 +142,31 @@ namespace PortMobile
 			}
 			// The port's small methods that a mod had patched first were not new to the watch and so not in the batch: on a
 			// tester's vivo (35 mods, 2026-10-23) none of them was, the engine's interface dispatch kept its own copy of
-			// GUI.ProcessPendingWindows without the port's postfix, and no list ever scrolled under a finger. Every small
-			// method the port has patched is taken, whoever patched it first.
+			// GUI.ProcessPendingWindows without the port's postfix, and no list ever scrolled under a finger. Every method
+			// the port has patched that may be copied somewhere is taken, whoever patched it first.
 			int noted = batch.Count;
 			// mobile.txt inlineGuardOwners=0: the batch alone, as before (to compare, with inlineGuardTest=1).
 			foreach (MethodBase method in Settings.Get("inlineGuardOwners", 1) == 1 ? Harmony.GetAllPatchedMethods() : Enumerable.Empty<MethodBase>())
 			{
 				Patches info = Harmony.GetPatchInfo(method);
-				if (info != null && info.Owners.Any(owner => owner.StartsWith("port17.mobile", StringComparison.Ordinal)) && Inlinable(method))
+				if (info != null && info.Owners.Any(owner => owner.StartsWith("port17.mobile", StringComparison.Ordinal)))
 				{
-					batch.Add(method);
+					lock (sync)
+					{
+						if (callers.ContainsKey(method) || Copyable(method, MaxInlineSize))
+						{
+							batch.Add(method);
+						}
+					}
 				}
 			}
 			if (batch.Count > noted)
 			{
 				Console.WriteLine("[mobile] inline guard: " + (batch.Count - noted) + " small methods the port patched had been patched before it, by mods");
 			}
-			Rebuild(batch, "the port's patches");
+			// The port's own replacements too: one made before the port patched a method it holds keeps its copy (the
+			// Recorder patches WindowStack.Add and then WindowStack.TryRemove, which the replacement of Add was measured to hold).
+			Rebuild(batch, "the port's patches", includeBatch: true);
 			RebuildEngineCallers(batch);
 		}
 
@@ -149,11 +177,17 @@ namespace PortMobile
 		{
 			var clock = Stopwatch.StartNew();
 			var targets = new HashSet<MethodBase>();
-			foreach (MethodBase method in portPatched)
+			lock (sync)
 			{
-				if (EngineAssemblies.Contains(method.Module.Assembly.GetName().Name))
+				foreach (MethodBase method in portPatched)
 				{
-					targets.Add(method);
+					// Normally compiled code takes methods of up to 128 IL bytes as well. Where the runtime's profile finds a
+					// call hot it takes up to 1024 (measured); that is not followed here, it would make GUI.Button and the
+					// other controls, called many times a frame, Harmony replacements too.
+					if (EngineAssemblies.Contains(method.Module.Assembly.GetName().Name) && Copyable(method, MaxInlineSize))
+					{
+						targets.Add(method);
+					}
 				}
 			}
 			if (targets.Count == 0)
@@ -234,7 +268,9 @@ namespace PortMobile
 			{
 				foreach (var (caller, _) in todo)
 				{
+					// A replacement now: it may hold copies too.
 					patched.Add(caller);
+					Index(caller);
 				}
 			}
 			Console.WriteLine("[mobile] inline guard: " + targets.Count + " small engine methods patched by the port; " + scanned + " engine methods looked through in " + looked + " ms, " + made + " of " + todo.Count + " that call them made again (" + clock.ElapsedMilliseconds + " ms in all)");
@@ -254,18 +290,23 @@ namespace PortMobile
 			HashSet<MethodBase> now;
 			lock (sync)
 			{
-				if (!patched.Add(original))
-				{
-					return;
-				}
+				// Its replacement was just made: what it may hold is looked up again (a new prefix or postfix calls more).
 				Index(original);
-				if (!Inlinable(original))
+				if (!patched.Add(original))
 				{
 					return;
 				}
 				if (deferred != null)
 				{
-					deferred.Add(original);
+					// While the port puts its patches in: noted for the end, where the engine's code is looked at too.
+					if (callers.ContainsKey(original) || Copyable(original, MaxInlineSize))
+					{
+						deferred.Add(original);
+					}
+					return;
+				}
+				if (!callers.ContainsKey(original))
+				{
 					return;
 				}
 				now = new HashSet<MethodBase> { original };
@@ -286,7 +327,7 @@ namespace PortMobile
 					{
 						foreach (MethodBase caller in list)
 						{
-							if ((includeBatch || !newlyPatched.Contains(caller)) && seen.Add(caller))
+							if ((includeBatch || !newlyPatched.Contains(caller)) && caller != callee && seen.Add(caller))
 							{
 								todo.Add(caller);
 							}
@@ -343,41 +384,37 @@ namespace PortMobile
 			return method.DeclaringType?.FullName + "." + method.Name;
 		}
 
-		private static bool Inlinable(MethodBase method)
-		{
-			try
-			{
-				MethodImplAttributes flags = method.GetMethodImplementationFlags();
-				if ((flags & MethodImplAttributes.NoInlining) != 0)
-				{
-					return false;
-				}
-				if ((flags & MethodImplAttributes.AggressiveInlining) != 0)
-				{
-					return true;
-				}
-				byte[] il = method.GetMethodBody()?.GetILAsByteArray();
-				return il != null && il.Length <= MaxInlineSize;
-			}
-			catch (Exception)
-			{
-				return true;
-			}
-		}
-
-		/// <summary>Notes a patched method under every method its code calls, and under what the small game methods among those call.</summary>
+		/// <summary>
+		/// Notes a patched method under every method its replacement may hold a copy of (see the class notes): what the
+		/// replacement calls, then level by level what the methods that may be copied in call.
+		/// </summary>
 		private static void Index(MethodBase method)
 		{
-			foreach (MethodBase callee in Callees(method))
+			MethodBase[] calls = PortHooks.ReplacementCalls.Of(method, out bool jumps, out int count);
+			// A replacement made before PortHooks kept the lists (an older PortHooks): the original's own code.
+			IEnumerable<MethodBase> level = calls ?? (IEnumerable<MethodBase>)Callees(method, direct: true);
+			int limit = !jumps && count <= MaxStraightCalls ? MaxInlineSizeStraight : MaxInlineSize;
+			var seen = new HashSet<MethodBase>();
+			for (int depth = 1; depth <= MaxInlineDepth; depth++)
 			{
-				Add(callee, method);
-				if (callee.Module.Assembly == game && !callee.IsAbstract && Inlinable(callee))
+				var next = new List<MethodBase>();
+				foreach (MethodBase callee in level)
 				{
-					foreach (MethodBase inner in Callees(callee))
+					if (!seen.Add(callee) || !Copyable(callee, limit))
 					{
-						Add(inner, method);
+						continue;
+					}
+					Add(callee, method);
+					if (depth < MaxInlineDepth && !Framework(callee))
+					{
+						next.AddRange(Callees(callee, direct: true));
 					}
 				}
+				if (next.Count == 0)
+				{
+					break;
+				}
+				level = next;
 			}
 		}
 
@@ -390,15 +427,53 @@ namespace PortMobile
 			set.Add(caller);
 		}
 
-		/// <summary>The methods the IL of a method calls (call, callvirt, newobj, ldftn), cached.</summary>
-		private static List<MethodBase> Callees(MethodBase method)
+		/// <summary>Whether the JIT may copy the method into code it compiles, where it takes methods of up to the given IL size.</summary>
+		private static bool Copyable(MethodBase method, int limit)
 		{
-			if (calleesOf.TryGetValue(method, out List<MethodBase> known))
+			if (!sizes.TryGetValue(method, out int size))
 			{
-				return known;
+				try
+				{
+					MethodImplAttributes flags = method.GetMethodImplementationFlags();
+					const MethodImplAttributes never = MethodImplAttributes.NoInlining | MethodImplAttributes.Synchronized | MethodImplAttributes.NoOptimization;
+					MethodBody body = method is DynamicMethod || method.IsAbstract || (flags & never) != 0 ? null : method.GetMethodBody();
+					byte[] il = body?.GetILAsByteArray();
+					size = il == null || body.ExceptionHandlingClauses.Count > 0 ? -1 : (flags & MethodImplAttributes.AggressiveInlining) != 0 ? 0 : il.Length;
+				}
+				catch (Exception)
+				{
+					size = 0;
+				}
+				sizes[method] = size;
+			}
+			return size >= 0 && size <= limit;
+		}
+
+		/// <summary>The framework's assemblies, whose code is not followed (it does not call the game or the engine).</summary>
+		private static bool Framework(MethodBase method)
+		{
+			Assembly assembly = method.Module.Assembly;
+			if (!framework.TryGetValue(assembly, out bool known))
+			{
+				string name = assembly.GetName().Name ?? "";
+				framework[assembly] = known = name == "mscorlib" || name == "netstandard" || name.StartsWith("System", StringComparison.Ordinal) || name.StartsWith("Microsoft.", StringComparison.Ordinal);
+			}
+			return known;
+		}
+
+		/// <summary>
+		/// The methods the IL of a method calls (call, callvirt, newobj, ldftn), cached; direct: only those the JIT can bind
+		/// where they are called and so may copy in (call, newobj, or a callvirt of a method nothing can override).
+		/// </summary>
+		private static List<MethodBase> Callees(MethodBase method, bool direct = false)
+		{
+			if (calleesOf.TryGetValue(method, out var known))
+			{
+				return direct ? known.Direct : known.All;
 			}
 			var list = new List<MethodBase>();
-			calleesOf[method] = list;
+			var bound = new List<MethodBase>();
+			calleesOf[method] = (list, bound);
 			byte[] il;
 			try
 			{
@@ -406,11 +481,11 @@ namespace PortMobile
 			}
 			catch (Exception)
 			{
-				return list;
+				return direct ? bound : list;
 			}
 			if (il == null)
 			{
-				return list;
+				return direct ? bound : list;
 			}
 			if (oneByte.Count == 0)
 			{
@@ -433,7 +508,7 @@ namespace PortMobile
 				{
 					if (!twoByte.TryGetValue(unchecked((short)(0xFE00 | il[i + 1])), out op))
 					{
-						return list;
+						break;
 					}
 					i += 2;
 				}
@@ -441,7 +516,7 @@ namespace PortMobile
 				{
 					if (!oneByte.TryGetValue(il[i], out op))
 					{
-						return list;
+						break;
 					}
 					i += 1;
 				}
@@ -464,14 +539,16 @@ namespace PortMobile
 					case OperandType.InlineSwitch:
 						if (i + 4 > il.Length)
 						{
-							return list;
+							i = il.Length;
+							break;
 						}
 						i += 4 + 4 * BitConverter.ToInt32(il, i);
 						break;
 					case OperandType.InlineMethod:
 						if (i + 4 > il.Length)
 						{
-							return list;
+							i = il.Length;
+							break;
 						}
 						int token = BitConverter.ToInt32(il, i);
 						i += 4;
@@ -495,6 +572,10 @@ namespace PortMobile
 						if (callee != null)
 						{
 							list.Add(callee);
+							if (op == OpCodes.Call || op == OpCodes.Newobj || (op == OpCodes.Callvirt && !Overridable(callee)))
+							{
+								bound.Add(callee);
+							}
 						}
 						break;
 					default:
@@ -502,7 +583,12 @@ namespace PortMobile
 						break;
 				}
 			}
-			return list;
+			return direct ? bound : list;
+		}
+
+		private static bool Overridable(MethodBase method)
+		{
+			return method.IsVirtual && !method.IsFinal && method.DeclaringType != null && !method.DeclaringType.IsSealed && !method.DeclaringType.IsValueType;
 		}
 	}
 }

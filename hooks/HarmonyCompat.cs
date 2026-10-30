@@ -60,8 +60,16 @@ namespace PortHooks
 			{
 				return;
 			}
-			Balance(creator, codes);
-			LeaveRegions(creator, codes);
+			try
+			{
+				Balance(creator, codes);
+				LeaveRegions(creator, codes);
+			}
+			finally
+			{
+				// Also where a repair could not be looked at: InlineGuard goes by what the replacement calls.
+				ReplacementCalls.Note(OriginalOf(creator), codes);
+			}
 		}
 
 		/// <summary>The pops in front of jumps, try blocks and returns, and under a return value, that leave the stack as this runtime wants it.</summary>
@@ -819,6 +827,86 @@ namespace PortHooks
 				Console.WriteLine("[port17] a mod took every owner's Harmony patches off; the port's own stay (on the PC its changes are the engine's code)");
 			}
 			return false;
+		}
+	}
+
+	/// <summary>
+	/// What the code of each replacement Harmony made calls, from its final instruction list (HarmonyCompat.Normalize
+	/// sees every one just before it is emitted): the original as transpiled, the prefixes, postfixes and finalizers, the
+	/// helper methods of inner patches. PortMobile's InlineGuard looks here for what the JIT may have copied into a
+	/// replacement. Kept from the startup hook on, so that the mods' patches made before PortMobile loads are here too.
+	/// </summary>
+	public static class ReplacementCalls
+	{
+		private sealed class Calls
+		{
+			public readonly HashSet<MethodBase> Methods = new HashSet<MethodBase>();
+			public bool Jumps;
+			public int Count;
+		}
+
+		private static readonly Dictionary<MethodBase, Calls> byOriginal = new Dictionary<MethodBase, Calls>();
+
+		internal static void Note(MethodBase original, List<CodeInstruction> codes)
+		{
+			if (original == null)
+			{
+				return;
+			}
+			lock (byOriginal)
+			{
+				// Every list made for the method adds to what it may call (a helper's list comes before the replacement's own);
+				// only the replacement's own list, the one with Harmony's note "end original", says what it looks like.
+				if (!byOriginal.TryGetValue(original, out Calls calls))
+				{
+					byOriginal[original] = calls = new Calls();
+				}
+				bool own = false, jumps = false;
+				int count = 0;
+				foreach (CodeInstruction code in codes)
+				{
+					OpCode op = code.opcode;
+					own |= op == OpCodes.Nop && code.operand is string note && note == "end original";
+					jumps |= op.FlowControl == FlowControl.Branch || op.FlowControl == FlowControl.Cond_Branch || (code.blocks != null && code.blocks.Count > 0);
+					if (op == OpCodes.Call || op == OpCodes.Callvirt || op == OpCodes.Newobj || op == OpCodes.Calli)
+					{
+						count++;
+						// What the JIT can bind where it is called (call, newobj, or a callvirt of a method nothing overrides).
+						if (code.operand is MethodBase method && !(method is DynamicMethod) && (op != OpCodes.Callvirt || !method.IsVirtual || method.IsFinal || method.DeclaringType == null || method.DeclaringType.IsSealed || method.DeclaringType.IsValueType))
+						{
+							calls.Methods.Add(method);
+						}
+					}
+				}
+				if (own)
+				{
+					calls.Jumps = jumps;
+					calls.Count = count;
+				}
+			}
+		}
+
+		/// <summary>
+		/// What the replacement of a patched method calls that the JIT can copy in, null when its list was not seen; jumps:
+		/// whether it has jumps or try blocks, calls: how many calls it makes (the JIT takes bigger methods into a
+		/// replacement without jumps and with few calls).
+		/// </summary>
+		public static MethodBase[] Of(MethodBase original, out bool jumps, out int calls)
+		{
+			lock (byOriginal)
+			{
+				if (original == null || !byOriginal.TryGetValue(original, out Calls known))
+				{
+					jumps = true;
+					calls = int.MaxValue;
+					return null;
+				}
+				jumps = known.Jumps;
+				calls = known.Count;
+				var methods = new MethodBase[known.Methods.Count];
+				known.Methods.CopyTo(methods);
+				return methods;
+			}
 		}
 	}
 }
