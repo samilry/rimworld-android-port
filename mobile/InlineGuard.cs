@@ -395,7 +395,9 @@ namespace PortMobile
 		private static void Index(MethodBase method)
 		{
 			MethodBase[] calls = PortHooks.ReplacementCalls.Of(method, out bool jumps, out int count);
-			// A replacement made before PortHooks kept the lists (an older PortHooks): the original's own code.
+			// A replacement whose instruction list HarmonyCompat never saw (made by another copy of Harmony than the port's,
+			// or from an empty list): the original's own code. (With an older PortHooks, which keeps no lists, this method
+			// does not compile, and the guard's start fails.)
 			IEnumerable<MethodBase> level = calls ?? (IEnumerable<MethodBase>)Callees(method, direct: true);
 			int limit = !jumps && count <= MaxStraightCalls ? MaxInlineSizeStraight : MaxInlineSize;
 			var seen = new HashSet<MethodBase>();
