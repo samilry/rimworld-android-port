@@ -703,8 +703,11 @@ namespace PortMobile
 		/// DragSelect puts a button of its own in place of the game's on the copy and paste icons (bills, storage, policies,
 		/// schedules), the trade counts and the work tab's boxes, and it reads the mouse straight from Input as well: the
 		/// release of a hold clicked it, so that a finger resting on a paste icon to read its tooltip pasted, and one on a
-		/// work box outside a scrolling list changed the priority (the compatibility audit, 2026-10-30). Its left button is
-		/// kept from a hold as the game's own is. Nothing is done when the mod is not loaded.
+		/// work box outside a scrolling list changed the priority (the compatibility audit, 2026-10-30). The release of a
+		/// hold that did not drag is no press for it now. Unlike the game's draggable button, which sees nothing of a hold,
+		/// it keeps the rest: a finger that rests and then drags on sets the boxes it goes over, as a mouse pressed, held
+		/// still and dragged does on the PC (and as it did here before; the UI smoke test, 2026-10-27). Nothing is done
+		/// when the mod is not loaded.
 		/// </summary>
 		private static void KeepHoldFromDragSelect(Harmony harmony)
 		{
@@ -716,7 +719,9 @@ namespace PortMobile
 			try
 			{
 				MethodInfo handle = AccessTools.Method(utility, "HandleButton");
-				if (handle == null || handle.ReturnType != typeof(bool) || handle.GetParameters().Length == 0 || handle.GetParameters()[0].Name != "mouseButton")
+				ParameterInfo[] parameters = handle?.GetParameters();
+				if (handle == null || handle.ReturnType != typeof(bool) || parameters.Length == 0 || parameters[0].Name != "mouseButton"
+					|| !Array.Exists(parameters, p => p.Name == "dragging" && p.ParameterType == typeof(bool).MakeByRefType()))
 				{
 					Console.WriteLine("[mobile] DragSelect: its button is not as expected; a hold may click it");
 					return;
@@ -730,10 +735,10 @@ namespace PortMobile
 			}
 		}
 
-		/// <summary>Prefix of DragSelect's DraggingUtility.HandleButton (one mouse button of its draggable button): the left one is not pressed around a hold.</summary>
-		public static bool BeforeDragSelectButton(int mouseButton, ref bool __result)
+		/// <summary>Prefix of DragSelect's DraggingUtility.HandleButton (one mouse button of its draggable button): the release of a hold that did not drag is not a press.</summary>
+		public static bool BeforeDragSelectButton(int mouseButton, ref bool dragging, ref bool __result)
 		{
-			if (mouseButton == 0 && Time.frameCount <= suppressClickUntilFrame)
+			if (mouseButton == 0 && !dragging && Time.frameCount <= suppressClickUntilFrame && Input.GetMouseButtonUp(0))
 			{
 				__result = false;
 				return false;
