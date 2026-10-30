@@ -429,43 +429,41 @@ namespace PortHooks
 		}
 
 		/// <summary>
-		/// The same for AssemblyLoadContext.LoadFromStream(Stream) and (Stream, Stream). The image is read here from where
-		/// the stream stands, as the runtime reads it (to the end; a stream that cannot seek is left to the runtime, which
-		/// refuses it as on the PC); one with such a mark goes on as a fixed copy in a MemoryStream, any other is read by
-		/// the runtime again from where it stood.
+		/// The same for AssemblyLoadContext.LoadFromStream(Stream) and (Stream, Stream). The image is read here once, from
+		/// where the stream stands to its end, as the runtime reads it, and goes on in a MemoryStream (the fixed copy when it
+		/// has such a mark), whose buffer the runtime takes without reading again: the caller's stream is read once, as on
+		/// the PC, and ends where the runtime would leave it, and a read that fails throws here what the runtime's own read
+		/// would. A stream that cannot seek, or whose length the runtime refuses, is left to the runtime, which refuses it
+		/// as on the PC.
 		/// </summary>
 		public static void BeforeLoadStream(ref Stream assembly)
 		{
 			Stream given = assembly;
-			if (given == null || !given.CanSeek)
-			{
-				return;
-			}
-			long start = 0;
+			byte[] image;
 			try
 			{
-				start = given.Position;
-				var image = new byte[given.Length - start];
-				given.ReadExactly(image);
-				byte[] loadable = LoadableCopy(image);
-				if (loadable != null)
-				{
-					assembly = new MemoryStream(loadable, 0, loadable.Length, false, true);
-					return;
-				}
-				given.Position = start;
+				image = given == null || !given.CanSeek ? null : new byte[given.Length - given.Position];
 			}
 			catch (Exception)
 			{
-				try
-				{
-					given.Position = start;
-				}
-				catch (Exception)
-				{
-					// the runtime gets the stream as it is now
-				}
+				// no length, or none an array can have: the runtime asks again and refuses the stream
+				image = null;
 			}
+			if (image == null)
+			{
+				return;
+			}
+			given.ReadExactly(image);
+			byte[] loadable = image;
+			try
+			{
+				loadable = LoadableCopy(image) ?? image;
+			}
+			catch (Exception)
+			{
+				// the runtime gets the image as it was read
+			}
+			assembly = new MemoryStream(loadable, 0, loadable.Length, false, true);
 		}
 
 		/// <summary>A copy of an image marked for one processor, marked for any (ModPrep.FixMachineType); null for any other image.</summary>
