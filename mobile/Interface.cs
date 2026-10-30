@@ -104,15 +104,33 @@ namespace PortMobile
 			// Lists drawn with the engine's scroll view straight away (GUI.BeginScrollView: the game's starting pawns, RimTalk's
 			// event filter, Adaptive Storage's def editor, GUILayout's scroll views) scrolled by the wheel only, which a finger does
 			// not give: a swipe was a drag. They are noted and follow the finger at the engine's level, unless one of the two above
-			// has begun them. Every scroll view ends there too, once, whichever way a mod begins and ends it.
-			MethodInfo engineBegin = AccessTools.Method(typeof(GUI), "BeginScrollViewImpl");
+			// has begun them. Every scroll view ends there too, once, whichever way a mod begins and ends it. An engine without
+			// these as they are now (the types of their parameters, the names the prefix takes) leaves the lists to end where the
+			// game ends them, as before: a patch that fails here does not stop the rest of the port's start.
+			MethodInfo engineBegin = AccessTools.Method(typeof(GUI), "BeginScrollViewImpl", new[] { typeof(Rect), typeof(Vector2), typeof(Rect), typeof(GUIStyle), typeof(GUIStyle) });
 			MethodInfo engineEnd = AccessTools.Method(typeof(GUI), nameof(GUI.EndScrollView), new[] { typeof(bool) });
-			if (engineBegin != null && engineEnd != null)
+			MethodInfo beforeEngine = AccessTools.Method(typeof(Interface), nameof(BeforeEngineScrollView));
+			bool begun = false, atEngine = false;
+			try
 			{
-				harmony.Patch(engineBegin, prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeEngineScrollView)));
-				harmony.Patch(engineEnd, postfix: new HarmonyMethod(typeof(Interface), nameof(AfterScrollView)));
+				if (engineBegin != null && engineEnd != null)
+				{
+					harmony.Patch(engineBegin, prefix: new HarmonyMethod(beforeEngine));
+					begun = true;
+					harmony.Patch(engineEnd, postfix: new HarmonyMethod(typeof(Interface), nameof(AfterScrollView)));
+					atEngine = true;
+				}
 			}
-			else
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] the engine's scroll view could not be patched: " + e.Message);
+				// Begun there but not ended there, the lists drawn with it straight away would never end.
+				if (begun)
+				{
+					harmony.Unpatch(engineBegin, beforeEngine);
+				}
+			}
+			if (!atEngine)
 			{
 				Console.WriteLine("[mobile] the engine's scroll view is not as expected: lists drawn with it straight away are not swiped");
 				harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.EndScrollView)), postfix: new HarmonyMethod(typeof(Interface), nameof(AfterScrollView)));
@@ -584,7 +602,10 @@ namespace PortMobile
 			}
 		}
 
-		/// <summary>Prefix of Widgets.BeginScrollView: remembers whether the press landed in a list with something to scroll.</summary>
+		/// <summary>
+		/// Prefix of Widgets.BeginScrollView and DevGUI.BeginScrollView, and called by BeforeEngineScrollView for a scroll view
+		/// begun with GUI.BeginScrollView straight away: remembers whether the press landed in a list with something to scroll.
+		/// </summary>
 		public static void BeforeScrollView(Rect outRect, Rect viewRect)
 		{
 			notedRect = outRect;
