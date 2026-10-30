@@ -51,8 +51,8 @@ if [ "$what" = game ] || [ "$what" = build ] || [ "$what" = all ]; then
   [ -f build/PortMobile.dll ] && cp build/PortMobile.dll build/game/
   # RimSort's community load-order rules for the mod page's auto-sort (mobile/ModSort.cs; node host/modrules/build.js refreshes the file).
   cp host/modrules/ModRules.txt build/game/
-  # Google's Noto Emoji 3.002 (OFL, unmodified): the outline emoji the engine's fallback "Symbola" stands for on the
-  # phone (hooks/AndroidFonts.cs), as Windows' Segoe UI Symbol and Emoji do on the PC.
+  # Google's Noto Emoji 3.002 (OFL, unmodified): outline emoji after the engine's fallback fonts on the phone
+  # (hooks/AndroidFonts.cs), where the PC has them from Windows' Segoe UI Symbol and Emoji.
   EMOJI="downloads/notoemoji/NotoEmoji[wght].ttf"
   if [ ! -f "$EMOJI" ]; then
     mkdir -p downloads/notoemoji

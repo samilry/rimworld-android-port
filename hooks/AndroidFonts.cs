@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.IO;
 using System.Reflection;
 using HarmonyLib;
@@ -16,24 +17,27 @@ namespace PortHooks
 	/// lookup by family finds nothing. Nothing is patched on an engine without TryFind.
 	///
 	/// Emoji and pictographs (RimTalk's "📷 Vision") the PC draws as outlines from Windows' Segoe UI Symbol and Segoe UI
-	/// Emoji, and Linux from Symbola. A phone's only emoji font holds color pictures (NotoColorEmoji, PNG images: the
-	/// port's FreeType has no PNG decoder, and the engine asks for no color glyphs anyway), so they were boxes. Symbola
-	/// stands for Google's Noto Emoji here, an outline font like those, which the port brings into the game folder
-	/// (host/stage.sh).
+	/// Emoji. A phone's only emoji font holds color pictures (NotoColorEmoji, PNG images: the port's FreeType has no PNG
+	/// decoder, and the engine asks for no color glyphs anyway), so they were boxes. Google's Noto Emoji, an outline font
+	/// like those, which the port brings into the game folder (host/stage.sh), goes after the whole list the engine makes
+	/// (FontFallbacks.Resolve), so that it only fills what were boxes. In Symbola's place, among the symbol fonts where
+	/// Linux has it, it would come before Pretendard and Noto Sans CJK and turn symbols that they draw in text style, as
+	/// the PC's Segoe UI Symbol does (▶ ⚠ ➡), into emoji.
 	/// </summary>
 	public static class AndroidFonts
 	{
-		// File names are in /system/fonts; a full path stays as it is.
 		private static readonly (string Family, string[] Files)[] Stand =
 		{
 			("DejaVu Sans", new[] { "DroidSans.ttf", "Roboto-Regular.ttf" }),
 			("Liberation Sans", new[] { "Roboto-Regular.ttf", "DroidSans.ttf" }),
 			("Noto Sans Symbols2", new[] { "NotoSansSymbols-Regular-Subsetted2.ttf" }),
 			("Droid Sans Fallback", new[] { "DroidSansFallbackFull.ttf", "DroidSansFallback.ttf" }),
-			("Symbola", new[] { Path.Combine(AppContext.BaseDirectory, "NotoEmoji.ttf") }),
 		};
 
 		private static bool patched;
+		private static bool emojiPatched;
+		// The engine's FontFallbacks.Source for game/NotoEmoji.ttf: its first face, no range left out.
+		private static object emoji;
 
 		public static void Start()
 		{
@@ -53,7 +57,13 @@ namespace PortHooks
 
 		private static void TryPatch(Assembly assembly)
 		{
-			if (patched || assembly.GetName().Name != "UnityStubs")
+			string name = assembly.GetName().Name;
+			if (name == "RimWorld")
+			{
+				TryAddEmoji(assembly);
+				return;
+			}
+			if (patched || name != "UnityStubs")
 			{
 				return;
 			}
@@ -98,6 +108,44 @@ namespace PortHooks
 						return;
 					}
 				}
+			}
+		}
+
+		// The launcher's FontFallbacks.Resolve(locale) makes a new list of Source(path, fontNo, excludeRanges) for each
+		// language (1.7.4979 on; 4976 had a list of paths), which ImGuiHost keeps and merges into every font in its order.
+		private static void TryAddEmoji(Assembly assembly)
+		{
+			if (emojiPatched)
+			{
+				return;
+			}
+			emojiPatched = true;
+			try
+			{
+				string path = Path.Combine(AppContext.BaseDirectory, "NotoEmoji.ttf");
+				MethodInfo resolve = assembly.GetType("RimWorldWaylith.Imgui.FontFallbacks")?.GetMethod("Resolve", BindingFlags.Public | BindingFlags.Static);
+				Type source = resolve != null && resolve.ReturnType.IsGenericType ? resolve.ReturnType.GetGenericArguments()[0] : null;
+				ConstructorInfo make = source?.GetConstructor(new[] { typeof(string), typeof(uint), typeof(uint[]) });
+				if (make == null || !File.Exists(path))
+				{
+					Console.WriteLine("[port17] fonts: no Noto Emoji after the fallback fonts (" + (make == null ? "the engine's list is not as expected" : path + " is missing") + ")");
+					return;
+				}
+				emoji = make.Invoke(new object[] { path, 0u, null });
+				new Harmony("port17.fonts").Patch(resolve, postfix: new HarmonyMethod(typeof(AndroidFonts), nameof(AfterResolve)));
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[port17] fonts: no Noto Emoji after the fallback fonts: " + e.Message);
+			}
+		}
+
+		public static void AfterResolve(object __result)
+		{
+			if (__result is IList list && !list.IsFixedSize && !list.IsReadOnly && !list.Contains(emoji))
+			{
+				list.Add(emoji);
+				Console.WriteLine("[port17] fonts: Noto Emoji after the engine's " + (list.Count - 1) + " fallback fonts");
 			}
 		}
 	}
