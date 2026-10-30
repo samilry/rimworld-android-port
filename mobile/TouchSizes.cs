@@ -169,11 +169,14 @@ namespace PortMobile
 						return;
 					}
 				}
+				harmony.Patch(column, prefix: new HarmonyMethod(typeof(TouchSizes), nameof(BeforeTimeColumn)));
+				// Only once the column gives them their strip: in the game's (150 units, which Smart Speed moves 14 left) five of
+				// the larger buttons would reach past the screen's edge. Before the view toggles' patch, so that a failure of that
+				// one leaves only the toggles out of place.
 				if (smartSpeed)
 				{
 					SmartSpeedButtons(harmony, buttons);
 				}
-				harmony.Patch(column, prefix: new HarmonyMethod(typeof(TouchSizes), nameof(BeforeTimeColumn)));
 				harmony.Patch(settings, prefix: new HarmonyMethod(typeof(TouchSizes), nameof(BeforePlaySettings)));
 				Console.WriteLine("[mobile] touch sizes: the time buttons have their strip" + (smartSpeed ? " (Smart Speed's five, " + TimeControls.TimeButSize.x + " x " + TimeControls.TimeButSize.y + ")" : ""));
 			}
