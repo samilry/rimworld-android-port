@@ -103,6 +103,7 @@ namespace PortMobile
 			// The engine hands a mouse event to the window under the mouse before the game's OnGUI sees it.
 			harmony.Patch(AccessTools.Method(typeof(GUI), nameof(GUI.DispatchInputToWindows)), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeGui)));
 			harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.ButtonInvisibleDraggable)), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeDraggableButton)));
+			KeepHoldFromDragSelect(harmony);
 			harmony.Patch(AccessTools.Method(typeof(TooltipHandler), nameof(TooltipHandler.DoTooltipGUI)), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeTooltips)));
 			listTouch = Settings.Get("listTouch", 1) != 0;
 			searchOnlyFromTap = Settings.Get("searchFocusOnTap", 1) != 0;
@@ -648,6 +649,48 @@ namespace PortMobile
 			if (Time.frameCount <= suppressClickUntilFrame)
 			{
 				__result = Widgets.DraggableResult.Idle;
+				return false;
+			}
+			return true;
+		}
+
+		/// <summary>
+		/// DragSelect puts a button of its own in place of the game's on the copy and paste icons (bills, storage, policies,
+		/// schedules), the trade counts and the work tab's boxes, and it reads the mouse straight from Input as well: the
+		/// release of a hold clicked it, so that a finger resting on a paste icon to read its tooltip pasted, and one on a
+		/// work box outside a scrolling list changed the priority (the compatibility audit, 2026-10-30). Its left button is
+		/// kept from a hold as the game's own is. Nothing is done when the mod is not loaded.
+		/// </summary>
+		private static void KeepHoldFromDragSelect(Harmony harmony)
+		{
+			Type utility = AccessTools.TypeByName("DragSelect.DraggingUtility");
+			if (utility == null)
+			{
+				return;
+			}
+			try
+			{
+				MethodInfo handle = AccessTools.Method(utility, "HandleButton");
+				if (handle == null || handle.ReturnType != typeof(bool) || handle.GetParameters().Length == 0 || handle.GetParameters()[0].Name != "mouseButton")
+				{
+					Console.WriteLine("[mobile] DragSelect: its button is not as expected; a hold may click it");
+					return;
+				}
+				harmony.Patch(handle, prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeDragSelectButton)));
+				Console.WriteLine("[mobile] DragSelect: a hold clicks nothing");
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] DragSelect: a hold may click its buttons: " + e.Message);
+			}
+		}
+
+		/// <summary>Prefix of DragSelect's DraggingUtility.HandleButton (one mouse button of its draggable button): the left one is not pressed around a hold.</summary>
+		public static bool BeforeDragSelectButton(int mouseButton, ref bool __result)
+		{
+			if (mouseButton == 0 && Time.frameCount <= suppressClickUntilFrame)
+			{
+				__result = false;
 				return false;
 			}
 			return true;
