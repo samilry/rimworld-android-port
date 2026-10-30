@@ -632,6 +632,8 @@ internal static class StartupHook
 		DropAtlasCacheIfAsked();
 		MoveBackslashNames();
 		MakeHomeFolders();
+		// Before the first patch: the order in which Harmony's replacements are put in, for PortMobile's InlineGuard.
+		PortHooks.ReplacementCalls.Watch(new HarmonyLib.Harmony("port17.replacements"));
 		// A mod that takes every owner's patches off leaves the port's, which are engine code on the PC.
 		PortHooks.PortPatches.Keep(new HarmonyLib.Harmony("port17.keeppatches"));
 		PortHooks.Textures.Start();

@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
 using HarmonyLib;
 
 namespace PortMobile
@@ -22,7 +23,9 @@ namespace PortMobile
 	/// through) is looked up among the methods patched before it. Those whose replacement may hold a copy of it get their
 	/// replacement made again (by Harmony itself, with their patches as they are): a patched method is not copied into
 	/// code compiled after it was patched. While the port puts its own patches in, this waits and is done once for all of
-	/// them at the end.
+	/// them at the end. For such a batch, and for the mods' patches made before the port, a replacement is made again
+	/// only where PortHooks tells that it was made before the first patch of the method it may hold, or cannot tell
+	/// (ReplacementCalls.MadeBefore): one made after it cannot hold a copy.
 	///
 	/// What a replacement may hold is what the stock JIT (.NET 10.0.12) copies into one, measured 2026-10-30 with its
 	/// inlining events: what the replacement's code calls (Harmony's final instruction list, kept by PortHooks: the
@@ -40,9 +43,11 @@ namespace PortMobile
 	/// methods are copied into replacements as here. Measured on the PC's stock .NET 10.0.12 with the game, the 1049
 	/// methods the owner's 130 mods patch (each given an empty postfix, in their order) and then the port's own targets:
 	/// the old way left 22 copies of patched methods in 22 replacements, this one none (PortHooks' InlineWatch, overload
-	/// by overload). It makes 728 replacements again instead of 432, in 2.6-3.0 s instead of 1.8-2.1, reading the code
-	/// in 250-290 ms instead of 100; 200 of them for the Recorder's count of Log.Warning, which takes a lock and so may
-	/// be in 271 replacements (the JIT took it into 3 of the 159 it weighed it for).
+	/// by overload), reading the code in 250-290 ms instead of 100. Started as on the phone (PortHooks' patch of
+	/// Log.Warning first), it made 835 replacements again, where the old way made 464, in 2.7-2.9 s; going by the order
+	/// of the replacements it makes 381 in 1.3-1.4 s (256 of 467 for the mods' patches before the port, 125 of 368 for
+	/// the port's own), still leaving none. Of the 368, about 200 were for the Recorder's count of Log.Warning, which
+	/// takes a lock and so may be in 271 replacements, all of them made after PortHooks' patch of it.
 	///
 	/// The engine's own code is the other half. Its per-frame methods are compiled at full optimisation during the
 	/// loading screens, before the port is there, and they may hold a copy of a small engine method the port patches
@@ -69,6 +74,9 @@ namespace PortMobile
 		private static MethodInfo updateWrapper, getPatchInfo;
 		[ThreadStatic] private static int rebuilding;
 		private static int rebuiltInAll;
+		// Whether PortHooks tells the order in which the replacements were made (ReplacementCalls.MadeBefore); without it
+		// (an older PortHooks) every replacement that may hold a newly patched method is made again.
+		private static bool ordered;
 
 		// The copy limits of the stock JIT (see the class notes): IL bytes into a replacement, and into one without jumps
 		// and with at most this many calls (measured: with nine calls a 308-byte method was copied in, with ten it was not;
@@ -97,6 +105,7 @@ namespace PortMobile
 					new Harmony("port17.test.mod").Patch(AccessTools.Method(typeof(UnityEngine.GUI), nameof(UnityEngine.GUI.ProcessPendingWindows)), postfix: new HarmonyMethod(typeof(InlineGuard), nameof(Nothing)));
 					Console.WriteLine("[mobile] inline guard: test: GUI.ProcessPendingWindows patched first, as a mod would");
 				}
+				ordered = KnowsOrder();
 				int count = 0;
 				lock (sync)
 				{
@@ -115,8 +124,8 @@ namespace PortMobile
 				// The mods patched before the port was there: one that patched a method and then a small method it calls
 				// left the first one's replacement with its own copy of the second (Multiplayer: Map.ExposeData, then
 				// MapFileCompressor.ExposeData, whose prefix makes the save's compressibility decider; hosting a game threw
-				// for every rock and plant). Which came first is not known here: every patched method whose replacement
-				// may hold a patched method is made again, once.
+				// for every rock and plant). Every patched method whose replacement may hold a patched method is made
+				// again, once, unless PortHooks tells that the replacement came after that method's first patch.
 				HashSet<MethodBase> early;
 				lock (sync)
 				{
@@ -322,6 +331,8 @@ namespace PortMobile
 		{
 			var clock = Stopwatch.StartNew();
 			var todo = new List<MethodBase>();
+			// Replacements that may hold a newly patched method but were made after its first patch, and so cannot.
+			var later = new HashSet<MethodBase>();
 			lock (sync)
 			{
 				var seen = new HashSet<MethodBase>();
@@ -331,13 +342,22 @@ namespace PortMobile
 					{
 						foreach (MethodBase caller in list)
 						{
-							if ((includeBatch || !newlyPatched.Contains(caller)) && caller != callee && seen.Add(caller))
+							if ((includeBatch || !newlyPatched.Contains(caller)) && caller != callee && !seen.Contains(caller))
 							{
-								todo.Add(caller);
+								if (ordered && !MadeBefore(caller, callee))
+								{
+									later.Add(caller);
+								}
+								else
+								{
+									seen.Add(caller);
+									todo.Add(caller);
+								}
 							}
 						}
 					}
 				}
+				later.ExceptWith(seen);
 			}
 			int made = 0;
 			rebuilding++;
@@ -379,8 +399,31 @@ namespace PortMobile
 					}
 					names.Add(Name(m));
 				}
-				Console.WriteLine("[mobile] inline guard: " + (what ?? string.Join(", ", names)) + " newly patched (" + newlyPatched.Count + "); " + made + " of " + todo.Count + " patched methods that had it in them made again in " + clock.ElapsedMilliseconds + " ms (" + rebuiltInAll + " so far)");
+				Console.WriteLine("[mobile] inline guard: " + (what ?? string.Join(", ", names)) + " newly patched (" + newlyPatched.Count + "); " + made + " of " + todo.Count + " patched methods that had it in them made again in " + clock.ElapsedMilliseconds + " ms (" + rebuiltInAll + " so far)"
+					+ (later.Count > 0 ? "; " + later.Count + " made after its first patch left as they are" : ""));
 			}
+		}
+
+		/// <summary>Whether PortHooks tells the order of the replacements: an older one has no ReplacementCalls.MadeBefore.</summary>
+		private static bool KnowsOrder()
+		{
+			try
+			{
+				MadeBefore(null, null);
+				return true;
+			}
+			catch (Exception)
+			{
+				Console.WriteLine("[mobile] inline guard: this PortHooks keeps no order of the replacements; every one that may hold a newly patched method is made again");
+				return false;
+			}
+		}
+
+		// Apart, and not inlined: with an older PortHooks the call fails where this is compiled, and only here.
+		[MethodImpl(MethodImplOptions.NoInlining)]
+		private static bool MadeBefore(MethodBase original, MethodBase method)
+		{
+			return PortHooks.ReplacementCalls.MadeBefore(original, method);
 		}
 
 		private static string Name(MethodBase method)

@@ -839,6 +839,15 @@ namespace PortHooks
 	/// sees every one just before it is emitted): the original as transpiled, the prefixes, postfixes and finalizers, the
 	/// helper methods of inner patches. PortMobile's InlineGuard looks here for what the JIT may have copied into a
 	/// replacement. Kept from the startup hook on, so that the mods' patches made before PortMobile loads are here too.
+	///
+	/// Also the order in which the replacements were made. A method is not copied into code compiled after it was
+	/// patched, so a replacement made after the first patch of a method cannot hold a copy of it, and InlineGuard need
+	/// not make it again for that method: of the 360 replacements of the owner's 130 mods that may hold a method patched
+	/// before the port (measured on the PC), only 256 were made before that method's first patch. A replacement is taken
+	/// as made when its list is seen here, before the JIT compiles it, and a method as patched once Harmony has put its
+	/// first replacement in (a postfix of PatchFunctions.UpdateWrapper, put on by the startup hook before any other
+	/// patch). That postfix also tells which list became the replacement in use: a patch that fails after its list was
+	/// seen (a transpiler's code the JIT refuses) leaves the replacement before it.
 	/// </summary>
 	public static class ReplacementCalls
 	{
@@ -847,9 +856,69 @@ namespace PortHooks
 			public readonly HashSet<MethodBase> Methods = new HashSet<MethodBase>();
 			public bool Jumps;
 			public int Count;
+			// On the clock below: when the list of the last replacement made for the method was seen, when that of the
+			// replacement in use was, and when its first replacement was put in; 0 where it is not known.
+			public long Listed, Made, Patched;
 		}
 
 		private static readonly Dictionary<MethodBase, Calls> byOriginal = new Dictionary<MethodBase, Calls>();
+		private static long clock;
+
+		/// <summary>From the startup hook, before the first patch: the replacements that are put in, in order.</summary>
+		public static void Watch(Harmony harmony)
+		{
+			try
+			{
+				MethodInfo update = AccessTools.Method(AccessTools.TypeByName("HarmonyLib.PatchFunctions"), "UpdateWrapper");
+				if (update == null)
+				{
+					Console.WriteLine("[port17] this Harmony has no PatchFunctions.UpdateWrapper; the order of its replacements is not kept");
+					return;
+				}
+				harmony.Patch(update, postfix: new HarmonyMethod(typeof(ReplacementCalls), nameof(AfterUpdateWrapper)));
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[port17] the order of Harmony's replacements is not kept: " + e.Message);
+			}
+		}
+
+		/// <summary>Postfix of Harmony's PatchFunctions.UpdateWrapper, which only gets here once the new replacement is in.</summary>
+		public static void AfterUpdateWrapper(MethodBase original)
+		{
+			if (original == null)
+			{
+				return;
+			}
+			lock (byOriginal)
+			{
+				if (!byOriginal.TryGetValue(original, out Calls calls))
+				{
+					byOriginal[original] = calls = new Calls();
+				}
+				calls.Made = calls.Listed;
+				if (calls.Patched == 0)
+				{
+					calls.Patched = ++clock;
+				}
+			}
+		}
+
+		/// <summary>
+		/// Whether the replacement in use for a patched method may have been made before the other method was first
+		/// patched, and so may hold a copy of it: its list was seen before, or the order of the two is not known.
+		/// </summary>
+		public static bool MadeBefore(MethodBase original, MethodBase method)
+		{
+			if (original == null || method == null)
+			{
+				return true;
+			}
+			lock (byOriginal)
+			{
+				return !byOriginal.TryGetValue(original, out Calls made) || !byOriginal.TryGetValue(method, out Calls patched) || made.Made == 0 || patched.Patched == 0 || made.Made < patched.Patched;
+			}
+		}
 
 		internal static void Note(MethodBase original, List<CodeInstruction> codes)
 		{
@@ -886,6 +955,7 @@ namespace PortHooks
 				{
 					calls.Jumps = jumps;
 					calls.Count = count;
+					calls.Listed = ++clock;
 				}
 			}
 		}
