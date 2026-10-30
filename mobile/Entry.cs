@@ -238,6 +238,25 @@ namespace PortMobile
 			Line("XmlElement.GetField(\"name\")", () => typeof(System.Xml.XmlElement).GetField("name", instance)?.Name ?? "null", "_name");
 			Line("DynamicMethod.GetField(\"m_returnType\")", () => typeof(System.Reflection.Emit.DynamicMethod).GetField("m_returnType", instance)?.Name ?? "null", "_returnType");
 			Line("SignatureHelper.GetField(\"_module\")", () => typeof(System.Reflection.Emit.SignatureHelper).GetField("_module", instance)?.Name ?? "null", "null");
+			// AllowInitOnlyStaticWrites: static readonly fields of the framework written back with their own values, where
+			// CoreLib checks (a write after a read) and where libcoreclr.so does (a field's first write; a struct's).
+			Line("DBNull.Value written back after a read", () =>
+			{
+				System.Reflection.FieldInfo field = typeof(DBNull).GetField("Value");
+				field.SetValue(null, field.GetValue(null));
+				return "written";
+			}, "written");
+			Line("Missing.Value written back", () =>
+			{
+				object value = System.Reflection.Missing.Value;
+				typeof(System.Reflection.Missing).GetField("Value").SetValue(null, value);
+				return "written";
+			}, "written");
+			Line("TimeSpan.Zero written back", () =>
+			{
+				typeof(TimeSpan).GetField("Zero").SetValue(null, TimeSpan.Zero);
+				return "written";
+			}, "written");
 		}
 
 		/// <summary>

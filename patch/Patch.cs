@@ -794,6 +794,9 @@ internal static class Patch
 	///     System.*, mscorlib, netstandard) that has no field of that name takes the non-public one Mono's name stands for
 	///     here: "_name", else "m_name" (for "m_name": "_name"). Humanoid Alien Races reads XmlElement.name, _name here.
 	///     Harmony's lookups by name had this before (PortPlatform.GetFieldLax); now every caller has it, as on the PC.
+	///   - AllowInitOnlyStaticWrites: reflection writes a static readonly field after its class was initialized instead of
+	///     throwing FieldAccessException (FieldAccessor.VerifyInitOnly). The same check in libcoreclr.so, which the first
+	///     SetValue of a field and those of struct-typed fields go through, is taken out by host/patch-coreclr.js.
 	/// </summary>
 	private static void AddLudeonSwitches(ModuleDefinition module)
 	{
@@ -1139,7 +1142,12 @@ internal static class Patch
 		gf.Emit(OpCodes.Stloc, fieldFound);
 		gf.Append(result);
 		gf.Emit(OpCodes.Ret);
-		Console.WriteLine("Ludeon's switches: MonoFloatFormatPrecision, DynamicMethodOwnerIsDeclaringType, LaxDynamicMethodAttributes, IsolatedLoadsResolveByName, LaxPrivateFieldNames");
+
+		// AllowInitOnlyStaticWrites: FieldAccessor.VerifyInitOnly() { }   (Ludeon's throws only with the switch off)
+		MethodDefinition verifyInitOnly = module.GetType("System.Reflection.FieldAccessor").Methods.Single(m => m.Name == "VerifyInitOnly" && m.Parameters.Count == 0);
+		verifyInitOnly.Body = new MethodBody(verifyInitOnly);
+		verifyInitOnly.Body.GetILProcessor().Emit(OpCodes.Ret);
+		Console.WriteLine("Ludeon's switches: MonoFloatFormatPrecision, DynamicMethodOwnerIsDeclaringType, LaxDynamicMethodAttributes, IsolatedLoadsResolveByName, LaxPrivateFieldNames, AllowInitOnlyStaticWrites");
 	}
 
 	/// <summary>
