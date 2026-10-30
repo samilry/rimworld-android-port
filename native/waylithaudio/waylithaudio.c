@@ -113,6 +113,7 @@ typedef struct Voice
     struct MixNode* mix;
     int mixOn;
     int spatial;             // in 3D (wa_voice_set_3d): the matrix pans it by its direction from the listener
+    int placed;              // has had a position in 3D (the first voices' matrices are logged at it)
 } Voice;
 
 typedef struct Group
@@ -135,7 +136,7 @@ static uint32_t g_rate = 48000, g_channels = 2;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static Voice g_voices[MAX_VOICES];
 static Group g_groups[MAX_GROUPS];
-static uint64_t g_voicesCreated, g_updates, g_mixMatrices;
+static uint64_t g_voicesCreated, g_updates, g_mixMatrices, g_matrices3d;
 static int g_lazy = 1, g_checkProbe;
 static uint64_t g_probesChecked;
 static void* (*g_alloc)(size_t);
@@ -885,8 +886,9 @@ static void voice_mix_off(Voice* v)
 // sin of (pan + 1) * pi/4 for the left and the right channel, other channels as they are. A voice within 0.0001 of
 // the listener (the game's on-camera sustainers sit on it), or a listener whose right is no longer than that (forward
 // and up parallel), is in the middle. As on the PC, the matrix is worked out again in set_3d, set_3d_position and
-// set_listener, and a pan or a matrix from the engine replaces it until then.
-static void voice_mix_3d(Voice* v)
+// set_listener, and a pan or a matrix from the engine replaces it until then. Returns the voice's distance from the
+// listener, for the log.
+static float voice_mix_3d(Voice* v)
 {
     ma_vec3f p = ma_sound_get_position(&v->snd);
     ma_vec3f l = ma_engine_listener_get_position(&g_engine, 0);
@@ -903,6 +905,7 @@ static void voice_mix_3d(Voice* v)
     if (ch >= 2) { m[0] = cosf(angle); m[ch + 1] = sinf(angle); }
     memcpy(v->mix->matrix, m, sizeof m);
     if (!v->mixOn) { v->mixOn = 1; voice_rebuild_chain(v); }
+    return distance;
 }
 
 static void voice_release_locked(Voice* v)
@@ -1097,7 +1100,23 @@ EXPORT void wa_voice_set_mix_matrix(uint64_t voice, float* matrix, uint32_t outC
         }
     });
 }
-EXPORT void wa_voice_set_3d_position(uint64_t voice, float x, float y, float z) { WITH_VOICE({ ma_sound_set_position(&v->snd, x, y, z); if (v->spatial && v->mix) voice_mix_3d(v); }); }
+// AudioSource.Play passes a 3D voice's first position right after set_3d, which works the matrix out while the voice
+// is still at the origin, and AudioSource.Update passes it again every frame. The first four voices' matrices are
+// logged at their first position, as set_mix_matrix logs the first four of the engine's: nothing else in the log
+// tells this panning from miniaudio's.
+EXPORT void wa_voice_set_3d_position(uint64_t voice, float x, float y, float z)
+{
+    WITH_VOICE({
+        ma_sound_set_position(&v->snd, x, y, z);
+        if (v->spatial && v->mix)
+        {
+            float distance = voice_mix_3d(v);
+            uint32_t ch = v->mix->channels;
+            if (!v->placed && ++g_matrices3d <= 4 && ch >= 2) LOGI("audio: 3D matrix on voice %u, %.1f from the listener: left %.3f, right %.3f", (unsigned)(v - g_voices) + 1, distance, v->mix->matrix[0], v->mix->matrix[ch + 1]);
+            v->placed = 1;
+        }
+    });
+}
 EXPORT void wa_voice_set_3d(uint64_t voice, int enabled, float minDistance, float maxDistance, int rolloff)
 {
     WITH_VOICE({
