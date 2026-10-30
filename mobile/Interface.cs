@@ -88,17 +88,36 @@ namespace PortMobile
 		private static readonly List<bool> open = new List<bool>();
 		// The scroll views being drawn in the current repaint (they nest): the number TapAssist gave each (-1: not noted).
 		private static readonly List<int> drawn = new List<int>();
+		// The scroll view the game's BeginScrollView (or the developer tools') noted (BeforeScrollView) and moved (FingerScroll)
+		// just before it begins the engine's: that one is not noted or moved again.
+		private static bool notedBefore, scrolledBefore;
+		private static Rect notedRect, scrolledRect;
 
 		public static void Start(Harmony harmony)
 		{
 			harmony.Patch(AccessTools.Method(typeof(SteamDeck), nameof(SteamDeck.HandleTouchScreenScrollViewScroll)), prefix: new HarmonyMethod(typeof(Interface), nameof(FingerScroll)));
 			harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.BeginScrollView), new[] { typeof(Rect), typeof(Vector2).MakeByRefType(), typeof(Rect), typeof(bool) }), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeScrollView)));
-			harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.EndScrollView)), postfix: new HarmonyMethod(typeof(Interface), nameof(AfterScrollView)));
 			// The developer tools' windows (debug actions, the log, tweak values) have scroll views of their own: they call the
 			// finger scrolling above but were not noted as lists, so a swipe dragged instead (a tester, 2026-10-24: "开发者选项有些
 			// 在下面划不动"; he swiped at the scrollbar on the screen's right edge).
 			harmony.Patch(AccessTools.Method(typeof(LudeonTK.DevGUI), nameof(LudeonTK.DevGUI.BeginScrollView)), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeScrollView)));
-			harmony.Patch(AccessTools.Method(typeof(LudeonTK.DevGUI), nameof(LudeonTK.DevGUI.EndScrollView)), postfix: new HarmonyMethod(typeof(Interface), nameof(AfterScrollView)));
+			// Lists drawn with the engine's scroll view straight away (GUI.BeginScrollView: the game's starting pawns, RimTalk's
+			// event filter, Adaptive Storage's def editor, GUILayout's scroll views) scrolled by the wheel only, which a finger does
+			// not give: a swipe was a drag. They are noted and follow the finger at the engine's level, unless one of the two above
+			// has begun them. Every scroll view ends there too, once, whichever way a mod begins and ends it.
+			MethodInfo engineBegin = AccessTools.Method(typeof(GUI), "BeginScrollViewImpl");
+			MethodInfo engineEnd = AccessTools.Method(typeof(GUI), nameof(GUI.EndScrollView), new[] { typeof(bool) });
+			if (engineBegin != null && engineEnd != null)
+			{
+				harmony.Patch(engineBegin, prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeEngineScrollView)));
+				harmony.Patch(engineEnd, postfix: new HarmonyMethod(typeof(Interface), nameof(AfterScrollView)));
+			}
+			else
+			{
+				Console.WriteLine("[mobile] the engine's scroll view is not as expected: lists drawn with it straight away are not swiped");
+				harmony.Patch(AccessTools.Method(typeof(Widgets), nameof(Widgets.EndScrollView)), postfix: new HarmonyMethod(typeof(Interface), nameof(AfterScrollView)));
+				harmony.Patch(AccessTools.Method(typeof(LudeonTK.DevGUI), nameof(LudeonTK.DevGUI.EndScrollView)), postfix: new HarmonyMethod(typeof(Interface), nameof(AfterScrollView)));
+			}
 			harmony.Patch(AccessTools.Method(typeof(Root), nameof(Root.OnGUI)), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeGui)));
 			// The engine hands a mouse event to the window under the mouse before the game's OnGUI sees it.
 			harmony.Patch(AccessTools.Method(typeof(GUI), nameof(GUI.DispatchInputToWindows)), prefix: new HarmonyMethod(typeof(Interface), nameof(BeforeGui)));
@@ -210,6 +229,7 @@ namespace PortMobile
 			// A press that a control in a list used is no longer seen as a press when the list ends: nothing is carried over.
 			open.Clear();
 			drawn.Clear();
+			notedBefore = scrolledBefore = false;
 			LetGoOfGivenSearchFocus();
 			bool wanted = UnityStubs.Internal.TextFocus.CapturesText;
 			bool again = askKeyboardAgain && wanted;
@@ -423,6 +443,8 @@ namespace PortMobile
 		/// </summary>
 		public static bool FingerScroll(Rect outRect, ref Vector2 scrollPosition)
 		{
+			scrolledRect = outRect;
+			scrolledBefore = true;
 			if (ListTouch)
 			{
 				// Only the list the finger began in moves; it is known by where it begins on the screen.
@@ -565,6 +587,8 @@ namespace PortMobile
 		/// <summary>Prefix of Widgets.BeginScrollView: remembers whether the press landed in a list with something to scroll.</summary>
 		public static void BeforeScrollView(Rect outRect, Rect viewRect)
 		{
+			notedRect = outRect;
+			notedBefore = true;
 			lastOutRect = outRect;
 			lastViewRect = viewRect;
 			Event current = Event.current;
@@ -593,8 +617,9 @@ namespace PortMobile
 		}
 
 		/// <summary>
-		/// Postfix of Widgets.EndScrollView: a press in a scrolling list that nothing in the list used (a button would
-		/// have) is used now, so that whatever comes after the list (the window's own dragging) does not take it.
+		/// Postfix of the engine's GUI.EndScrollView (Widgets.EndScrollView's and DevGUI.EndScrollView's when it cannot be
+		/// patched): a press in a scrolling list that nothing in the list used (a button would have) is used now, so that
+		/// whatever comes after the list (the window's own dragging) does not take it.
 		/// </summary>
 		public static void AfterScrollView()
 		{
@@ -614,6 +639,26 @@ namespace PortMobile
 			{
 				current.Use();
 			}
+		}
+
+		/// <summary>
+		/// Prefix of the engine's GUI.BeginScrollViewImpl (every GUI.BeginScrollView): a scroll view begun straight away is
+		/// noted and follows the finger as the game's are. One that the game's BeginScrollView (or the developer tools') begins
+		/// was noted and moved there just before, by the same rect, and is left alone.
+		/// </summary>
+		public static void BeforeEngineScrollView(Rect position, ref Vector2 scrollPosition, Rect viewRect)
+		{
+			bool noted = notedBefore && position == notedRect, scrolled = scrolledBefore && position == scrolledRect;
+			if (!noted)
+			{
+				BeforeScrollView(position, viewRect);
+			}
+			if (!scrolled)
+			{
+				FingerScroll(position, ref scrollPosition);
+			}
+			// What the calls above marked is this scroll view: the next one is looked at afresh.
+			notedBefore = scrolledBefore = false;
 		}
 
 		// ---- holds and tooltips ----
