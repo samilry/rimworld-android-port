@@ -23,7 +23,8 @@ namespace PortMobile
 	///                      filterRowGap=10 (0 leaves it);
 	///   time controls      the pause and speed buttons are 32 x 24 units (3.3 x 2.5 mm) in a row; here 1.4 times that,
 	///                      which still fits the column they are in. timeButtons=1.4 (0 or 1 leaves them). Left alone
-	///                      when a mod has patched the game's time controls.
+	///                      when a mod has patched the game's time controls, except Smart Speed, whose five buttons are
+	///                      made larger the same way (SmartSpeedButtons).
 	/// </summary>
 	internal static class TouchSizes
 	{
@@ -149,12 +150,18 @@ namespace PortMobile
 				MethodInfo column = AccessTools.Method(typeof(GlobalControlsUtility), nameof(GlobalControlsUtility.DoTimespeedControls));
 				MethodInfo buttons = AccessTools.Method(typeof(TimeControls), nameof(TimeControls.DoTimeControlsGUI));
 				MethodInfo settings = AccessTools.Method(typeof(GlobalControlsUtility), nameof(GlobalControlsUtility.DoPlaySettings));
+				bool smartSpeed = false;
 				foreach (MethodInfo method in new[] { column, buttons })
 				{
 					Patches patches = Harmony.GetPatchInfo(method);
 					// The port's own patches (GizmoFit measures where the time buttons are) are not a mod's: counted, they had
 					// left the buttons small for everyone since 2026-10-26 (found by the UI smoke test, host/ui-smoke.js).
 					List<string> mods = patches == null ? new List<string>() : patches.Prefixes.Concat(patches.Transpilers).Select(p => p.owner).Where(o => !o.StartsWith("port17.", StringComparison.Ordinal)).Distinct().ToList();
+					if (method == buttons && SmartSpeedAlone(patches, mods))
+					{
+						smartSpeed = true;
+						continue;
+					}
 					if (mods.Count > 0)
 					{
 						AccessTools.StaticFieldRefAccess<Vector2>(AccessTools.Field(typeof(TimeControls), nameof(TimeControls.TimeButSize)))() = timeWas;
@@ -162,9 +169,13 @@ namespace PortMobile
 						return;
 					}
 				}
+				if (smartSpeed)
+				{
+					SmartSpeedButtons(harmony, buttons);
+				}
 				harmony.Patch(column, prefix: new HarmonyMethod(typeof(TouchSizes), nameof(BeforeTimeColumn)));
 				harmony.Patch(settings, prefix: new HarmonyMethod(typeof(TouchSizes), nameof(BeforePlaySettings)));
-				Console.WriteLine("[mobile] touch sizes: the time buttons have their strip");
+				Console.WriteLine("[mobile] touch sizes: the time buttons have their strip" + (smartSpeed ? " (Smart Speed's five, " + TimeControls.TimeButSize.x + " x " + TimeControls.TimeButSize.y + ")" : ""));
 			}
 			catch (Exception e)
 			{
@@ -174,18 +185,82 @@ namespace PortMobile
 
 		private static float playSettingsShift;
 
+		// How many buttons the strip holds (the game's four, Smart Speed's five), the buttons' size with Smart Speed, and the
+		// strip the column hands the buttons while it draws them.
+		private static int timeButtons = 4;
+		private static Vector2 smartSpeedSize;
+		private static Rect strip;
+		private static bool inColumn;
+
 		/// <summary>
 		/// Stands in for GlobalControlsUtility.DoTimespeedControls, which gives the buttons a strip of 150 units: the
-		/// strip is as wide as the four buttons, and ends where the game's ends (6 units before the column's edge).
+		/// strip is as wide as the buttons, and ends where the game's ends (6 units before the column's edge).
 		/// </summary>
 		public static bool BeforeTimeColumn(float leftX, float width, ref float curBaseY)
 		{
 			Vector2 size = TimeControls.TimeButSize;
-			float all = size.x * 4f;
+			float all = size.x * timeButtons;
 			Rect timerRect = new Rect(leftX + width - 6f - all, curBaseY - size.y, all, size.y);
-			TimeControls.DoTimeControlsGUI(timerRect);
+			strip = timerRect;
+			inColumn = true;
+			try
+			{
+				TimeControls.DoTimeControlsGUI(timerRect);
+			}
+			finally
+			{
+				inColumn = false;
+			}
 			curBaseY -= timerRect.height;
 			return false;
+		}
+
+		// ---- Smart Speed (1504723424) ----
+
+		private const string SmartSpeedId = "com.smartspeed";
+
+		/// <summary>
+		/// Whether the only mod with the time buttons is Smart Speed, as it is known: its prefix of DoTimeControlsGUI
+		/// (CallGUIConfig) sets the buttons to 28 x 24 before every drawing and moves the strip 14 units left, and its
+		/// transpiler draws the fifth button (ultrafast) too. The buttons are drawn at TimeButSize as the game's are.
+		/// </summary>
+		private static bool SmartSpeedAlone(Patches patches, List<string> mods)
+		{
+			if (patches == null || mods.Count != 1 || mods[0] != SmartSpeedId)
+			{
+				return false;
+			}
+			List<Patch> theirs = patches.Prefixes.Concat(patches.Transpilers).Where(p => p.owner == SmartSpeedId).ToList();
+			return theirs.Count == 2 && patches.Postfixes.All(p => p.owner != SmartSpeedId) && patches.Finalizers.All(p => p.owner != SmartSpeedId)
+				&& theirs.Any(p => p.PatchMethod.Name == "CallGUIConfig" && p.PatchMethod.DeclaringType?.Name == "SmartSpeed_TimeControls_DoTimeControlsGUI_Prefix")
+				&& theirs.Any(p => p.PatchMethod.DeclaringType?.Name == "SmartSpeed_TimeControls_DoTimeControlsGUI_Transpiler");
+		}
+
+		/// <summary>
+		/// With Smart Speed the strip holds its five buttons, larger by as much as five of its 28 x 24 fit the column (the
+		/// same 184 units as the game's four). The size is set again after its prefix (SmartSpeedPlaced), and stays between
+		/// frames, so that the column and the row of view toggles place themselves by it as with the game's buttons.
+		/// </summary>
+		private static void SmartSpeedButtons(Harmony harmony, MethodInfo buttons)
+		{
+			Vector2 theirs = new Vector2(28f, 24f);
+			float scale = Mathf.Min(timeScale, 184f / (theirs.x * 5f));
+			smartSpeedSize = new Vector2(Mathf.Floor(theirs.x * scale), Mathf.Floor(theirs.y * scale));
+			timeButtons = 5;
+			TimeControls.TimeButSize = smartSpeedSize;
+			playSettingsShift = smartSpeedSize.y - timeWas.y;
+			// After Smart Speed's prefix (the usual priority), before GizmoFit's (last), which measures where the strip begins.
+			harmony.Patch(buttons, prefix: new HarmonyMethod(typeof(TouchSizes), nameof(SmartSpeedPlaced)) { priority = Priority.VeryLow });
+		}
+
+		/// <summary>Prefix of TimeControls.DoTimeControlsGUI after Smart Speed's: the buttons' size is the larger one again, and in the column the strip is the one made for five of them.</summary>
+		public static void SmartSpeedPlaced(ref Rect timerRect)
+		{
+			TimeControls.TimeButSize = smartSpeedSize;
+			if (inColumn)
+			{
+				timerRect = strip;
+			}
 		}
 
 		/// <summary>The row of view toggles above places itself by the height of a time button, where the game means the height of its own icons.</summary>
