@@ -51,6 +51,14 @@ if [ "$what" = game ] || [ "$what" = build ] || [ "$what" = all ]; then
   [ -f build/PortMobile.dll ] && cp build/PortMobile.dll build/game/
   # RimSort's community load-order rules for the mod page's auto-sort (mobile/ModSort.cs; node host/modrules/build.js refreshes the file).
   cp host/modrules/ModRules.txt build/game/
+  # Google's Noto Emoji 3.002 (OFL, unmodified): the outline emoji the engine's fallback "Symbola" stands for on the
+  # phone (hooks/AndroidFonts.cs), as Windows' Segoe UI Symbol and Emoji do on the PC.
+  EMOJI="downloads/notoemoji/NotoEmoji[wght].ttf"
+  if [ ! -f "$EMOJI" ]; then
+    mkdir -p downloads/notoemoji
+    curl -sL -o "$EMOJI" "https://raw.githubusercontent.com/google/fonts/b979dba422e445492b0eb9951ac52ee0b4d648c3/ofl/notoemoji/NotoEmoji%5Bwght%5D.ttf"
+  fi
+  cp "$EMOJI" build/game/NotoEmoji.ttf
   # Mono.Cecil: the hook prepares mod assemblies on the phone with it (hooks/ModPrepHost.cs).
   cp /d/Harness/rimworld/tools/patcher/cecilpkg/lib/netstandard2.0/Mono.Cecil.dll build/game/
   # Harmony's 1.7 build of 0Harmony.dll lives in the game folder (the loader hook skips the mods' own copies); patch.dll

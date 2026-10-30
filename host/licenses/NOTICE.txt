@@ -105,6 +105,11 @@ Built into it:
 - unordered_dense: MIT. Copyright (c) 2022 Martin Leitner-Ankerl. https://github.com/martinus/unordered_dense → unordered_dense-LICENSE.txt
 - fast_float: MIT (also Apache 2.0 or BSL 1.0). Copyright The fast_float authors. https://github.com/fastfloat/fast_float → fast_float-LICENSE-MIT.txt
 
+● Noto Emoji 3.002 (game/NotoEmoji.ttf, unmodified: NotoEmoji[wght].ttf of https://github.com/google/fonts/tree/main/ofl/notoemoji), the outline emoji font the game's text falls back to, as it does to Windows' emoji fonts on the PC.
+SIL Open Font License 1.1. Copyright 2013 Google LLC.
+https://github.com/googlefonts/noto-emoji
+→ NotoEmoji-OFL.txt
+
 ● miniaudio 0.11.22 (inside libwaylithaudio.so)
 Public domain (Unlicense) or MIT No Attribution. David Reid.
 https://miniaud.io

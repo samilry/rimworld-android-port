@@ -14,15 +14,23 @@ namespace PortHooks
 	/// Linux ones with no such family on a phone were left out (DejaVu Sans, Liberation Sans, Noto Sans Symbols2, Droid
 	/// Sans Fallback), and with them the symbols and scripts they covered. Each is the phone's file it was before, when the
 	/// lookup by family finds nothing. Nothing is patched on an engine without TryFind.
+	///
+	/// Emoji and pictographs (RimTalk's "📷 Vision") the PC draws as outlines from Windows' Segoe UI Symbol and Segoe UI
+	/// Emoji, and Linux from Symbola. A phone's only emoji font holds color pictures (NotoColorEmoji, PNG images: the
+	/// port's FreeType has no PNG decoder, and the engine asks for no color glyphs anyway), so they were boxes. Symbola
+	/// stands for Google's Noto Emoji here, an outline font like those, which the port brings into the game folder
+	/// (host/stage.sh).
 	/// </summary>
 	public static class AndroidFonts
 	{
+		// File names are in /system/fonts; a full path stays as it is.
 		private static readonly (string Family, string[] Files)[] Stand =
 		{
 			("DejaVu Sans", new[] { "DroidSans.ttf", "Roboto-Regular.ttf" }),
 			("Liberation Sans", new[] { "Roboto-Regular.ttf", "DroidSans.ttf" }),
 			("Noto Sans Symbols2", new[] { "NotoSansSymbols-Regular-Subsetted2.ttf" }),
 			("Droid Sans Fallback", new[] { "DroidSansFallbackFull.ttf", "DroidSansFallback.ttf" }),
+			("Symbola", new[] { Path.Combine(AppContext.BaseDirectory, "NotoEmoji.ttf") }),
 		};
 
 		private static bool patched;

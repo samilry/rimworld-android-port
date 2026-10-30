@@ -117,7 +117,7 @@ if [ "$PAYLOAD" = port ]; then
   cp dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0/* "$P/runtime/"
   [ -f build/runtime/System.Private.CoreLib.dll ] && cp build/runtime/System.Private.CoreLib.dll "$P/runtime/"
   cp "$FORMATTERS" "$P/runtime/"
-  for f in PortHooks.dll PortMobile.dll 0Harmony.dll Mono.Cecil.dll ModRules.txt; do cp "build/game/$f" "$P/game/"; done
+  for f in PortHooks.dll PortMobile.dll 0Harmony.dll Mono.Cecil.dll ModRules.txt NotoEmoji.ttf; do cp "build/game/$f" "$P/game/"; done
   cp -r build/workshop/. "$P/game/workshop/"
   printf -- "-NoCrashDialog\n-Verbose\n" > "$P/game/args.txt"
   cp build/setup/PortSetup.dll build/setup/Mono.Cecil.dll build/setup/Mono.Cecil.Rocks.dll "$P/setup/"
