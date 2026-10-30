@@ -441,6 +441,9 @@ namespace PortMobile
 		/// 挖孔会导致Better Architect Menu显示错位"). Its drawing goes as far right as the menu went, and the screen's
 		/// width it reads (its ExtensionMethods.UIWidth, there for patches like this) is that much less, so that it still
 		/// ends short of the right column. Its info box and a tool's controls are immediate windows, moved as the game's are.
+		/// Vanilla Gravship Expanded draws the Odyssey category's panel with its own copy of Better Architect Menu's (only
+		/// while that mod is not active), placed the same way, from the game's UI.screenWidth (read in DrawBetterArchitectMenu):
+		/// it goes with the menu the same way.
 		/// </summary>
 		private static void PatchModPanels()
 		{
@@ -457,6 +460,24 @@ namespace PortMobile
 			catch (Exception e)
 			{
 				Console.WriteLine("[mobile] cutout: a mod's architect panel left as it is: " + e.Message);
+			}
+			try
+			{
+				Type vge = AccessTools.TypeByName("VanillaGravshipExpanded.ArchitectCategoryTab_DesignationTabOnGUI_Patch");
+				MethodInfo prefix = vge != null ? AccessTools.Method(vge, "Prefix") : null;
+				MethodInfo draw = vge != null ? AccessTools.Method(vge, "DrawBetterArchitectMenu") : null;
+				// Its patch is left out while Better Architect Menu is active (its Prepare).
+				Patches tab = Harmony.GetPatchInfo(AccessTools.Method(typeof(ArchitectCategoryTab), nameof(ArchitectCategoryTab.DesignationTabOnGUI)));
+				if (prefix != null && draw != null && tab != null && tab.Prefixes.Any(p => p.PatchMethod == prefix))
+				{
+					patcher.Patch(prefix, prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeModPanel)), finalizer: new HarmonyMethod(typeof(Cutout), nameof(AfterModPanel)));
+					patcher.Patch(draw, transpiler: new HarmonyMethod(typeof(Cutout), nameof(ScreenWidthTranspiler)));
+					Console.WriteLine("[mobile] cutout: Vanilla Gravship Expanded's Odyssey panel goes with the menu");
+				}
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] cutout: Vanilla Gravship Expanded's architect panel left as it is: " + e.Message);
 			}
 		}
 
@@ -491,6 +512,34 @@ namespace PortMobile
 		public static float ModPanelWidth()
 		{
 			return UI.screenWidth - modPanelShift;
+		}
+
+		/// <summary>Transpiler of a copy of the panel that reads the game's UI.screenWidth: it reads ModPanelScreenWidth.</summary>
+		public static IEnumerable<CodeInstruction> ScreenWidthTranspiler(IEnumerable<CodeInstruction> instructions, MethodBase original)
+		{
+			FieldInfo screenWidth = AccessTools.Field(typeof(UI), nameof(UI.screenWidth));
+			MethodInfo ours = AccessTools.Method(typeof(Cutout), nameof(ModPanelScreenWidth));
+			int replaced = 0;
+			foreach (CodeInstruction instruction in instructions)
+			{
+				if (instruction.opcode == OpCodes.Ldsfld && Equals(instruction.operand, screenWidth))
+				{
+					instruction.opcode = OpCodes.Call;
+					instruction.operand = ours;
+					replaced++;
+				}
+				yield return instruction;
+			}
+			if (replaced == 0)
+			{
+				Console.WriteLine("[mobile] cutout: " + original?.DeclaringType?.Name + "." + original?.Name + " no longer reads UI.screenWidth");
+			}
+		}
+
+		/// <summary>The screen's width (whole units, as UI.screenWidth is) less how far the panel is moved.</summary>
+		public static int ModPanelScreenWidth()
+		{
+			return UI.screenWidth - Mathf.CeilToInt(modPanelShift);
 		}
 
 		/// <summary>How far an open window is moved right off a hole at the left (0: not moved, or not open).</summary>
