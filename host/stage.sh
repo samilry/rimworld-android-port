@@ -52,11 +52,19 @@ if [ "$what" = game ] || [ "$what" = build ] || [ "$what" = all ]; then
   # RimSort's community load-order rules for the mod page's auto-sort (mobile/ModSort.cs; node host/modrules/build.js refreshes the file).
   cp host/modrules/ModRules.txt build/game/
   # Google's Noto Emoji 3.002 (OFL, unmodified): outline emoji after the engine's fallback fonts on the phone
-  # (hooks/AndroidFonts.cs), where the PC has them from Windows' Segoe UI Symbol and Emoji.
+  # (hooks/AndroidFonts.cs), where the PC has them from Windows' Segoe UI Symbol and Emoji. It is fetched under another
+  # name and kept only when it is that commit's file: whether it is there decides whether it is fetched again, so an
+  # error page or a broken transfer must never stand in for it.
   EMOJI="downloads/notoemoji/NotoEmoji[wght].ttf"
   if [ ! -f "$EMOJI" ]; then
     mkdir -p downloads/notoemoji
-    curl -sL -o "$EMOJI" "https://raw.githubusercontent.com/google/fonts/b979dba422e445492b0eb9951ac52ee0b4d648c3/ofl/notoemoji/NotoEmoji%5Bwght%5D.ttf"
+    curl -sfL --retry 3 -o "$EMOJI.part" "https://raw.githubusercontent.com/google/fonts/b979dba422e445492b0eb9951ac52ee0b4d648c3/ofl/notoemoji/NotoEmoji%5Bwght%5D.ttf"
+    if [ "$(sha1sum < "$EMOJI.part" | cut -d' ' -f1)" != 0b698c3b0d6d4d42bf6c2b7212122afc7ba1f7cc ]; then
+      rm -f "$EMOJI.part"
+      echo "Noto Emoji: the download is not the expected file" >&2
+      exit 1
+    fi
+    mv "$EMOJI.part" "$EMOJI"
   fi
   cp "$EMOJI" build/game/NotoEmoji.ttf
   # Mono.Cecil: the hook prepares mod assemblies on the phone with it (hooks/ModPrepHost.cs).
