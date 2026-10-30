@@ -631,7 +631,7 @@ internal static class StartupHook
 		LimitGraphicsMemory();
 		DropAtlasCacheIfAsked();
 		MoveBackslashNames();
-		MakeDesktop();
+		MakeHomeFolders();
 		PortHooks.Textures.Start();
 		PortHooks.UiDescriptors.Start();
 		PortHooks.AndroidFonts.Start();
@@ -654,25 +654,49 @@ internal static class StartupHook
 	}
 
 	/// <summary>
-	/// The desktop folder, which a Windows PC always has. Harmony's FileLog writes harmony.log.txt there, and its Reset
-	/// deletes that file, which throws DirectoryNotFoundException without the folder: Change DevSpeed calls Reset in its
-	/// transpiler, so its static constructor failed and its patch was never made (a tester, 2026-10-30). On Linux and
-	/// Android .NET puts the desktop at $HOME/Desktop (XDG_DESKTOP_DIR), here inside the app's own files.
+	/// The user's folders, which a Windows PC always has (and a Linux desktop as well). Harmony's FileLog writes
+	/// harmony.log.txt on the desktop, and its Reset deletes that file, which throws DirectoryNotFoundException without
+	/// the folder: Change DevSpeed calls Reset in its transpiler, so its static constructor failed and its patch was never
+	/// made (a tester, 2026-10-30). Mods write into the others the same way (Documents, ApplicationData, Pictures). The
+	/// runtime for Android puts each in $HOME (Desktop, Documents, .config, Pictures, Music, Videos, Templates, .fonts),
+	/// here inside the app's own files, and makes none of them, not even for SpecialFolderOption.Create. Those are made;
+	/// the folders it puts elsewhere (/usr/share) or nowhere ("") stay as on a Linux PC.
 	/// </summary>
-	private static void MakeDesktop()
+	private static void MakeHomeFolders()
 	{
 		try
 		{
-			string desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop, Environment.SpecialFolderOption.DoNotVerify);
-			if (!string.IsNullOrEmpty(desktop) && !Directory.Exists(desktop))
+			string home = Path.TrimEndingDirectorySeparator(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile, Environment.SpecialFolderOption.DoNotVerify));
+			if (string.IsNullOrEmpty(home) || home == "/")
 			{
-				Directory.CreateDirectory(desktop);
-				Console.WriteLine("[port17] desktop folder made, as a PC has one (Harmony's log goes there): " + desktop);
+				return;
+			}
+			var made = new List<string>();
+			foreach (Environment.SpecialFolder folder in Enum.GetValues<Environment.SpecialFolder>())
+			{
+				string path = Environment.GetFolderPath(folder, Environment.SpecialFolderOption.DoNotVerify);
+				if (!path.StartsWith(home + "/", StringComparison.Ordinal) || Directory.Exists(path))
+				{
+					continue;
+				}
+				try
+				{
+					Directory.CreateDirectory(path);
+					made.Add(Path.GetRelativePath(home, path));
+				}
+				catch (Exception e)
+				{
+					Console.WriteLine("[port17] " + path + " not made: " + e.Message);
+				}
+			}
+			if (made.Count > 0)
+			{
+				Console.WriteLine("[port17] folders made in " + home + ", as a PC has them (Harmony's log goes to the desktop): " + string.Join(", ", made));
 			}
 		}
 		catch (Exception e)
 		{
-			Console.WriteLine("[port17] desktop folder not made: " + e.Message);
+			Console.WriteLine("[port17] home folders not made: " + e.Message);
 		}
 	}
 
