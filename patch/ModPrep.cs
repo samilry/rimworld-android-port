@@ -1970,11 +1970,12 @@ internal static class ModPrep
 	private static bool FixMachineType(byte[] bytes, bool change)
 	{
 		if (bytes.Length < 0x40 || bytes[0] != (byte)'M' || bytes[1] != (byte)'Z') return false;
+		// The offsets come from the file and may be anything: compared so that a large one cannot overflow past the checks.
 		int pe = BitConverter.ToInt32(bytes, 0x3c);
-		if (pe < 0 || pe + 24 > bytes.Length || bytes[pe] != (byte)'P' || bytes[pe + 1] != (byte)'E') return false;
+		if (pe < 0 || pe > bytes.Length - 24 || bytes[pe] != (byte)'P' || bytes[pe + 1] != (byte)'E') return false;
 		ushort machine = BitConverter.ToUInt16(bytes, pe + 4);
 		int flags = machine == 0x8664 || machine == 0x14c ? ClrFlagsOffset(bytes, pe) : -1;
-		if (flags < 0 || flags + 4 > bytes.Length) return false;
+		if (flags < 0 || flags > bytes.Length - 4) return false;
 		uint value = BitConverter.ToUInt32(bytes, flags);
 		const uint ilOnly = 0x1, required32 = 0x2, preferred32 = 0x20000;
 		if ((value & ilOnly) == 0 || (machine == 0x14c && ((value & required32) == 0 || (value & preferred32) != 0))) return false;
@@ -1996,7 +1997,7 @@ internal static class ModPrep
 	/// </summary>
 	public static int ClrFlagsOffset(byte[] bytes, int pe)
 	{
-		if (pe + 24 > bytes.Length) return -1;
+		if (pe < 0 || pe > bytes.Length - 24) return -1;
 		int sections = BitConverter.ToUInt16(bytes, pe + 6);
 		int optionalSize = BitConverter.ToUInt16(bytes, pe + 20);
 		int optional = pe + 24;

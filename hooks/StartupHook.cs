@@ -408,14 +408,23 @@ namespace PortHooks
 		/// image marked for one processor is refused from bytes as from a file, and Ludeon's runtime takes any mark
 		/// (WaylithClr.LaxAssemblyArchitecture). Files get a loadable mark from the preparation or FixedArchitectureCopy;
 		/// an image a mod unpacks or makes itself (Costura's compressed resources, a zip, a download) passes neither, so a
-		/// copy of its bytes with the mark fixed loads instead. The caller's array stays as it was.
+		/// copy of its bytes with the mark fixed loads instead. The caller's array stays as it was; should the check itself
+		/// fail, the runtime gets the bytes as they are, and a mod sees the runtime's own answer (BadImageFormatException
+		/// for header garbage), as on the PC.
 		/// </summary>
 		public static void BeforeLoadBytes(ref byte[] rawAssembly)
 		{
-			byte[] loadable = LoadableCopy(rawAssembly);
-			if (loadable != null)
+			try
 			{
-				rawAssembly = loadable;
+				byte[] loadable = LoadableCopy(rawAssembly);
+				if (loadable != null)
+				{
+					rawAssembly = loadable;
+				}
+			}
+			catch (Exception)
+			{
+				// the runtime gets the bytes as they are
 			}
 		}
 
