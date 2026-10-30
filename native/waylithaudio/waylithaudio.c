@@ -11,7 +11,7 @@
 //   groups   ma_sound_group; handle 0 is the engine's endpoint
 // Handles are indices with a generation, so that a voice the engine still refers to after its automatic release
 // is harmless. Reverb is a Freeverb node of our own (the engine passes Freeverb-style parameters), and so is the mix
-// matrix (the engine's panning of mono clips, as the PC's library does it).
+// matrix (the engine's panning of mono clips and the panning of 3D voices, as the PC's library does them).
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -112,6 +112,7 @@ typedef struct Voice
     int reverbOn;
     struct MixNode* mix;
     int mixOn;
+    int spatial;             // in 3D (wa_voice_set_3d): the matrix pans it by its direction from the listener
 } Voice;
 
 typedef struct Group
@@ -793,8 +794,9 @@ static void rv_destroy(ReverbNode* r)
 // AudioSource.ApplyPan pans a mono clip with the matrix [cos, sin] of the pan angle (0.707 to each side in the
 // middle) and folds a stereo clip marked ForceToMono to mono with half of that for each channel; other clips get
 // wa_voice_set_pan. The PC's library applies the matrix to what the sound puts out in the engine's channels (a mono
-// clip duplicated to both) as the voice's last stage, after the effects; set_pan and set_3d turn it off again.
-// Without it a mono sound played 3 dB louder than on the PC and could not be panned.
+// clip duplicated to both) as the voice's last stage, after the effects; set_pan and set_3d(off) turn it off again,
+// and a 3D voice gets a matrix of its own (voice_mix_3d). Without it a mono sound played 3 dB louder than on the PC
+// and could not be panned.
 #define MIX_MAX_CHANNELS 8
 
 typedef struct MixNode
@@ -869,11 +871,38 @@ static void voice_rebuild_chain(Voice* v)
     if (!v->mixOn && v->mix) ma_node_detach_output_bus(v->mix, 0);
 }
 
-// A pan (wa_voice_set_pan) or 3D (wa_voice_set_3d) takes the matrix's place, as in the PC's library; 3D voices are
-// panned by miniaudio's spatializer here.
+// A pan (wa_voice_set_pan) or leaving 3D (wa_voice_set_3d) takes the matrix's place, as in the PC's library.
 static void voice_mix_off(Voice* v)
 {
     if (v->mixOn) { v->mixOn = 0; voice_rebuild_chain(v); }
+}
+
+// A 3D voice is panned by its matrix as well, as in the PC's library, and miniaudio only attenuates it by distance.
+// miniaudio's own panning, with the speakers straight to the left and the right, put a sound straight ahead (where a
+// sound below the map's camera is) at half level on each side, 3 dB below the PC, and kept a fifth of the level on
+// the far side. The pan is the cosine of the angle between the direction from the listener to the voice and the
+// listener's right, cross(forward, up) as the engine passed them; the matrix is AudioSource.ApplyPan's law, cos and
+// sin of (pan + 1) * pi/4 for the left and the right channel, other channels as they are. A voice within 0.0001 of
+// the listener (the game's on-camera sustainers sit on it), or a listener whose right is no longer than that (forward
+// and up parallel), is in the middle. As on the PC, the matrix is worked out again in set_3d, set_3d_position and
+// set_listener, and a pan or a matrix from the engine replaces it until then.
+static void voice_mix_3d(Voice* v)
+{
+    ma_vec3f p = ma_sound_get_position(&v->snd);
+    ma_vec3f l = ma_engine_listener_get_position(&g_engine, 0);
+    ma_vec3f f = ma_engine_listener_get_direction(&g_engine, 0);
+    ma_vec3f u = ma_engine_listener_get_world_up(&g_engine, 0);
+    float dx = p.x - l.x, dy = p.y - l.y, dz = p.z - l.z;
+    float rx = f.y * u.z - f.z * u.y, ry = f.z * u.x - f.x * u.z, rz = f.x * u.y - f.y * u.x;
+    float distance = sqrtf(dx * dx + dy * dy + dz * dz), right = sqrtf(rx * rx + ry * ry + rz * rz);
+    float pan = distance > 0.0001f && right > 0.0001f ? (rx * dx + ry * dy + rz * dz) / (distance * right) : 0.0f;
+    float angle = (fminf(fmaxf(pan, -1.0f), 1.0f) + 1.0f) * ((float)M_PI / 4.0f);
+    uint32_t ch = v->mix->channels;
+    float m[MIX_MAX_CHANNELS * MIX_MAX_CHANNELS] = { 0 };
+    for (uint32_t c = 0; c < ch; c++) m[c * ch + c] = 1.0f;
+    if (ch >= 2) { m[0] = cosf(angle); m[ch + 1] = sinf(angle); }
+    memcpy(v->mix->matrix, m, sizeof m);
+    if (!v->mixOn) { v->mixOn = 1; voice_rebuild_chain(v); }
 }
 
 static void voice_release_locked(Voice* v)
@@ -1068,11 +1097,11 @@ EXPORT void wa_voice_set_mix_matrix(uint64_t voice, float* matrix, uint32_t outC
         }
     });
 }
-EXPORT void wa_voice_set_3d_position(uint64_t voice, float x, float y, float z) { WITH_VOICE({ ma_sound_set_position(&v->snd, x, y, z); }); }
+EXPORT void wa_voice_set_3d_position(uint64_t voice, float x, float y, float z) { WITH_VOICE({ ma_sound_set_position(&v->snd, x, y, z); if (v->spatial && v->mix) voice_mix_3d(v); }); }
 EXPORT void wa_voice_set_3d(uint64_t voice, int enabled, float minDistance, float maxDistance, int rolloff)
 {
     WITH_VOICE({
-        voice_mix_off(v);
+        v->spatial = enabled != 0;
         ma_sound_set_spatialization_enabled(&v->snd, enabled ? MA_TRUE : MA_FALSE);
         if (enabled)
         {
@@ -1081,7 +1110,14 @@ EXPORT void wa_voice_set_3d(uint64_t voice, int enabled, float minDistance, floa
             ma_sound_set_max_distance(&v->snd, maxDistance);
             ma_sound_set_attenuation_model(&v->snd, rolloff == 1 ? ma_attenuation_model_linear : ma_attenuation_model_inverse);
             ma_sound_set_rolloff(&v->snd, 1.0f);
+            if (!v->mix) v->mix = mix_create();
+            if (v->mix)
+            {
+                ma_sound_set_directional_attenuation_factor(&v->snd, 0.0f);
+                voice_mix_3d(v);
+            }
         }
+        else voice_mix_off(v);
     });
 }
 
@@ -1367,9 +1403,12 @@ EXPORT void wa_set_master_paused(int paused) { if (g_initialized) { if (paused) 
 EXPORT void wa_set_listener(float px, float py, float pz, float fx, float fy, float fz, float ux, float uy, float uz)
 {
     if (!g_initialized) return;
+    pthread_mutex_lock(&g_lock);
     ma_engine_listener_set_position(&g_engine, 0, px, py, pz);
     ma_engine_listener_set_direction(&g_engine, 0, fx, fy, fz);
     ma_engine_listener_set_world_up(&g_engine, 0, ux, uy, uz);
+    for (int i = 0; i < MAX_VOICES; i++) if (g_voices[i].used && g_voices[i].spatial && g_voices[i].mix) voice_mix_3d(&g_voices[i]);
+    pthread_mutex_unlock(&g_lock);
 }
 
 EXPORT int wa_playing_count(void)
