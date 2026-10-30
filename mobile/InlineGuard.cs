@@ -47,7 +47,8 @@ namespace PortMobile
 	/// Log.Warning first), it made 835 replacements again, where the old way made 464, in 2.7-2.9 s; going by the order
 	/// of the replacements it makes 381 in 1.3-1.4 s (256 of 467 for the mods' patches before the port, 125 of 368 for
 	/// the port's own), still leaving none. Of the 368, about 200 were for the Recorder's count of Log.Warning, which
-	/// takes a lock and so may be in 271 replacements, all of them made after PortHooks' patch of it.
+	/// takes a lock and so may be in 271 replacements, all of them made after PortHooks' patch of it; the Recorder now
+	/// counts through that patch and puts none of its own on Log.Warning.
 	///
 	/// The engine's own code is the other half. Its per-frame methods are compiled at full optimisation during the
 	/// loading screens, before the port is there, and they may hold a copy of a small engine method the port patches

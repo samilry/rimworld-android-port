@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using HarmonyLib;
@@ -61,6 +62,10 @@ namespace PortMobile
 		private static long jitMethodsAtStart;
 		private static TimeSpan jitAtStart, jitMainAtStart;
 		private static int errors, warnings, slowFrames;
+		// Whether PortHooks counts the calls of Log.Warning (hooks/LoadRecovery.cs; where it does not, the record's own
+		// postfix counts them in warnings), and its count when the window began.
+		private static bool portWarnings;
+		private static long warningsAtStart;
 		private static double lastSlowAt = -100;
 		private static int slowUnsaid;
 		private static readonly Dictionary<string, int> errorKinds = new Dictionary<string, int>();
@@ -113,14 +118,21 @@ namespace PortMobile
 				Patch(harmony, AccessTools.Method(typeof(WindowStack), nameof(WindowStack.Add)), null, nameof(AfterWindowAdd));
 				Patch(harmony, AccessTools.Method(typeof(WindowStack), nameof(WindowStack.TryRemove), new[] { typeof(Window), typeof(bool) }), null, nameof(AfterWindowRemove));
 				Patch(harmony, AccessTools.Method(typeof(Log), nameof(Log.Error), new[] { typeof(string) }), null, nameof(AfterError));
-				Patch(harmony, AccessTools.Method(typeof(Log), nameof(Log.Warning), new[] { typeof(string) }), null, nameof(AfterWarning));
+				// Log.Warning's calls are counted by PortHooks' postfix of it, part of its first patch, which no compiled code
+				// can have passed by (hooks/LoadRecovery.cs); the record's own postfix only where PortHooks does not count them,
+				// and InlineGuard then makes every replacement again that may hold Log.Warning.
+				portWarnings = PortWarnings() >= 0;
+				if (!portWarnings)
+				{
+					Patch(harmony, AccessTools.Method(typeof(Log), nameof(Log.Warning), new[] { typeof(string) }), null, nameof(AfterWarning));
+				}
 				Patch(harmony, AccessTools.Method(typeof(Root), nameof(Root.Shutdown)), nameof(BeforeQuit), null);
 				Write("record of " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + ": RimWorld " + VersionControl.CurrentVersionStringWithRev + ", " + Screen.width + "x" + Screen.height
 					+ ", a snap every " + seconds + " s; sensors: " + thermalZones.Count + " thermal zones" + (batteryTemp != null ? ", battery" : "")
 					+ (gpuMapped != null ? ", driver's graphics memory" : "") + ", " + clockPolicies.Count + " clock policies");
 				Write("mobile.txt: " + MobileSettings());
 				Write("mods: " + Mods());
-				Console.WriteLine("[mobile] record: logs/record.txt, a snap every " + seconds + " s");
+				Console.WriteLine("[mobile] record: logs/record.txt, a snap every " + seconds + " s; " + (portWarnings ? "warnings as PortHooks counts them" : "warnings counted by its own patch of Log.Warning"));
 			}
 			catch (Exception e)
 			{
@@ -367,6 +379,10 @@ namespace PortMobile
 			longest = 0;
 			frameTimes.Clear();
 			errors = warnings = slowFrames = 0;
+			if (portWarnings)
+			{
+				warningsAtStart = LoadRecoveryWarnings();
+			}
 			ticksAtStart = Current.ProgramState == ProgramState.Playing && Find.TickManager != null ? Find.TickManager.TicksGame : -1;
 			if (renderTid == 0)
 			{
@@ -417,8 +433,29 @@ namespace PortMobile
 			Part(line, () => ProcessMemory());
 			Part(line, () => GraphicsMemory());
 			Part(line, () => Temperatures());
-			Part(line, () => "errors " + errors + ", warnings " + warnings + ", slow frames " + slowFrames);
+			Part(line, () => "errors " + errors + ", warnings " + (portWarnings ? LoadRecoveryWarnings() - warningsAtStart : warnings) + ", slow frames " + slowFrames);
 			return line.ToString();
+		}
+
+		/// <summary>The calls of Log.Warning so far as PortHooks counts them (hooks/LoadRecovery.cs); -1 where it does not.</summary>
+		private static long PortWarnings()
+		{
+			try
+			{
+				return LoadRecoveryWarnings();
+			}
+			catch (Exception)
+			{
+				// An older PortHooks, which keeps no count.
+				return -1;
+			}
+		}
+
+		// Apart, and not inlined: with an older PortHooks the call fails where this is compiled, and only here.
+		[MethodImpl(MethodImplOptions.NoInlining)]
+		private static long LoadRecoveryWarnings()
+		{
+			return PortHooks.LoadRecovery.Warnings;
 		}
 
 		/// <summary>One part of a snap: a part that fails says so and the others are still written.</summary>
