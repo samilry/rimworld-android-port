@@ -30,15 +30,19 @@ namespace PortMobile
 	/// so on, 20 levels deep (DEFAULT_MAX_INLINE_DEPTH; ten were measured); a method of up to 128 IL bytes
 	/// (JitExtDefaultPolicyMaxIL), of up to 1024 (JitExtDefaultPolicyMaxILProf) where the replacement is one straight run
 	/// of code with few calls (a postfix on a getter), of any size where it asks for it (AggressiveInlining); never one
-	/// with a try block, a NoInlining or synchronized one, nor one called virtually that the JIT cannot resolve. Until
-	/// 2026-10-30 only the original's own code was looked at, two levels and 100 bytes deep: a postfix's call of
-	/// Rand.Value (Vanilla Expanded), a transpiler's call, or Bombardment.TryDoExplosion -> FloatRange.RandomInRange ->
-	/// Rand.Range -> Rand.Value were missed. The framework's code is not followed (it does not call the game), and on the
-	/// PC its methods are copied into replacements as here. Measured on the PC's stock .NET 10.0.12 with the game, the
-	/// 1049 methods the owner's 130 mods patch (each given an empty postfix, in their order) and then the port's own
-	/// targets: the old way left 22 copies of patched methods in 22 replacements, this one none (PortHooks' InlineWatch,
-	/// overload by overload); 491 replacements are made again instead of 432, in about the same 2.5 s, as fewer of the
-	/// port's are taken (only what the JIT can copy); reading the code takes 200 ms instead of 110.
+	/// with a catch, a NoInlining or synchronized one, nor one called virtually that the JIT cannot resolve from the code
+	/// alone (where it knows the object's exact type it can; none such was found). A try/finally is copied in (a lock, a
+	/// using, a foreach; GUI.ProcessPendingWindows into ImguiDispatch.Dispatch, below), and so are fault and filter
+	/// blocks; a catch is not, even where the method asks for it ("has exception handling"). Until 2026-10-30 only the
+	/// original's own code was looked at, two levels and 100 bytes deep: a postfix's call of Rand.Value (Vanilla
+	/// Expanded), a transpiler's call, or Bombardment.TryDoExplosion -> FloatRange.RandomInRange -> Rand.Range ->
+	/// Rand.Value were missed. The framework's code is not followed (it does not call the game), and on the PC its
+	/// methods are copied into replacements as here. Measured on the PC's stock .NET 10.0.12 with the game, the 1049
+	/// methods the owner's 130 mods patch (each given an empty postfix, in their order) and then the port's own targets:
+	/// the old way left 22 copies of patched methods in 22 replacements, this one none (PortHooks' InlineWatch, overload
+	/// by overload). It makes 728 replacements again instead of 432, in 2.6-3.0 s instead of 1.8-2.1, reading the code
+	/// in 250-290 ms instead of 100; 200 of them for the Recorder's count of Log.Warning, which takes a lock and so may
+	/// be in 271 replacements (the JIT took it into 3 of the 159 it weighed it for).
 	///
 	/// The engine's own code is the other half. Its per-frame methods are compiled at full optimisation during the
 	/// loading screens, before the port is there, and they may hold a copy of a small engine method the port patches
@@ -438,7 +442,8 @@ namespace PortMobile
 					const MethodImplAttributes never = MethodImplAttributes.NoInlining | MethodImplAttributes.Synchronized | MethodImplAttributes.NoOptimization;
 					MethodBody body = method is DynamicMethod || method.IsAbstract || (flags & never) != 0 ? null : method.GetMethodBody();
 					byte[] il = body?.GetILAsByteArray();
-					size = il == null || body.ExceptionHandlingClauses.Count > 0 ? -1 : (flags & MethodImplAttributes.AggressiveInlining) != 0 ? 0 : il.Length;
+					// A catch keeps the JIT from copying a method in, even one that asks for it; finally, fault and filter blocks do not.
+					size = il == null || body.ExceptionHandlingClauses.Any(clause => clause.Flags == ExceptionHandlingClauseOptions.Clause) ? -1 : (flags & MethodImplAttributes.AggressiveInlining) != 0 ? 0 : il.Length;
 				}
 				catch (Exception)
 				{
