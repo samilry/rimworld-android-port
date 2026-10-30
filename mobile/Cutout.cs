@@ -463,15 +463,18 @@ namespace PortMobile
 			}
 			try
 			{
-				Type vge = AccessTools.TypeByName("VanillaGravshipExpanded.ArchitectCategoryTab_DesignationTabOnGUI_Patch");
-				MethodInfo prefix = vge != null ? AccessTools.Method(vge, "Prefix") : null;
-				MethodInfo draw = vge != null ? AccessTools.Method(vge, "DrawBetterArchitectMenu") : null;
-				// Its patch is left out while Better Architect Menu is active (its Prepare).
+				// Its prefix of the game's method, put in only while Better Architect Menu is not active (its Prepare), is looked
+				// for among that method's patches (AccessTools.TypeByName, finding nothing, goes through every type of every
+				// assembly loaded: for every player without the mod, at the first architect or inspect pane).
 				Patches tab = Harmony.GetPatchInfo(AccessTools.Method(typeof(ArchitectCategoryTab), nameof(ArchitectCategoryTab.DesignationTabOnGUI)));
-				if (prefix != null && draw != null && tab != null && tab.Prefixes.Any(p => p.PatchMethod == prefix))
+				MethodInfo prefix = tab?.Prefixes.Select(p => p.PatchMethod).FirstOrDefault(m => m.Name == "Prefix" && m.DeclaringType?.FullName == "VanillaGravshipExpanded.ArchitectCategoryTab_DesignationTabOnGUI_Patch");
+				MethodInfo draw = prefix != null ? AccessTools.Method(prefix.DeclaringType, "DrawBetterArchitectMenu") : null;
+				if (draw != null)
 				{
-					patcher.Patch(prefix, prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeModPanel)), finalizer: new HarmonyMethod(typeof(Cutout), nameof(AfterModPanel)));
-					patcher.Patch(draw, transpiler: new HarmonyMethod(typeof(Cutout), nameof(ScreenWidthTranspiler)));
+					// The drawing goes with the menu, not the prefix that calls it: the prefix is small enough for the compiler to
+					// copy it into the game's method when VGE patches that at start, where a patch of it would not be reached
+					// (InlineGuard looks only at the calls of the game's own code). The drawing is far too large to be copied.
+					patcher.Patch(draw, prefix: new HarmonyMethod(typeof(Cutout), nameof(BeforeModPanel)), finalizer: new HarmonyMethod(typeof(Cutout), nameof(AfterModPanel)), transpiler: new HarmonyMethod(typeof(Cutout), nameof(ScreenWidthTranspiler)));
 					Console.WriteLine("[mobile] cutout: Vanilla Gravship Expanded's Odyssey panel goes with the menu");
 				}
 			}
