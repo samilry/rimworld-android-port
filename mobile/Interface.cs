@@ -22,7 +22,10 @@ namespace PortMobile
 	///   those of mods made like it: NameFields), take the focus only from a finger on them: given the focus by code (as
 	///   when their window opens), it is let go at once, so that the keyboard does not come up by itself (testers,
 	///   2026-10-22: saving by hand brought it up over the save dialog; the name is typed only to change it). Other text
-	///   fields (a name to type in a rename window) keep such a focus. mobile.txt: searchFocusOnTap=0 lets them all keep it;
+	///   fields (a name to type in a rename window) keep such a focus until the player has put them away (Done, a finger
+	///   elsewhere): from then on they too take it back only from a finger (RimTalk's talk window gives its field the
+	///   focus whenever nothing has it, and the keyboard came straight back up). mobile.txt: searchFocusOnTap=0 lets them
+	///   all keep it;
 	///   a finger that lands anywhere but on a text field, the typing bar or the key wheel takes the focus from the field
 	///   that has it once the touch is over, and the keyboard goes down (the game means to do that for its search boxes,
 	///   but under this engine the press has already been used by the window when the search box looks at it). Until
@@ -61,7 +64,18 @@ namespace PortMobile
 				glfwAndroidInjectKey(GlfwKeyEnter, GlfwRelease, 0);
 				return;
 			}
+			PutAway();
 			GUIUtility.keyboardControl = 0;
+			// A focus code gives the field back before the next look (LetGoOfGivenSearchFocus) is a change too: given back in
+			// the same frame (RimTalk's talk window does), it looked as if the field had kept it, and the keyboard stayed up.
+			lastFocus = 0;
+		}
+
+		/// <summary>The player puts away the field that has the focus: code that gives it the focus again is not followed until a finger is on it.</summary>
+		private static void PutAway()
+		{
+			putAwayFocus = GUIUtility.keyboardControl;
+			putAwayWindow = GUI.GetFocusedControlWindowId();
 		}
 
 		private static readonly IDictionary ActiveTips = (IDictionary)AccessTools.Field(typeof(TooltipHandler), "activeTips").GetValue(null);
@@ -81,6 +95,9 @@ namespace PortMobile
 		// The text field that had the focus when a finger landed away from it (0: none), the window it is drawn in, and the
 		// last frame something of that touch was still on its way to the game (LetGoAfterTouch).
 		private static int letGoFocus, letGoWindow, letGoTouchFrame;
+		// The text field the player last put away (the keyboard's Done, a finger elsewhere; 0: none) and its window: a
+		// focus code gives it again is let go until a finger is on it (LetGoOfGivenSearchFocus).
+		private static int putAwayFocus, putAwayWindow;
 
 		// A finger that begins in a list with something to scroll presses nothing until it is known to be a tap (see
 		// Touch): while it scrolls, the list that begins at this point of the screen follows it, and goes on for a
@@ -381,6 +398,7 @@ namespace PortMobile
 			if (GUIUtility.keyboardControl == letGoFocus && GUI.GetFocusedControlWindowId() == letGoWindow)
 			{
 				if (Touch.Verbose) Console.WriteLine("[mobile] the touch away from the text field is over: its focus goes (" + GUI.GetNameOfFocusedControl() + ")");
+				PutAway();
 				GUI.FocusControl(null);
 			}
 			letGoFocus = 0;
@@ -469,7 +487,7 @@ namespace PortMobile
 			return digit;
 		}
 
-		/// <summary>Once a frame, before the keyboard follows the focus: a search box or a save dialog's name (NameFields) that got the focus some other way than from a finger lets it go.</summary>
+		/// <summary>Once a frame, before the keyboard follows the focus: a search box, a save dialog's name (NameFields) or the field the player put away, that got the focus some other way than from a finger, lets it go.</summary>
 		private static void LetGoOfGivenSearchFocus()
 		{
 			int focus = GUIUtility.keyboardControl;
@@ -485,17 +503,24 @@ namespace PortMobile
 			bool fromFinger = focus != 0 && focus == tappedFocus;
 			tappedFocus = 0;
 			if (Touch.Verbose) Console.WriteLine("[mobile] the keyboard focus is now " + focus + " (" + GUI.GetNameOfFocusedControl() + ", from a finger: " + fromFinger + ")");
+			// The field the player put away, in its window: another field of its name (one id in every window) is another.
+			bool putAway = focus != 0 && focus == putAwayFocus && GUI.GetFocusedControlWindowId() == putAwayWindow;
+			if (putAway && fromFinger)
+			{
+				// Tapped again: the player's to type in, and code may give it the focus as before.
+				putAwayFocus = 0;
+			}
 			// With a hardware keyboard the focus stays where the game puts it, so that typing goes there at once.
 			if (!searchOnlyFromTap || InputMode.Keyboard || focus == 0 || fromFinger)
 			{
 				return;
 			}
 			string name = GUI.GetNameOfFocusedControl();
-			if (IsSearchBox(name) || NameFields.Contains(name))
+			if (IsSearchBox(name) || NameFields.Contains(name) || putAway)
 			{
 				GUI.FocusControl(null);
 				lastFocus = 0;
-				if (Touch.Verbose) Console.WriteLine("[mobile] the field " + name + " was given the focus without a finger on it: let go");
+				if (Touch.Verbose) Console.WriteLine("[mobile] the field " + name + " was given the focus without a finger on it" + (putAway ? " after it was put away" : "") + ": let go");
 			}
 		}
 
