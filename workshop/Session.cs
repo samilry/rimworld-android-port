@@ -44,9 +44,17 @@ namespace PortWorkshop
 		private static Client cdn;
 		private static Thread pump;
 		private static volatile bool wanted, connected;
-		// Set when this side ends the connection (Stop): a window opened again before the end has come finds the
-		// connection still up and makes no new one, so it is made once the end has come (OnDisconnected).
+		// The update check's use of the connection (Updates, at the main menu, with or without the window): it signs in
+		// with the remembered token or not at all (no QR code; a token Steam does not take stays, for the window to try),
+		// and gives the connection up when it is done (EndCheck), unless the window uses it.
+		private static volatile bool checking;
+		// Why the update check's sign-in did not come, for its line in the log.
+		private static volatile string refusal;
+		// Set when this side ends the connection (Stop, EndCheck): a window opened again before the end has come finds
+		// the connection still up and makes no new one, so it is made once the end has come (OnDisconnected).
 		private static volatile bool endAsked;
+		// The window (on the game's thread) and the update check (on a worker) may both be the first to connect.
+		private static readonly object starting = new object();
 		private static CancellationTokenSource authCancel;
 		private static TaskCompletionSource<string> codeSource;
 		private static uint cellId;
@@ -59,7 +67,7 @@ namespace PortWorkshop
 		public static volatile string CodePrompt = "";
 		public static volatile string QrUrl = "";
 
-		private static string PrivateDir
+		internal static string PrivateDir
 		{
 			get
 			{
@@ -116,56 +124,69 @@ namespace PortWorkshop
 		public static void Start()
 		{
 			wanted = true;
-			if (client == null)
+			Connect();
+			// Connected by the update check, which found no sign-in to use and asks for none: the window offers one.
+			if (connected && State == SessionState.SignedOut && authCancel == null)
 			{
-				if (File.Exists(Path.Combine(AppContext.BaseDirectory, "workshop-debug.txt")))
-				{
-					DebugLog.AddListener((category, message) => Console.WriteLine("[steamkit] " + category + ": " + message));
-					DebugLog.Enabled = true;
-				}
-				machine = new Machine();
-				SteamConfiguration configuration = SteamConfiguration.Create(b => b.WithMachineInfoProvider(machine).WithProtocolTypes(ProtocolTypes.WebSocket | ProtocolTypes.Tcp).WithServerListProvider(new SteamKit2.Discovery.FileStorageServerListProvider(Path.Combine(PrivateDir, "servers"))));
-				client = new SteamClient(configuration);
-				manager = new CallbackManager(client);
-				user = client.GetHandler<SteamUser>();
-				apps = client.GetHandler<SteamApps>();
-				content = client.GetHandler<SteamContent>();
-				publishedFiles = client.GetHandler<SteamUnifiedMessages>().CreateService<PublishedFile>();
-				cdn = new Client(client);
-				manager.Subscribe<SteamClient.ConnectedCallback>(OnConnected);
-				manager.Subscribe<SteamClient.DisconnectedCallback>(OnDisconnected);
-				manager.Subscribe<SteamUser.LoggedOnCallback>(OnLoggedOn);
-				manager.Subscribe<SteamUser.LoggedOffCallback>(OnLoggedOff);
-				pump = new Thread(() =>
-				{
-					while (true)
-					{
-						try
-						{
-							manager.RunWaitCallbacks(TimeSpan.FromMilliseconds(200));
-						}
-						catch (Exception e)
-						{
-							Log("callback failed: " + e);
-						}
-					}
-				}) { IsBackground = true, Name = "SteamKit2" };
-				pump.Start();
-			}
-			if (!connected && State != SessionState.Connecting)
-			{
-				State = SessionState.Connecting;
-				Message = "";
-				client.Connect();
+				StartQr();
 			}
 		}
 
-		/// <summary>Disconnects (the remembered sign-in stays).</summary>
+		private static void Connect()
+		{
+			lock (starting)
+			{
+				if (client == null)
+				{
+					if (File.Exists(Path.Combine(AppContext.BaseDirectory, "workshop-debug.txt")))
+					{
+						DebugLog.AddListener((category, message) => Console.WriteLine("[steamkit] " + category + ": " + message));
+						DebugLog.Enabled = true;
+					}
+					machine = new Machine();
+					SteamConfiguration configuration = SteamConfiguration.Create(b => b.WithMachineInfoProvider(machine).WithProtocolTypes(ProtocolTypes.WebSocket | ProtocolTypes.Tcp).WithServerListProvider(new SteamKit2.Discovery.FileStorageServerListProvider(Path.Combine(PrivateDir, "servers"))));
+					client = new SteamClient(configuration);
+					manager = new CallbackManager(client);
+					user = client.GetHandler<SteamUser>();
+					apps = client.GetHandler<SteamApps>();
+					content = client.GetHandler<SteamContent>();
+					publishedFiles = client.GetHandler<SteamUnifiedMessages>().CreateService<PublishedFile>();
+					cdn = new Client(client);
+					manager.Subscribe<SteamClient.ConnectedCallback>(OnConnected);
+					manager.Subscribe<SteamClient.DisconnectedCallback>(OnDisconnected);
+					manager.Subscribe<SteamUser.LoggedOnCallback>(OnLoggedOn);
+					manager.Subscribe<SteamUser.LoggedOffCallback>(OnLoggedOff);
+					pump = new Thread(() =>
+					{
+						while (true)
+						{
+							try
+							{
+								manager.RunWaitCallbacks(TimeSpan.FromMilliseconds(200));
+							}
+							catch (Exception e)
+							{
+								Log("callback failed: " + e);
+							}
+						}
+					}) { IsBackground = true, Name = "SteamKit2" };
+					pump.Start();
+				}
+				if (!connected && State != SessionState.Connecting)
+				{
+					State = SessionState.Connecting;
+					Message = "";
+					client.Connect();
+				}
+			}
+		}
+
+		/// <summary>Disconnects (the remembered sign-in stays), unless the update check still uses the connection.</summary>
 		public static void Stop()
 		{
 			wanted = false;
 			CancelAuth();
-			if (client != null && connected)
+			if (client != null && connected && !checking)
 			{
 				Disconnect();
 			}
@@ -182,10 +203,10 @@ namespace PortWorkshop
 			connected = true;
 			Message = "";
 			Log("connected");
-			if (!wanted)
+			if (!wanted && !checking)
 			{
-				// The window was closed while the connection was being made (the first one from China takes about 45 s):
-				// nobody needs it now, and signed in it would stay for the rest of the run.
+				// The window was closed while the connection was being made (the first one from China takes about 45 s), or
+				// the update check stopped waiting for it: nobody needs it now, and signed in it would stay for the run.
 				Disconnect();
 				return;
 			}
@@ -196,7 +217,11 @@ namespace PortWorkshop
 			else
 			{
 				State = SessionState.SignedOut;
-				StartQr();
+				// Without the window (the update check alone) no sign-in is asked for.
+				if (wanted)
+				{
+					StartQr();
+				}
 			}
 		}
 
@@ -207,13 +232,13 @@ namespace PortWorkshop
 			endAsked = false;
 			CancelAuth();
 			Log("disconnected" + (callback.UserInitiated ? " (asked for)" : ""));
-			if (wanted && logOnElsewhere)
+			if ((wanted || checking) && logOnElsewhere)
 			{
 				logOnElsewhere = false;
 				State = SessionState.Connecting;
 				Task.Delay(1000).ContinueWith(_ =>
 				{
-					if (wanted && !connected)
+					if ((wanted || checking) && !connected)
 					{
 						client.Connect();
 					}
@@ -233,8 +258,8 @@ namespace PortWorkshop
 			}
 			else if (wanted && asked)
 			{
-				// Ended for a window that was closed, and wanted by one opened again before the end came: without this the
-				// new window stayed at "connecting" for good.
+				// Ended for a window that was closed (or by the update check, done), and wanted by one opened before the end
+				// came: without this the new window stayed at "connecting" for good.
 				State = SessionState.Connecting;
 				Message = "";
 				client.Connect();
@@ -267,6 +292,16 @@ namespace PortWorkshop
 				client.Disconnect();
 				return;
 			}
+			refusal = "Steam did not take the remembered sign-in (" + callback.Result + ")";
+			if (!wanted)
+			{
+				// The update check alone: nothing is shown, and the token stays. The window tries it again when the player
+				// opens it, with its own tries on other servers, and drops it then if Steam still does not take it.
+				logOnAttempts = 0;
+				Account = "";
+				State = SessionState.SignedOut;
+				return;
+			}
 			// A remembered token that no longer works (expired, revoked, the password changed): it goes.
 			DeleteLogin();
 			Account = "";
@@ -297,6 +332,7 @@ namespace PortWorkshop
 		private static void OnLoggedOff(SteamUser.LoggedOffCallback callback)
 		{
 			Log("signed off by Steam: " + callback.Result);
+			refusal = "signed off by Steam (" + callback.Result + ")";
 			State = SessionState.SignedOut;
 			Message = Texts.Say("Steam 让这次登录下线了（" + callback.Result + "）。", "Steam signed this session off (" + callback.Result + ").");
 		}
@@ -521,6 +557,48 @@ namespace PortWorkshop
 			}
 		}
 
+		// ---- the update check ----
+
+		/// <summary>
+		/// The update check's sign-in (Updates): connected if need be and signed in with the remembered token, without a
+		/// word on the screen. Null once signed in, else why not, for the log: no remembered sign-in, a token Steam does not
+		/// take, no connection, or not signed in within the time given. EndCheck follows, whatever came of it.
+		/// </summary>
+		public static async Task<string> SignInForCheck(TimeSpan patience)
+		{
+			checking = true;
+			refusal = null;
+			Connect();
+			var waited = System.Diagnostics.Stopwatch.StartNew();
+			while (true)
+			{
+				SessionState state = State;
+				if (state == SessionState.Online && connected)
+				{
+					return null;
+				}
+				if (state == SessionState.SignedOut || state == SessionState.Off)
+				{
+					return refusal ?? (state == SessionState.Off ? "no connection to Steam" : "no remembered sign-in");
+				}
+				if (waited.Elapsed > patience)
+				{
+					return "not signed in after " + (int)patience.TotalSeconds + " s";
+				}
+				await Task.Delay(250);
+			}
+		}
+
+		/// <summary>The update check is done with the connection: it goes, unless the window uses it.</summary>
+		public static void EndCheck()
+		{
+			checking = false;
+			if (!wanted && client != null && connected)
+			{
+				Disconnect();
+			}
+		}
+
 		// ---- what the downloads need ----
 
 		public static bool Online => State == SessionState.Online && connected;
@@ -534,13 +612,27 @@ namespace PortWorkshop
 		}
 
 		/// <summary>The details of workshop items (with their required items or, for a collection, its items).</summary>
-		public static async Task<List<PublishedFileDetails>> Details(IReadOnlyList<ulong> ids)
+		public static Task<List<PublishedFileDetails>> Details(IReadOnlyList<ulong> ids)
+		{
+			return Details(ids, true);
+		}
+
+		/// <summary>
+		/// What the update check compares (Updates): the items' versions, without their required items and with their
+		/// descriptions cut short, so that a look at every installed mod costs little data.
+		/// </summary>
+		public static Task<List<PublishedFileDetails>> Versions(IReadOnlyList<ulong> ids)
+		{
+			return Details(ids, false);
+		}
+
+		private static async Task<List<PublishedFileDetails>> Details(IReadOnlyList<ulong> ids, bool full)
 		{
 			RequireOnline();
 			var all = new List<PublishedFileDetails>();
 			for (int at = 0; at < ids.Count; at += 50)
 			{
-				var request = new CPublishedFile_GetDetails_Request { includechildren = true, appid = App };
+				var request = new CPublishedFile_GetDetails_Request { includechildren = full, short_description = !full, appid = App };
 				request.publishedfileids.AddRange(ids.Skip(at).Take(50));
 				var response = await publishedFiles.GetDetails(request);
 				if (response.Result != EResult.OK)

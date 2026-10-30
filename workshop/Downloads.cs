@@ -104,21 +104,24 @@ namespace PortWorkshop
 
 		// ---- what is installed ----
 
-		private sealed class Stamp
+		internal sealed class Stamp
 		{
 			public ulong Manifest;
 			public uint Updated;
 		}
 
-		/// <summary>The mods in the Mods folder that came from the Workshop: by .workshop, or by a folder named as an id.</summary>
-		private static Dictionary<ulong, Stamp> Installed()
+		/// <summary>
+		/// The mods in a Mods folder that came from the Workshop: by .workshop, or by a folder named as an id (with no
+		/// .workshop, null: where it came from and when is not known).
+		/// </summary>
+		internal static Dictionary<ulong, Stamp> Installed(string mods)
 		{
 			var found = new Dictionary<ulong, Stamp>();
-			if (ModsFolder == null || !Directory.Exists(ModsFolder))
+			if (mods == null || !Directory.Exists(mods))
 			{
 				return found;
 			}
-			foreach (string folder in Directory.GetDirectories(ModsFolder))
+			foreach (string folder in Directory.GetDirectories(mods))
 			{
 				try
 				{
@@ -188,7 +191,7 @@ namespace PortWorkshop
 		/// item that is one file on Steam's servers, by the time of the version. Such an item has no manifest, and its
 		/// .workshop records none either: compared by manifest first, it was always up to date.
 		/// </summary>
-		private static bool UpToDate(Stamp stamp, ulong manifest, uint updated)
+		internal static bool UpToDate(Stamp stamp, ulong manifest, uint updated)
 		{
 			return manifest != 0 ? stamp.Manifest == manifest : stamp.Updated >= updated;
 		}
@@ -196,7 +199,7 @@ namespace PortWorkshop
 		/// <summary>Looks the ids up and puts them into the list, a collection's items and an item's required items with them.</summary>
 		private static async Task Add(List<ulong> ids, bool select)
 		{
-			Dictionary<ulong, Stamp> installed = Installed();
+			Dictionary<ulong, Stamp> installed = Installed(ModsFolder);
 			var pending = new Queue<(ulong id, ulong requiredBy)>(ids.Select(i => (i, 0UL)));
 			var seen = new HashSet<ulong>();
 			while (pending.Count > 0)
@@ -303,7 +306,7 @@ namespace PortWorkshop
 		{
 			Run(Texts.Say("正在检查已装的工坊 mod……", "Checking the installed Workshop mods..."), async () =>
 			{
-				List<ulong> ids = Installed().Keys.ToList();
+				List<ulong> ids = Installed(ModsFolder).Keys.ToList();
 				await Add(ids, false);
 				int outdated;
 				lock (Items)
@@ -315,6 +318,28 @@ namespace PortWorkshop
 					}
 				}
 				Status = Texts.Say("已装 " + ids.Count + " 个工坊 mod，" + outdated + " 个有更新。", ids.Count + " installed Workshop mods, " + outdated + " with an update.");
+			});
+		}
+
+		/// <summary>
+		/// The mods the main menu's update notice names (Updates): looked up again, and the ones the Workshop has a newer
+		/// version of ticked, as "检查已装 mod 的更新" ticks them (the items they require are listed, not ticked).
+		/// </summary>
+		public static void AddUpdates(List<ulong> ids)
+		{
+			Run(Texts.Say("正在读取 " + ids.Count + " 个 mod 的信息……", "Reading " + ids.Count + " item(s)..."), async () =>
+			{
+				await Add(ids, false);
+				int outdated = 0;
+				lock (Items)
+				{
+					foreach (Item item in Items.Where(i => i.State == ItemState.Outdated && ids.Contains(i.Id)))
+					{
+						item.Selected = true;
+						outdated++;
+					}
+				}
+				Status = Texts.Say(outdated + " 个 mod 有更新。", outdated + " with an update.");
 			});
 		}
 
@@ -361,6 +386,8 @@ namespace PortWorkshop
 				}
 				int ok = chosen.Count(i => i.State == ItemState.Done);
 				Status = Texts.Say($"完成：{ok} 个装好了" + (ok < chosen.Count ? $"，{chosen.Count - ok} 个失败" : "") + "。", $"Finished: {ok} installed" + (ok < chosen.Count ? $", {chosen.Count - ok} failed" : "") + ".");
+				// The main menu's update notice no longer names what is installed anew now.
+				Updates.Refresh(ModsFolder);
 				ReportReady = true;
 			});
 		}

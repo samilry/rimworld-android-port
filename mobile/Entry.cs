@@ -20,6 +20,7 @@ namespace PortMobile
 			{
 				MemTrim.AfterReturnToMenu();
 				UnreadableMods.Tell();
+				UpdateNotice.AtMainMenu();
 				return;
 			}
 			started = true;
@@ -81,6 +82,7 @@ namespace PortMobile
 			MultiplayerFiles.Start(harmony);
 			VideoUrls.Start(harmony);
 			OpenUrl.Start(harmony);
+			UpdateNotice.Start(harmony);
 			Screenshots.Start(harmony);
 			AndroidVideo.Start(harmony);
 			SaveImport.Start(harmony);
@@ -92,6 +94,7 @@ namespace PortMobile
 			InlineGuard.EndOfStart();
 			UnreadableMods.Tell();
 			VersionNotice.Tell();
+			UpdateNotice.AtMainMenu();
 		}
 
 		private static bool menuTimed;
@@ -404,6 +407,7 @@ namespace PortMobile
 			}
 			MemTrim.OnFrame();
 			ColdTextures.OnFrame();
+			UpdateNotice.OnFrame();
 			if (frames == 1 || frames == 600)
 			{
 				Console.WriteLine("[mobile] UIRootOnGUI postfix ran (" + frames + ")");

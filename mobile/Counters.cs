@@ -155,6 +155,8 @@ namespace PortMobile
 					// The size of the selection's commands.
 					GizmoFit.OptionRows(listing);
 				}
+				// Whether the main menu tells of Workshop mods with a newer version.
+				UpdateNotice.OptionRow(listing);
 			}
 			catch (Exception e)
 			{

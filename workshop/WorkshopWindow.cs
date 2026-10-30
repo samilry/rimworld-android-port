@@ -10,7 +10,10 @@ using Verse.Sound;
 
 namespace PortWorkshop
 {
-	/// <summary>Opened from the mod page (PortMobile.WorkshopLoader, through the import menu), or for a Workshop link.</summary>
+	/// <summary>
+	/// Opened from the mod page (PortMobile.WorkshopLoader, through the import menu), for a Workshop link, or by the main
+	/// menu's update notice; and that notice's check.
+	/// </summary>
 	public static class Entry
 	{
 		public static void Open()
@@ -35,14 +38,36 @@ namespace PortWorkshop
 			}
 			window.Follow(item, page);
 		}
+
+		/// <summary>
+		/// On a worker thread, when the main menu comes up with a sign-in remembered (PortMobile.UpdateNotice, through
+		/// WorkshopLoader): today's update check if it is due; the notice is told what has a newer version.
+		/// </summary>
+		public static void CheckForUpdates(string mods)
+		{
+			_ = Updates.Check(mods);
+		}
+
+		/// <summary>The update notice's button: the mods it names go into the list, the ones with a newer version ticked.</summary>
+		public static void OpenUpdates()
+		{
+			WorkshopWindow window = Find.WindowStack.WindowOfType<WorkshopWindow>();
+			if (window == null)
+			{
+				window = new WorkshopWindow();
+				Find.WindowStack.Add(window);
+			}
+			window.FollowUpdates(Updates.Shown);
+		}
 	}
 
 	/// <summary>
 	/// The Steam Workshop on the phone. Signed out: a QR code for the Steam app on another device, or the account name and
 	/// password (typed by the player, used once, not kept), then Steam Guard. Signed in: items are added by link or id
 	/// (a collection adds its items; an item adds the items it requires), from the account's subscriptions, from the
-	/// Workshop mods already installed (which shows the ones with a newer version), or by a Workshop link the game or a
-	/// mod opened; the chosen ones are downloaded and installed as the import installs a mod.
+	/// Workshop mods already installed (which shows the ones with a newer version), by a Workshop link the game or a mod
+	/// opened, or by the main menu's update notice (its mods, those with a newer version ticked); the chosen ones are
+	/// downloaded and installed as the import installs a mod.
 	/// </summary>
 	internal sealed class WorkshopWindow : Window
 	{
@@ -54,6 +79,8 @@ namespace PortWorkshop
 		// in it, and the page to offer for the browser.
 		private string pending = "", page;
 		private ulong scrollTo;
+		// What the main menu's update notice asked for (Entry.OpenUpdates): the mods to look up once signed in.
+		private List<ulong> pendingUpdates;
 
 		public override Vector2 InitialSize => new Vector2(Mathf.Min(1100f, UI.screenWidth - 20f), Mathf.Min(680f, UI.screenHeight - 8f));
 
@@ -85,6 +112,16 @@ namespace PortWorkshop
 				scrollTo = Downloads.ParseIds(item).FirstOrDefault();
 			}
 			page = url;
+		}
+
+		/// <summary>The update notice's mods: put into the list once signed in, the list scrolled to the first of them.</summary>
+		public void FollowUpdates(List<ulong> ids)
+		{
+			if (ids.Count > 0)
+			{
+				pendingUpdates = ids;
+				scrollTo = ids[0];
+			}
 		}
 
 		public override void DoWindowContents(Rect inRect)
@@ -255,6 +292,11 @@ namespace PortWorkshop
 			{
 				Downloads.AddFromText(pending);
 				pending = "";
+			}
+			if (pendingUpdates != null && !Downloads.Busy)
+			{
+				Downloads.AddUpdates(pendingUpdates);
+				pendingUpdates = null;
 			}
 			bool busy = Downloads.Busy;
 			float y = rect.y;
