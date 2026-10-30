@@ -417,6 +417,42 @@ public final class MainActivity extends NativeActivity
         }
     }
 
+    private static boolean proxyFailureLogged;
+
+    /**
+     * The proxy the phone gives a web address, for the game's HttpClient (hooks/SystemProxy.cs, through glfw_android.c):
+     * "http://host:port", or nothing for a direct connection. Java's ProxySelector is what the phone's own apps ask: the
+     * system sets it up in every app from the Wi-Fi network's proxy, the global one or a VPN app's, a PAC script
+     * included, and again whenever that changes. The first answer counts; a SOCKS one (only a PAC script gives one) is
+     * not used.
+     */
+    public byte[] proxyForUtf8(byte[] url)
+    {
+        try
+        {
+            List<java.net.Proxy> proxies = java.net.ProxySelector.getDefault().select(new java.net.URI(new String(url, "UTF-8")));
+            java.net.Proxy first = proxies.isEmpty() ? java.net.Proxy.NO_PROXY : proxies.get(0);
+            if (first.type() == java.net.Proxy.Type.HTTP && first.address() instanceof java.net.InetSocketAddress)
+            {
+                java.net.InetSocketAddress address = (java.net.InetSocketAddress) first.address();
+                String host = address.getHostString();
+                if (host != null && !host.isEmpty() && address.getPort() > 0)
+                {
+                    return ("http://" + (host.indexOf(':') >= 0 ? "[" + host + "]" : host) + ":" + address.getPort()).getBytes("UTF-8");
+                }
+            }
+        }
+        catch (Throwable t)
+        {
+            if (!proxyFailureLogged)
+            {
+                proxyFailureLogged = true;
+                android.util.Log.w("port17", "proxy: could not ask the system, the game's web requests go direct", t);
+            }
+        }
+        return new byte[0];
+    }
+
     @Override
     public void onTrimMemory(int level)
     {

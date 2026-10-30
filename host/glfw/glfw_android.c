@@ -1526,6 +1526,21 @@ API int glfwAndroidScanMedia(const char* path)
     return ok;
 }
 
+// The proxy the phone gives a web address (MainActivity.proxyForUtf8), for hooks/SystemProxy.cs: "http://host:port", or ""
+// for a direct connection. Copied into out; returns its length.
+API int glfwAndroidProxyFor(const char* url, char* out, int size)
+{
+    if (!out || size <= 0) return 0;
+    out[0] = 0;
+    char* proxy = url && *url ? activity_bytes("proxyForUtf8", "([B)[B", url, NULL) : NULL;
+    if (proxy)
+    {
+        snprintf(out, (size_t)size, "%s", proxy);
+        free(proxy);
+    }
+    return (int)strlen(out);
+}
+
 // Time
 API double glfwGetTime(void)
 {

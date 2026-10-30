@@ -636,6 +636,8 @@ internal static class StartupHook
 		PortHooks.UiDescriptors.Start();
 		PortHooks.AndroidFonts.Start();
 		PortHooks.WindowsLibraries.Start();
+		// The phone's proxy for web requests, as the PC's runtime follows Windows' proxy settings.
+		PortHooks.SystemProxy.Start();
 		PortHooks.MissingAssemblies.Start(new HarmonyLib.Harmony("port17.missingassemblies"));
 		// The PC's self-contained game folder, restart and Assembly.LoadFrom, which tools that rewrite the game (PurePatcher) count on.
 		PortHooks.SelfContained.CopyRuntime();
