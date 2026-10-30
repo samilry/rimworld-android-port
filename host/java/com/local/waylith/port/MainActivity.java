@@ -423,22 +423,28 @@ public final class MainActivity extends NativeActivity
      * The proxy the phone gives a web address, for the game's HttpClient (hooks/SystemProxy.cs, through glfw_android.c):
      * "http://host:port", or nothing for a direct connection. Java's ProxySelector is what the phone's own apps ask: the
      * system sets it up in every app from the Wi-Fi network's proxy, the global one or a VPN app's, a PAC script
-     * included, and again whenever that changes. The first answer counts; a SOCKS one (only a PAC script gives one) is
-     * not used.
+     * included, and again whenever that changes. The first HTTP proxy in the answer counts, unless "direct" comes before
+     * it; SOCKS ones (only a PAC script gives them) are passed over, as the PC's runtime reads every proxy Windows lists
+     * as an HTTP one and goes on to the next when one fails.
      */
     public byte[] proxyForUtf8(byte[] url)
     {
         try
         {
-            List<java.net.Proxy> proxies = java.net.ProxySelector.getDefault().select(new java.net.URI(new String(url, "UTF-8")));
-            java.net.Proxy first = proxies.isEmpty() ? java.net.Proxy.NO_PROXY : proxies.get(0);
-            if (first.type() == java.net.Proxy.Type.HTTP && first.address() instanceof java.net.InetSocketAddress)
+            for (java.net.Proxy proxy : java.net.ProxySelector.getDefault().select(new java.net.URI(new String(url, "UTF-8"))))
             {
-                java.net.InetSocketAddress address = (java.net.InetSocketAddress) first.address();
-                String host = address.getHostString();
-                if (host != null && !host.isEmpty() && address.getPort() > 0)
+                if (proxy.type() == java.net.Proxy.Type.DIRECT)
                 {
-                    return ("http://" + (host.indexOf(':') >= 0 ? "[" + host + "]" : host) + ":" + address.getPort()).getBytes("UTF-8");
+                    break;
+                }
+                if (proxy.type() == java.net.Proxy.Type.HTTP && proxy.address() instanceof java.net.InetSocketAddress)
+                {
+                    java.net.InetSocketAddress address = (java.net.InetSocketAddress) proxy.address();
+                    String host = address.getHostString();
+                    if (host != null && !host.isEmpty() && address.getPort() > 0)
+                    {
+                        return ("http://" + (host.indexOf(':') >= 0 ? "[" + host + "]" : host) + ":" + address.getPort()).getBytes("UTF-8");
+                    }
                 }
             }
         }
