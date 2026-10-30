@@ -66,7 +66,8 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 
 /// <summary>
 /// Prepares the assemblies of a mod for the phone's runtime. PC mods are built for Mono and for Ludeon's runtime fork,
-/// which is lenient where the stock runtime is not; every .dll below the mod's folder gets, in place,
+/// which is lenient where the stock runtime is not; every assembly below the mod's folder (a .dll or RimUnity's
+/// .rimunity: IsAssemblyFile) gets, in place,
 ///   - the PE machine type ARM64 when it says AMD64 (pure IL, but the runtime refuses the mark on arm64);
 ///   - [assembly: IgnoresAccessChecksTo("...")] for every assembly it references plus the game's own: mods are built
 ///     against "publicized" game assemblies and touch private members straight from IL, which Mono let pass and
@@ -190,8 +191,21 @@ internal static class ModPrep
 
 	private static IEnumerable<string> AssembliesBelow(string root)
 	{
+		return Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Where(IsAssemblyFile);
+	}
+
+	/// <summary>
+	/// Whether a file is an assembly that preparation takes and a stamp lists: a .dll, or a .rimunity file. RimUnity (the
+	/// framework Nivarian Race brings) keeps a mod's code in Assemblies/*.rimunity, which the game leaves alone and
+	/// RimUnity loads itself with Assembly.LoadFrom; Ludeon's runtime is as lenient with it as with any assembly. Until
+	/// 2026-10-30 those were not prepared (Nivarian's memory gauge read 0 on the phone: its platform check found neither
+	/// Windows nor Linux), and since no stamp listed them, ModPrepHost.BeforeLoad prepared the whole Nivarian folder again
+	/// at every start. No other extension holds an assembly in the Workshop's 85 mods (2026-10-30).
+	/// </summary>
+	public static bool IsAssemblyFile(string path)
+	{
 		// The extension is compared here: file name patterns are case-sensitive on the phone and not on the PC.
-		return Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Where(f => f.EndsWith(".dll", StringComparison.OrdinalIgnoreCase));
+		return path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".rimunity", StringComparison.OrdinalIgnoreCase);
 	}
 
 	/// <summary>
@@ -288,7 +302,7 @@ internal static class ModPrep
 				int found = 0;
 				foreach (string file in Directory.EnumerateFiles(folder.Key))
 				{
-					if (file.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+					if (IsAssemblyFile(file))
 					{
 						found++;
 					}

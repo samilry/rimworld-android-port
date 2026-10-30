@@ -43,9 +43,12 @@ namespace PortHooks
 
 		/// <summary>
 		/// Before a mod assembly loads. Once per mod and run the mod's stamp is read and held against the files it lists;
-		/// then each assembly of the mod is looked up in that list (no file is touched for it). The mod's folder is
-		/// prepared when the stamp is missing, of other rules or no longer true, or does not know the assembly (it lies
-		/// in a folder that held no assembly when the stamp was written).
+		/// then each assembly of the mod, the first one too, is looked up in that list (no file is touched for it). The
+		/// mod's folder is prepared when the stamp is missing, of other rules or no longer true, or does not know the
+		/// assembly (it lies in a folder that held no assembly when the stamp was written; until 2026-10-30 the first
+		/// assembly of a run was not looked up, and a mod's only assembly in a new version folder loaded unprepared at
+		/// every start). A file that preparation does not take (ModPrep.IsAssemblyFile) is no reason: the stamp written
+		/// then would not list it either, and the folder was prepared again at every start.
 		/// </summary>
 		public static void BeforeLoad(string assemblyPath)
 		{
@@ -67,10 +70,10 @@ namespace PortHooks
 					if (listed == null)
 					{
 						PrepareNow(root);
+						return;
 					}
-					return;
 				}
-				if (listed != null && !listed.ContainsKey(Path.GetRelativePath(root, Path.GetFullPath(assemblyPath)).Replace('\\', '/')))
+				if (listed != null && ModPrep.IsAssemblyFile(assemblyPath) && !listed.ContainsKey(Path.GetRelativePath(root, Path.GetFullPath(assemblyPath)).Replace('\\', '/')))
 				{
 					seen[root] = null;
 					PrepareNow(root);
