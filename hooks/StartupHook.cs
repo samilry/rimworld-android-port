@@ -216,12 +216,9 @@ namespace PortHooks
 					return Assembly.LoadFrom(ours);
 				}
 			}
-			string fixedCopy = PreparedCopy(path);
-			long copied = System.Diagnostics.Stopwatch.GetTimestamp();
-			ticksPrepared += copied - t2;
-			fixedCopy ??= FixedArchitectureCopy(path);
+			string fixedCopy = FixedArchitectureCopy(path);
 			long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
-			ticksArchitecture += t3 - copied;
+			ticksArchitecture += t3 - t2;
 			Assembly assembly;
 			try
 			{
@@ -299,23 +296,6 @@ namespace PortHooks
 			catch (Exception e)
 			{
 				Console.WriteLine("[port17] mod prep failed for " + path + ": " + e.GetType().Name + ": " + e.Message);
-			}
-		}
-
-		/// <summary>
-		/// An assembly from outside the mod folders (RimUnity's unpacked runtime) loads as a copy prepared like a mod's
-		/// (ModPrepHost.PreparedCopyOf); null for any other, and when no copy could be made (reported; the file loads as it is).
-		/// </summary>
-		private static string PreparedCopy(string path)
-		{
-			try
-			{
-				return ModPrepHost.PreparedCopyOf(path);
-			}
-			catch (Exception e)
-			{
-				Console.WriteLine("[port17] no prepared copy of " + path + ": " + e.GetType().Name + ": " + e.Message);
-				return null;
 			}
 		}
 
