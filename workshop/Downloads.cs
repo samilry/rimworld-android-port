@@ -54,7 +54,7 @@ namespace PortWorkshop
 	/// servers as the Steam client does (the depot of RimWorld, the item's manifest, its chunks, decrypted and unpacked),
 	/// into a staging folder, writes .workshop into the mod's folder (id, manifest, time of the version) and then hands
 	/// the folder to the phone layer's import (PortMobile.ModInstall), which puts it into Mods, replacing the mod of the
-	/// same package id, and prepares its assemblies.
+	/// same package id unless that is another Workshop item, and prepares its assemblies.
 	/// </summary>
 	internal static class Downloads
 	{

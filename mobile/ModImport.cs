@@ -23,7 +23,8 @@ namespace PortMobile
 	/// Neither helps on a phone, where a mod has to be brought over as files. Here the button is "Import mods...":
 	/// the player picks archives (.zip) or a folder in the system's file chooser, and every mod found in them
 	/// (a folder with About/About.xml, as it lies in the PC's Workshop folder) is put into the game's Mods folder.
-	/// A mod that is there already, recognised by its package id, is replaced: that is how a mod is updated.
+	/// A mod that is there already, recognised by its package id, is replaced: that is how a mod is updated (another
+	/// Workshop item of that package id goes beside it instead, as on the PC).
 	/// The second button, "Unsubscribe..." on the PC, deletes disabled mods from the phone.
 	///
 	/// Ported from the 1.6 project (tools/portmobile/ModImport.cs). What is different here:
@@ -315,7 +316,84 @@ namespace PortMobile
 					ConfirmDelete(chosen);
 				})
 			};
+			List<(string name, string folder)> unlisted = UnlistedDuplicates();
+			if (unlisted.Count > 0)
+			{
+				options.Add(new FloatMenuOption(Say($"删除没列出的重复 mod（{unlisted.Count} 个）", $"Delete the duplicates that are not listed ({unlisted.Count})"), delegate { ConfirmDeleteUnlisted(unlisted); }));
+			}
 			Find.WindowStack.Add(new FloatMenu(options));
+		}
+
+		/// <summary>
+		/// The folders in Mods that the game does not list because a listed mod has their package id (the game keeps the
+		/// first it finds and logs the others as duplicates): other Workshop items of one package id, which the import
+		/// puts beside each other as the PC keeps them. No row on the mod screen selects them, so they are offered here.
+		/// </summary>
+		private static List<(string name, string folder)> UnlistedDuplicates()
+		{
+			var unlisted = new List<(string, string)>();
+			try
+			{
+				var listed = new HashSet<string>(StringComparer.Ordinal);
+				foreach (ModMetaData mod in ModLister.AllInstalledMods)
+				{
+					if (mod?.RootDir != null)
+					{
+						listed.Add(Path.GetFullPath(mod.RootDir.FullName).TrimEnd(Path.DirectorySeparatorChar));
+					}
+				}
+				foreach (string folder in Directory.GetDirectories(GenFilePaths.ModsFolderPath))
+				{
+					try
+					{
+						string about = listed.Contains(Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar)) ? null : AboutFile(folder, false);
+						if (about == null)
+						{
+							continue;
+						}
+						Describe(about, out string id, out string name);
+						if (!string.IsNullOrEmpty(id) && ModLister.GetModWithIdentifier(id, ignorePostfix: true) != null)
+						{
+							unlisted.Add((string.IsNullOrEmpty(name) ? Path.GetFileName(folder) : name, folder));
+						}
+					}
+					catch (Exception)
+					{
+					}
+				}
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] mod delete: could not look for duplicates: " + e.Message);
+			}
+			return unlisted;
+		}
+
+		private static void ConfirmDeleteUnlisted(List<(string name, string folder)> unlisted)
+		{
+			string list = "  " + string.Join("\n  ", unlisted.Select(u => u.name + "  (" + Path.GetFileName(u.folder) + ")").ToArray());
+			Find.WindowStack.Add(Dialog_MessageBox.CreateConfirmation(
+				Say($"这 {unlisted.Count} 个 mod 和列表里的 mod 用同一个 packageId，游戏没有列出、也不加载它们。从手机上删除它们的文件？\n\n{list}", $"These {unlisted.Count} mod(s) have the package id of a mod in the list; the game neither lists nor loads them. Delete their files from the phone?\n\n{list}"),
+				delegate
+				{
+					var problems = new List<string>();
+					foreach (var (name, folder) in unlisted)
+					{
+						try
+						{
+							Directory.Delete(folder, true);
+							Console.WriteLine("[mobile] mod delete: removed " + name + ", an unlisted duplicate, at " + folder);
+						}
+						catch (Exception e)
+						{
+							problems.Add(name + ": " + e.Message);
+						}
+					}
+					if (problems.Count > 0)
+					{
+						Find.WindowStack.Add(new Dialog_MessageBox(Say("没能删除：\n  ", "Not deleted:\n  ") + string.Join("\n  ", problems.ToArray())));
+					}
+				}, destructive: true));
 		}
 
 		private static void ConfirmDelete(List<ModMetaData> mods)
@@ -443,6 +521,7 @@ namespace PortMobile
 			public readonly List<string> Imported = new List<string>();
 			public readonly List<string> Updated = new List<string>();
 			public readonly List<string> UpdatedIds = new List<string>();
+			public readonly List<string> Beside = new List<string>();
 			public readonly List<string> Problems = new List<string>();
 			public readonly List<string> PrepProblems = new List<string>();
 			public string FirstPackage;
@@ -646,8 +725,58 @@ namespace PortMobile
 		}
 
 		/// <summary>
+		/// The Workshop item a mod folder holds, 0 when that is not known: the Workshop download's .workshop, else
+		/// About/PublishedFileId.txt (the game's upload writes it into every item; read as the game reads it), else the
+		/// name of a folder copied from the PC's Workshop folder, where Steam names each item's folder by its id.
+		/// </summary>
+		private static ulong WorkshopItem(string folder)
+		{
+			try
+			{
+				string stamp = Path.Combine(folder, ".workshop");
+				if (File.Exists(stamp))
+				{
+					string[] lines = File.ReadAllLines(stamp);
+					if (lines.Length > 0 && ulong.TryParse(lines[0], out ulong downloaded) && downloaded != 0)
+					{
+						return downloaded;
+					}
+				}
+				string about = Lookup(folder, "About", true);
+				string published = about == null ? null : Lookup(about, "PublishedFileId.txt", false);
+				if (published != null && ulong.TryParse(File.ReadAllText(published), out ulong uploaded) && uploaded != 0)
+				{
+					return uploaded;
+				}
+			}
+			catch (Exception)
+			{
+			}
+			string name = Path.GetFileName(folder);
+			return Regex.IsMatch(name, "^[0-9]{6,20}$") && ulong.TryParse(name, out ulong named) ? named : 0;
+		}
+
+		/// <summary>The name in a mod folder's About.xml, else the folder's.</summary>
+		private static string NameOf(string folder)
+		{
+			try
+			{
+				Describe(AboutFile(folder, false), out string _, out string name);
+				if (!string.IsNullOrEmpty(name))
+				{
+					return name;
+				}
+			}
+			catch (Exception)
+			{
+			}
+			return Path.GetFileName(folder);
+		}
+
+		/// <summary>
 		/// On the worker thread: every mod found in what was copied goes into Mods (replacing the one of the same package
-		/// id) and has its assemblies prepared. Only files are touched here; the game's own lists are the window's business.
+		/// id, unless that is another Workshop item) and has its assemblies prepared. Only files are touched here; the
+		/// game's own lists are the window's business.
 		/// </summary>
 		internal static void Install(Outcome outcome, string mods, Version game, string staging = null)
 		{
@@ -655,8 +784,8 @@ namespace PortMobile
 			{
 				var found = new List<string>();
 				FindMods(staging ?? Staging, 0, found);
-				// The mods that are here already, by package id.
-				var present = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+				// The mods that are here already, by package id (more than one where other Workshop items share it).
+				var present = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 				foreach (string folder in Directory.GetDirectories(mods))
 				{
 					try
@@ -665,9 +794,13 @@ namespace PortMobile
 						if (about != null)
 						{
 							Describe(about, out string id, out string _);
-							if (!string.IsNullOrEmpty(id) && !present.ContainsKey(id))
+							if (!string.IsNullOrEmpty(id))
 							{
-								present[id] = folder;
+								if (!present.TryGetValue(id, out List<string> folders))
+								{
+									present[id] = folders = new List<string>();
+								}
+								folders.Add(folder);
 							}
 						}
 					}
@@ -685,8 +818,20 @@ namespace PortMobile
 						Describe(AboutFile(folder, true), out string id, out string name);
 						shown = string.IsNullOrEmpty(name) ? shown : name;
 						outcome.Line = shown + "  (" + index + "/" + found.Count + ")";
-						string target = null;
-						bool update = !string.IsNullOrEmpty(id) && present.TryGetValue(id, out target);
+						// The mod of the same package id is replaced: an update. Not when both are Workshop items and other ones
+						// (an original and its continuation): the PC keeps every subscribed item in a folder of its own, and the
+						// game lists the first of them and logs the others as duplicates. Here the one imported last took the
+						// other's place and folder (Hospitality (Continued) in Hospitality's, 2026-10-14). Where either side's
+						// item is not known (a mod from elsewhere) it stays an update: the PC lists such a pair side by side,
+						// the Workshop one as "<id>_steam", which the phone, with every mod in Mods, cannot.
+						string target = null, beside = null;
+						if (!string.IsNullOrEmpty(id) && present.TryGetValue(id, out List<string> same))
+						{
+							ulong item = WorkshopItem(folder);
+							target = same.FirstOrDefault(f => WorkshopItem(f) == item) ?? same.FirstOrDefault(f => item == 0 || WorkshopItem(f) == 0);
+							beside = target == null ? same[0] : null;
+						}
+						bool update = target != null;
 						if (update)
 						{
 							Directory.Delete(target, true);
@@ -702,10 +847,25 @@ namespace PortMobile
 							}
 						}
 						Directory.Move(folder, target);
-						(update ? outcome.Updated : outcome.Imported).Add(shown);
+						if (beside != null)
+						{
+							string other = NameOf(beside);
+							outcome.Beside.Add(shown + Say("（和已有的“" + other + "”）", " (beside \"" + other + "\")"));
+						}
+						else
+						{
+							(update ? outcome.Updated : outcome.Imported).Add(shown);
+						}
 						if (!string.IsNullOrEmpty(id))
 						{
-							present[id] = target;
+							if (!present.TryGetValue(id, out List<string> folders))
+							{
+								present[id] = folders = new List<string>();
+							}
+							if (!update)
+							{
+								folders.Add(target);
+							}
 							outcome.FirstPackage = outcome.FirstPackage ?? id;
 						}
 						if (HasAssemblies(target))
@@ -727,7 +887,7 @@ namespace PortMobile
 								Console.WriteLine("[mobile] mod import: preparing " + shown + " failed: " + e);
 							}
 						}
-						Console.WriteLine("[mobile] mod import: " + (update ? "updated " : "imported ") + shown + " (" + id + ") in " + target);
+						Console.WriteLine("[mobile] mod import: " + (update ? "updated " : "imported ") + shown + " (" + id + ") in " + target + (beside != null ? ", beside the other Workshop item of its package id in " + beside : ""));
 					}
 					catch (Exception e)
 					{
@@ -758,10 +918,10 @@ namespace PortMobile
 		/// <summary>On the game's thread, once the worker is done: the mod page shows what is there now, and a box says what happened.</summary>
 		internal static void Report(Outcome outcome, string leftOut)
 		{
-			List<string> imported = outcome.Imported, updated = outcome.Updated, problems = outcome.Problems;
+			List<string> imported = outcome.Imported, updated = outcome.Updated, beside = outcome.Beside, problems = outcome.Problems;
 			// Asked before the list is rebuilt: a mod that is in use keeps running its old code until the game starts again.
 			bool updatedActive = outcome.UpdatedIds.Any(id => ModLister.GetModWithIdentifier(id)?.Active ?? false);
-			if (imported.Count + updated.Count > 0)
+			if (imported.Count + updated.Count + beside.Count > 0)
 			{
 				Refresh(outcome.FirstPackage);
 			}
@@ -777,7 +937,13 @@ namespace PortMobile
 				text.Append(updatedActive ? Say("（其中有正在使用的，重新启动游戏后生效）：\n", " (some are in use: they change when the game is started again):\n") : Say("：\n", ":\n"));
 				text.Append("  " + string.Join("\n  ", updated.ToArray()) + "\n\n");
 			}
-			if (imported.Count + updated.Count == 0 && problems.Count == 0)
+			if (beside.Count > 0)
+			{
+				text.Append(Say($"这 {beside.Count} 个mod和已有的mod用同一个 packageId，但在创意工坊上是另一个物品（比如原版和续作），所以各放在自己的文件夹里，不再互相替换，和电脑上两个都订阅时一样。游戏只列出、只加载其中一个，另一个启动时在日志里报重复；不要的那个可以用“删除Mod…”删掉（没列出的在“删除没列出的重复 mod”里）：\n",
+					$"These {beside.Count} mod(s) have the package id of a mod that is here already but are other Workshop items (an original and its continuation, say), so each keeps a folder of its own instead of replacing the other, as on a PC subscribed to both. The game lists and loads only one of them and logs the other as a duplicate when it starts; delete the one you do not want with \"Delete mods...\" (the one not listed is under \"Delete the duplicates that are not listed\"):\n"));
+				text.Append("  " + string.Join("\n  ", beside.ToArray()) + "\n\n");
+			}
+			if (imported.Count + updated.Count + beside.Count == 0 && problems.Count == 0)
 			{
 				text.Append(Say("选的内容里没有找到mod。mod是一个里面有 About 文件夹（其中有 About.xml）的文件夹。\n\n", "No mod was found in what was chosen. A mod is a folder with an About folder (holding About.xml) inside.\n\n"));
 			}
@@ -843,7 +1009,8 @@ namespace PortMobile
 
 		/// <summary>
 		/// On a worker thread: every mod found in the folder goes into the game's Mods folder (replacing the one with the
-		/// same package id) and has its assemblies prepared. Returns the outcome for Report; a line for the user.
+		/// same package id, unless that is another Workshop item) and has its assemblies prepared. Returns the outcome for
+		/// Report; a line for the user.
 		/// </summary>
 		public static object Install(string staging, string mods, Version game, out string summary)
 		{
@@ -868,6 +1035,7 @@ namespace PortMobile
 				all.Imported.AddRange(one.Imported);
 				all.Updated.AddRange(one.Updated);
 				all.UpdatedIds.AddRange(one.UpdatedIds);
+				all.Beside.AddRange(one.Beside);
 				all.Problems.AddRange(one.Problems);
 				all.PrepProblems.AddRange(one.PrepProblems);
 				all.FirstPackage = all.FirstPackage ?? one.FirstPackage;
