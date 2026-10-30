@@ -182,7 +182,7 @@ namespace PortMobile
 		}
 
 		/// <summary>
-		/// mobile.txt corelibTest=1: the four WaylithClr switches the phone's CoreLib now has as Ludeon's (patch/Patch.cs
+		/// mobile.txt corelibTest=1: the WaylithClr switches the phone's CoreLib has as Ludeon's (patch/Patch.cs
 		/// AddLudeonSwitches), each against what the PC gives. One line each in the log, "ok" or what came instead.
 		/// </summary>
 		private static void CoreLibTest()
@@ -233,6 +233,11 @@ namespace PortMobile
 				Type found = Type.GetType("WaylithIsolatedProbe.Probe, WaylithIsolatedProbe");
 				return found == null ? "not found" : found.Assembly == loaded ? "found" : "another assembly";
 			}, "found");
+			// LaxPrivateFieldNames: Mono's names of the framework's private fields (Humanoid Alien Races' XmlElement.name).
+			const System.Reflection.BindingFlags instance = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+			Line("XmlElement.GetField(\"name\")", () => typeof(System.Xml.XmlElement).GetField("name", instance)?.Name ?? "null", "_name");
+			Line("DynamicMethod.GetField(\"m_returnType\")", () => typeof(System.Reflection.Emit.DynamicMethod).GetField("m_returnType", instance)?.Name ?? "null", "_returnType");
+			Line("SignatureHelper.GetField(\"_module\")", () => typeof(System.Reflection.Emit.SignatureHelper).GetField("_module", instance)?.Name ?? "null", "null");
 		}
 
 		/// <summary>

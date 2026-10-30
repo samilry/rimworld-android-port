@@ -778,8 +778,8 @@ internal static class Patch
 	}
 
 	/// <summary>
-	/// The four WaylithClr switches that Ludeon's runtime fork implements in its System.Private.CoreLib (1.7.4990; the
-	/// game's runtimeconfig turns all of them on, the stock runtime knows none), done here as there, always on:
+	/// The WaylithClr switches that Ludeon's runtime fork implements in its System.Private.CoreLib (1.7.4990; the game's
+	/// runtimeconfig turns all of them on, the stock runtime knows none), done here as there, always on:
 	///   - MonoFloatFormatPrecision: Number.FormatFloat gives "G" without a precision (ToString(), "G", string
 	///     interpolation) the significant digits of a custom format, 7 for float and 15 for double, as Mono did: 0.8 where
 	///     the stock runtime writes the shortest round trip, 0.8000001 (mods' labels, saved values; "R" is unchanged).
@@ -790,6 +790,10 @@ internal static class Patch
 	///   - IsolatedLoadsResolveByName: an assembly loaded by Assembly.Load(byte[]) or Assembly.LoadFile, each in a load
 	///     context of its own, is remembered by simple name, and a reference by that name that nothing else resolves finds
 	///     it (AssemblyLoadContext.ResolveUsingEvent asks first, then the Resolving handlers), as Mono's one domain did.
+	///   - LaxPrivateFieldNames: Type.GetField(name, flags with NonPublic) on a type of the framework's assemblies (System,
+	///     System.*, mscorlib, netstandard) that has no field of that name takes the non-public one Mono's name stands for
+	///     here: "_name", else "m_name" (for "m_name": "_name"). Humanoid Alien Races reads XmlElement.name, _name here.
+	///     Harmony's lookups by name had this before (PortPlatform.GetFieldLax); now every caller has it, as on the PC.
 	/// </summary>
 	private static void AddLudeonSwitches(ModuleDefinition module)
 	{
@@ -965,7 +969,177 @@ internal static class Patch
 			}
 			Console.WriteLine("  registers isolated loads: Assembly." + load.Name + "(" + string.Join(", ", load.Parameters.Select(p => p.ParameterType.Name)) + ")");
 		}
-		Console.WriteLine("Ludeon's switches: MonoFloatFormatPrecision, DynamicMethodOwnerIsDeclaringType, LaxDynamicMethodAttributes, IsolatedLoadsResolveByName");
+
+		// LaxPrivateFieldNames. RuntimeType.GetField(name, bindingAttr) without its null check becomes GetFieldExact, and
+		// GetField is Ludeon's:
+		//   ArgumentNullException.ThrowIfNull(name);
+		//   FieldInfo field = GetFieldExact(name, bindingAttr);
+		//   if (field == null && (bindingAttr & BindingFlags.NonPublic) != 0 && name.Length > 0 && name[0] != '_' && IsWaylithFrameworkType())
+		//   { bool mono = name.StartsWith("m_", StringComparison.Ordinal);
+		//     FieldInfo lax = GetFieldExact("_" + (mono ? name.Substring(2) : name), bindingAttr);
+		//     if (lax == null && !mono) lax = GetFieldExact("m_" + name, bindingAttr);
+		//     if (lax != null && !lax.IsPublic) field = lax; }
+		//   return field;
+		TypeDefinition runtimeType = module.GetType("System.RuntimeType");
+		TypeDefinition stringType = module.GetType("System.String");
+		MethodDefinition getField = runtimeType.Methods.Single(m => m.Name == "GetField" && !m.IsStatic && m.Parameters.Count == 2 && m.Parameters[0].ParameterType.FullName == "System.String");
+		MethodBody exactBody = getField.Body;
+		Instruction[] nullCheck = exactBody.Instructions.Take(3).ToArray();
+		if (!(nullCheck[0].OpCode == OpCodes.Ldarg_1 && nullCheck[1].OpCode == OpCodes.Ldstr && nullCheck[2].OpCode == OpCodes.Call && ((MethodReference)nullCheck[2].Operand).Name == "ThrowIfNull"))
+		{
+			throw new InvalidOperationException("RuntimeType.GetField is not as expected");
+		}
+		var exact = new MethodDefinition("GetFieldExact", MethodAttributes.Private | MethodAttributes.HideBySig, getField.ReturnType);
+		foreach (ParameterDefinition parameter in getField.Parameters)
+		{
+			exact.Parameters.Add(new ParameterDefinition(parameter.Name, ParameterAttributes.None, parameter.ParameterType));
+		}
+		// The rest of the body moves over as it is; the arguments its instructions name are the new method's.
+		exact.Body.InitLocals = exactBody.InitLocals;
+		foreach (VariableDefinition local in exactBody.Variables)
+		{
+			exact.Body.Variables.Add(local);
+		}
+		foreach (Instruction moved in exactBody.Instructions.Skip(3).ToList())
+		{
+			if (moved.Operand is ParameterDefinition argument)
+			{
+				moved.Operand = argument == exactBody.ThisParameter ? exact.Body.ThisParameter : exact.Parameters[argument.Index];
+			}
+			exact.Body.Instructions.Add(moved);
+		}
+		exact.Body.Instructions[0].Previous = null;
+		foreach (ExceptionHandler handler in exactBody.ExceptionHandlers)
+		{
+			exact.Body.ExceptionHandlers.Add(handler);
+		}
+		runtimeType.Methods.Add(exact);
+
+		// private bool IsWaylithFrameworkType()
+		//   { string name = GetRuntimeModule().GetRuntimeAssembly().GetSimpleName();
+		//     return name != null && (name.StartsWith("System.", StringComparison.Ordinal) || name == "System" || name == "mscorlib" || name == "netstandard"); }
+		MethodDefinition startsWith = stringType.Methods.Single(m => m.Name == "StartsWith" && m.Parameters.Count == 2 && m.Parameters[0].ParameterType.FullName == "System.String" && m.Parameters[1].ParameterType.FullName == "System.StringComparison");
+		MethodDefinition stringEquals = stringType.Methods.Single(m => m.Name == "op_Equality" && m.Parameters.Count == 2);
+		var isFramework = new MethodDefinition("IsWaylithFrameworkType", MethodAttributes.Private | MethodAttributes.HideBySig, ts.Boolean);
+		var simpleName = new VariableDefinition(ts.String);
+		isFramework.Body.Variables.Add(simpleName);
+		ILProcessor fw = isFramework.Body.GetILProcessor();
+		Instruction framework = Instruction.Create(OpCodes.Ldc_I4_1);
+		Instruction notFramework = Instruction.Create(OpCodes.Ldc_I4_0);
+		fw.Emit(OpCodes.Ldarg_0);
+		fw.Emit(OpCodes.Call, runtimeType.Methods.Single(m => m.Name == "GetRuntimeModule" && !m.IsStatic && m.Parameters.Count == 0));
+		fw.Emit(OpCodes.Call, module.GetType("System.Reflection.RuntimeModule").Methods.Single(m => m.Name == "GetRuntimeAssembly" && m.Parameters.Count == 0));
+		fw.Emit(OpCodes.Call, module.GetType("System.Reflection.RuntimeAssembly").Methods.Single(m => m.Name == "GetSimpleName" && !m.IsStatic && m.Parameters.Count == 0));
+		fw.Emit(OpCodes.Stloc, simpleName);
+		fw.Emit(OpCodes.Ldloc, simpleName);
+		fw.Emit(OpCodes.Brfalse, notFramework);
+		fw.Emit(OpCodes.Ldloc, simpleName);
+		fw.Emit(OpCodes.Ldstr, "System.");
+		fw.Emit(OpCodes.Ldc_I4_4); // StringComparison.Ordinal
+		fw.Emit(OpCodes.Callvirt, startsWith);
+		fw.Emit(OpCodes.Brtrue, framework);
+		foreach (string frameworkName in new[] { "System", "mscorlib" })
+		{
+			fw.Emit(OpCodes.Ldloc, simpleName);
+			fw.Emit(OpCodes.Ldstr, frameworkName);
+			fw.Emit(OpCodes.Call, stringEquals);
+			fw.Emit(OpCodes.Brtrue, framework);
+		}
+		fw.Emit(OpCodes.Ldloc, simpleName);
+		fw.Emit(OpCodes.Ldstr, "netstandard");
+		fw.Emit(OpCodes.Call, stringEquals);
+		fw.Emit(OpCodes.Ret);
+		fw.Append(framework);
+		fw.Emit(OpCodes.Ret);
+		fw.Append(notFramework);
+		fw.Emit(OpCodes.Ret);
+		runtimeType.Methods.Add(isFramework);
+
+		// GetField itself, new.
+		MethodDefinition concat = stringType.Methods.Single(m => m.Name == "Concat" && m.Parameters.Count == 2 && m.Parameters.All(p => p.ParameterType.FullName == "System.String"));
+		getField.Body = new MethodBody(getField);
+		var fieldFound = new VariableDefinition(getField.ReturnType);
+		var lax = new VariableDefinition(getField.ReturnType);
+		var mono = new VariableDefinition(ts.Boolean);
+		foreach (VariableDefinition v in new[] { fieldFound, lax, mono })
+		{
+			getField.Body.Variables.Add(v);
+		}
+		getField.Body.InitLocals = true;
+		ILProcessor gf = getField.Body.GetILProcessor();
+		Instruction result = Instruction.Create(OpCodes.Ldloc, fieldFound);
+		Instruction wholeName = Instruction.Create(OpCodes.Ldarg_1);
+		Instruction underscore = Instruction.Create(OpCodes.Call, concat);
+		Instruction checkLax = Instruction.Create(OpCodes.Ldloc, lax);
+		foreach (Instruction check in nullCheck)
+		{
+			gf.Append(check);
+		}
+		gf.Emit(OpCodes.Ldarg_0);
+		gf.Emit(OpCodes.Ldarg_1);
+		gf.Emit(OpCodes.Ldarg_2);
+		gf.Emit(OpCodes.Call, exact);
+		gf.Emit(OpCodes.Stloc, fieldFound);
+		gf.Emit(OpCodes.Ldloc, fieldFound);
+		gf.Emit(OpCodes.Brtrue, result);
+		gf.Emit(OpCodes.Ldarg_2);
+		gf.Emit(OpCodes.Ldc_I4, 0x20); // BindingFlags.NonPublic
+		gf.Emit(OpCodes.And);
+		gf.Emit(OpCodes.Brfalse, result);
+		gf.Emit(OpCodes.Ldarg_1);
+		gf.Emit(OpCodes.Callvirt, stringType.Methods.Single(m => m.Name == "get_Length"));
+		gf.Emit(OpCodes.Brfalse, result);
+		gf.Emit(OpCodes.Ldarg_1);
+		gf.Emit(OpCodes.Ldc_I4_0);
+		gf.Emit(OpCodes.Callvirt, stringType.Methods.Single(m => m.Name == "get_Chars" && m.Parameters.Count == 1));
+		gf.Emit(OpCodes.Ldc_I4, (int)'_');
+		gf.Emit(OpCodes.Beq, result);
+		gf.Emit(OpCodes.Ldarg_0);
+		gf.Emit(OpCodes.Call, isFramework);
+		gf.Emit(OpCodes.Brfalse, result);
+		// bool mono = name.StartsWith("m_", StringComparison.Ordinal);
+		gf.Emit(OpCodes.Ldarg_1);
+		gf.Emit(OpCodes.Ldstr, "m_");
+		gf.Emit(OpCodes.Ldc_I4_4);
+		gf.Emit(OpCodes.Callvirt, startsWith);
+		gf.Emit(OpCodes.Stloc, mono);
+		// lax = GetFieldExact("_" + (mono ? name.Substring(2) : name), bindingAttr);
+		gf.Emit(OpCodes.Ldarg_0);
+		gf.Emit(OpCodes.Ldstr, "_");
+		gf.Emit(OpCodes.Ldloc, mono);
+		gf.Emit(OpCodes.Brfalse, wholeName);
+		gf.Emit(OpCodes.Ldarg_1);
+		gf.Emit(OpCodes.Ldc_I4_2);
+		gf.Emit(OpCodes.Callvirt, stringType.Methods.Single(m => m.Name == "Substring" && m.Parameters.Count == 1));
+		gf.Emit(OpCodes.Br, underscore);
+		gf.Append(wholeName);
+		gf.Append(underscore);
+		gf.Emit(OpCodes.Ldarg_2);
+		gf.Emit(OpCodes.Call, exact);
+		gf.Emit(OpCodes.Stloc, lax);
+		// if (lax == null && !mono) lax = GetFieldExact("m_" + name, bindingAttr);
+		gf.Emit(OpCodes.Ldloc, lax);
+		gf.Emit(OpCodes.Brtrue, checkLax);
+		gf.Emit(OpCodes.Ldloc, mono);
+		gf.Emit(OpCodes.Brtrue, checkLax);
+		gf.Emit(OpCodes.Ldarg_0);
+		gf.Emit(OpCodes.Ldstr, "m_");
+		gf.Emit(OpCodes.Ldarg_1);
+		gf.Emit(OpCodes.Call, concat);
+		gf.Emit(OpCodes.Ldarg_2);
+		gf.Emit(OpCodes.Call, exact);
+		gf.Emit(OpCodes.Stloc, lax);
+		// if (lax != null && !lax.IsPublic) field = lax;
+		gf.Append(checkLax);
+		gf.Emit(OpCodes.Brfalse, result);
+		gf.Emit(OpCodes.Ldloc, lax);
+		gf.Emit(OpCodes.Callvirt, module.GetType("System.Reflection.FieldInfo").Methods.Single(m => m.Name == "get_IsPublic"));
+		gf.Emit(OpCodes.Brtrue, result);
+		gf.Emit(OpCodes.Ldloc, lax);
+		gf.Emit(OpCodes.Stloc, fieldFound);
+		gf.Append(result);
+		gf.Emit(OpCodes.Ret);
+		Console.WriteLine("Ludeon's switches: MonoFloatFormatPrecision, DynamicMethodOwnerIsDeclaringType, LaxDynamicMethodAttributes, IsolatedLoadsResolveByName, LaxPrivateFieldNames");
 	}
 
 	/// <summary>
