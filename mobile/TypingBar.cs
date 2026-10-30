@@ -76,6 +76,16 @@ namespace PortMobile
 			caret = Mathf.Clamp(editor.cursorIndex, 0, text.Length);
 		}
 
+		/// <summary>Whether a finger at this point (window pixels) is on the bar.</summary>
+		public static bool At(Vector2 pixels)
+		{
+			if (Current.Root == null || Find.UIRoot == null || Find.WindowStack == null)
+			{
+				return false;
+			}
+			return Find.WindowStack.GetWindowAt(pixels / Prefs.UIScale) is ImmediateWindow window && window.ID == -WindowId;
+		}
+
 		/// <summary>Once a frame, after the game's interface (Entry): the bar, while the keyboard covers the field.</summary>
 		public static void OnGui()
 		{

@@ -243,6 +243,12 @@ namespace PortMobile
 			return Drawn && OnWheel(ui);
 		}
 
+		/// <summary>Whether a finger at this point (window pixels) is on the wheel: its button, or a key of the open ring.</summary>
+		internal static bool At(Vector2 pixels)
+		{
+			return Enabled && Current.ProgramState == ProgramState.Playing && Time.frameCount - drawnFrame <= 3 && OnWheel(pixels / Prefs.UIScale);
+		}
+
 		/// <summary>
 		/// The windows' squares, not the discs drawn in them: a window takes every press on it, in its corners too. Told by
 		/// circles, a press in a corner of the button's window spent a right click waiting for the next touch on nothing,

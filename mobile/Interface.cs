@@ -23,9 +23,11 @@ namespace PortMobile
 	///   when their window opens), it is let go at once, so that the keyboard does not come up by itself (testers,
 	///   2026-10-22: saving by hand brought it up over the save dialog; the name is typed only to change it). Other text
 	///   fields (a name to type in a rename window) keep such a focus. mobile.txt: searchFocusOnTap=0 lets them all keep it;
-	///   a finger that lands anywhere but on a text field takes the focus from the field that has it, and the keyboard
-	///   goes down (the game means to do that for its search boxes, but under this engine the press has already been
-	///   used by the window when the search box looks at it);
+	///   a finger that lands anywhere but on a text field, the typing bar or the key wheel takes the focus from the field
+	///   that has it once the touch is over, and the keyboard goes down (the game means to do that for its search boxes,
+	///   but under this engine the press has already been used by the window when the search box looks at it). Until
+	///   then the field keeps it, as under a mouse on the PC: a button that reads it when it is clicked finds it, and the
+	///   key wheel's keys go to the field;
 	///   the soft keyboard's Done (or Enter) finishes the typing: the field lets go of the focus and the keyboard goes
 	///   down. It is not the game's Enter, which accepts or closes the window the field is in (testers, 2026-10-22: a
 	///   number typed in the caravan's window cancelled it, a search box kept the keyboard, the debug actions' search ran
@@ -76,6 +78,9 @@ namespace PortMobile
 		// The text field that took the focus from a press on it, and the focus as last seen.
 		private static int tappedFocus, lastFocus;
 		private static bool searchOnlyFromTap = true;
+		// The text field that had the focus when a finger landed away from it (0: none), the window it is drawn in, and the
+		// last frame something of that touch was still on its way to the game (LetGoAfterTouch).
+		private static int letGoFocus, letGoWindow, letGoTouchFrame;
 
 		// A finger that begins in a list with something to scroll presses nothing until it is known to be a tap (see
 		// Touch): while it scrolls, the list that begins at this point of the screen follows it, and goes on for a
@@ -251,6 +256,7 @@ namespace PortMobile
 			open.Clear();
 			drawn.Clear();
 			notedBefore = scrolledBefore = false;
+			LetGoAfterTouch();
 			LetGoOfGivenSearchFocus();
 			bool wanted = UnityStubs.Internal.TextFocus.CapturesText;
 			bool again = askKeyboardAgain && wanted;
@@ -316,14 +322,68 @@ namespace PortMobile
 			}
 		}
 
-		/// <summary>Told by Touch when a finger lands (window pixels, y down).</summary>
+		/// <summary>
+		/// Told by Touch when a finger lands (window pixels, y down). A finger anywhere but on the text field that has the
+		/// focus, the typing bar that shows it, or the key wheel (whose keys are for the field) takes the focus from the
+		/// field once the touch is over (LetGoAfterTouch). Taken when the finger landed, it was gone before the game had the
+		/// press: a button that reads the focus when it is clicked found none (RimTalk's "insert variable" put the variable
+		/// at the start of the prompt instead of at the caret), and the key wheel's keys went nowhere (the compatibility
+		/// audit, 2026-10-30).
+		/// </summary>
 		public static void FingerLanded(Vector2 at)
 		{
-			if (GUIUtility.keyboardControl != 0 && TapAssist.Ready && !TapAssist.FieldAt(at))
+			int focus = GUIUtility.keyboardControl;
+			if (focus == 0 || !TapAssist.Ready)
 			{
-				if (Touch.Verbose) Console.WriteLine("[mobile] a finger away from the text field: its focus goes (" + GUI.GetNameOfFocusedControl() + ")");
+				return;
+			}
+			bool onField = TapAssist.FieldAt(at) || TypingBar.At(at);
+			if (!onField)
+			{
+				// No reason to bring back a keyboard the system put away (TouchBegan): the touch is to take the focus away,
+				// or it is on the key wheel.
+				askKeyboardAgain = false;
+			}
+			if (onField || KeyWheel.At(at))
+			{
+				// What an earlier touch away from the field was to take stays: the finger is back with the field.
+				letGoFocus = 0;
+				return;
+			}
+			if (Touch.Verbose && focus != letGoFocus) Console.WriteLine("[mobile] a finger away from the text field: its focus goes when the touch is over (" + GUI.GetNameOfFocusedControl() + ")");
+			letGoFocus = focus;
+			letGoWindow = GUI.GetFocusedControlWindowId();
+			letGoTouchFrame = Time.frameCount;
+		}
+
+		/// <summary>
+		/// Once a frame, before the keyboard follows the focus: the field a finger landed away from (FingerLanded) lets go of
+		/// the focus once nothing of that touch is on its way to the game any more and the game has handled the last of it
+		/// (a release goes out in the last frame something was on its way, and is handled in the next frame or the one after,
+		/// as HoldEnded counts). A focus that went elsewhere meanwhile stays where it went: to a field the touch pressed, to
+		/// the field of a window the touch opened (a field of another window is another, whatever its id).
+		/// </summary>
+		private static void LetGoAfterTouch()
+		{
+			if (letGoFocus == 0)
+			{
+				return;
+			}
+			if (!Touch.AllReleased)
+			{
+				letGoTouchFrame = Time.frameCount;
+				return;
+			}
+			if (Time.frameCount <= letGoTouchFrame + 2)
+			{
+				return;
+			}
+			if (GUIUtility.keyboardControl == letGoFocus && GUI.GetFocusedControlWindowId() == letGoWindow)
+			{
+				if (Touch.Verbose) Console.WriteLine("[mobile] the touch away from the text field is over: its focus goes (" + GUI.GetNameOfFocusedControl() + ")");
 				GUI.FocusControl(null);
 			}
+			letGoFocus = 0;
 		}
 
 		/// <summary>Prefix of the engine's TextFieldImpl: the focus before the field had its turn.</summary>
@@ -332,11 +392,22 @@ namespace PortMobile
 			__state = GUIUtility.keyboardControl;
 		}
 
-		/// <summary>Postfix of the engine's TextFieldImpl: a field that took the focus while handling a press took it from a finger.</summary>
+		/// <summary>Postfix of the engine's TextFieldImpl: a field that took the focus while handling a press took it from a finger, and one pressed while it has the focus keeps it.</summary>
 		public static void AfterTextField(int __state, string __result)
 		{
 			int focus = GUIUtility.keyboardControl;
-			if (focus != __state && focus != 0 && OriginalEventUtility.EventType == EventType.MouseDown)
+			if (focus == 0 || OriginalEventUtility.EventType != EventType.MouseDown)
+			{
+				return;
+			}
+			if (focus == GUIUtility.hotControl && Touch.TouchInProgress)
+			{
+				// The press is on the field that has the focus (it holds the press now): the focus stays after the touch, and
+				// a keyboard the system put away comes back, also where TapAssist does not know the field (tapAssist=0).
+				letGoFocus = 0;
+				askKeyboardAgain = true;
+			}
+			if (focus != __state)
 			{
 				tappedFocus = focus;
 				if (Touch.TouchInProgress && !InputMode.Mouse && IsNumber(__result))
