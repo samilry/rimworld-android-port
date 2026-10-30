@@ -82,6 +82,8 @@ internal sealed class InMemoryResolver : DefaultAssemblyResolver
 ///   - an override of a game method by its old return type, where the old type converts implicitly to the new one,
 ///     joined by the override the game does call, which returns the mod's result;
 ///   - Lunar Framework's checksum of the file (name.lfc beside name.dll) recomputed when the file changed;
+///   - its debug information kept: a portable PDB embedded in it, or beside it under the name its CodeView entry
+///     gives, is written again for the rewritten code (ReadForPreparing, WriteAssembly);
 ///   - the three things Ludeon's runtime finds for a mod where the stock one does not (its LaxTypeRefResolution,
 ///     LaxMemberSignatures and LaxPrivateFieldNames): a framework type referenced in an assembly that does not have
 ///     it (Adaptive Storage's Unsafe "in mscorlib", DefaultInterpolatedStringHandler "in 0Harmony") pointed at the one
@@ -360,7 +362,9 @@ internal static class ModPrep
 				}
 				resolver.AddSearchDirectory(Path.GetDirectoryName(file));
 				AssemblyDefinition assembly;
-				try { assembly = AssemblyDefinition.ReadAssembly(new MemoryStream(data), new ReaderParameters { ReadingMode = ReadingMode.Immediate, InMemory = true, AssemblyResolver = resolver }); }
+				string pdbFile = null;
+				byte[] pdb = null;
+				try { assembly = ReadForPreparing(data, file, resolver, out pdbFile); }
 				catch { assembly = null; } // a native library, or not an image at all
 				if (assembly != null)
 				{
@@ -369,9 +373,7 @@ internal static class ModPrep
 						ModuleDefinition module = assembly.MainModule;
 						if (module.Kind == ModuleKind.Dll && module.AssemblyReferences.Count > 0 && PrepareAssembly(assembly, resolver, name, result, log) > 0)
 						{
-							var stream = new MemoryStream();
-							assembly.Write(stream);
-							output = stream.ToArray();
+							output = WriteAssembly(assembly, out pdb);
 						}
 					}
 				}
@@ -383,6 +385,10 @@ internal static class ModPrep
 					File.Copy(temp, file, true);
 					File.Delete(temp);
 					result.Changed++;
+					if (pdb != null && pdbFile != null)
+					{
+						WritePdb(pdbFile, pdb, log);
+					}
 					if (RefreshLunarChecksum(file, original, output))
 					{
 						result.Checksums++;
@@ -405,6 +411,153 @@ internal static class ModPrep
 		WriteOriginals(root, originals);
 		WriteStamp(root);
 		return result;
+	}
+
+	/// <summary>
+	/// Reads an assembly for preparing (in memory, so that its file can be rewritten), with its debug information when
+	/// the runtime could use it (DebugInformation; file null: only an embedded PDB). Cecil writes debug information only
+	/// when it read it, and until 2026-10-30 every prepared assembly lost it: a mod's stack trace had file and line on
+	/// the PC and IL offsets on the phone (HAR embeds its PDB, Adaptive Storage ships ten beside its assemblies). pdbFile
+	/// is the PDB beside the file the symbols came from, or null. A Windows PDB (which the runtime reads on neither
+	/// side), a missing, mismatched or broken one is left out, as before; it never keeps an assembly from being prepared.
+	/// </summary>
+	private static AssemblyDefinition ReadForPreparing(byte[] data, string file, IAssemblyResolver resolver, out string pdbFile)
+	{
+		var symbols = new DebugInformation(file);
+		AssemblyDefinition assembly;
+		try
+		{
+			assembly = AssemblyDefinition.ReadAssembly(new MemoryStream(data), new ReaderParameters { ReadingMode = ReadingMode.Immediate, InMemory = true, AssemblyResolver = resolver, SymbolReaderProvider = symbols, ThrowIfSymbolsAreNotMatching = false });
+		}
+		catch (Exception) when (symbols.Asked)
+		{
+			pdbFile = null;
+			return AssemblyDefinition.ReadAssembly(new MemoryStream(data), new ReaderParameters { ReadingMode = ReadingMode.Immediate, InMemory = true, AssemblyResolver = resolver });
+		}
+		pdbFile = assembly.MainModule.HasSymbols ? symbols.PdbFile : null;
+		return assembly;
+	}
+
+	/// <summary>
+	/// Picks an assembly's debug information while Cecil reads it (only then: a module read without symbols cannot
+	/// take them afterwards) as the runtime finds it: a portable PDB embedded in the assembly, or one beside the file
+	/// under the name its CodeView entry gives. That name has to be the assembly's own, which is the name the rewritten
+	/// assembly gives its PDB (Cecil's PortablePdbWriter); a PDB of another name is left out.
+	/// </summary>
+	private sealed class DebugInformation : ISymbolReaderProvider
+	{
+		// The CodeView entry's minor version for a portable PDB ("PM"); a Windows PDB's is 0.
+		private const short PortableCodeView = 0x504d;
+
+		private readonly string file;
+
+		/// <summary>Cecil asked for the debug information, which it does once the rest of the module is read: a failure from there on is the symbols'.</summary>
+		public bool Asked;
+
+		/// <summary>The PDB beside the assembly that the reader reads, or null.</summary>
+		public string PdbFile;
+
+		public DebugInformation(string file)
+		{
+			this.file = file;
+		}
+
+		public ISymbolReader GetSymbolReader(ModuleDefinition module, string fileName)
+		{
+			Asked = true;
+			ImageDebugHeaderEntry codeView = null;
+			foreach (ImageDebugHeaderEntry entry in module.GetDebugHeader().Entries)
+			{
+				if (entry.Directory.Type == ImageDebugType.EmbeddedPortablePdb)
+				{
+					return new EmbeddedPortablePdbReaderProvider().GetSymbolReader(module, fileName);
+				}
+				if (entry.Directory.Type == ImageDebugType.CodeView && entry.Directory.MinorVersion == PortableCodeView)
+				{
+					codeView = entry;
+				}
+			}
+			byte[] data = codeView?.Data;
+			if (file == null || data == null || data.Length <= 24 || data[0] != (byte)'R' || data[1] != (byte)'S' || data[2] != (byte)'D' || data[3] != (byte)'S')
+			{
+				return null;
+			}
+			int end = Array.IndexOf(data, (byte)0, 24);
+			string path = System.Text.Encoding.UTF8.GetString(data, 24, (end < 0 ? data.Length : end) - 24);
+			string name = path.Substring(path.LastIndexOfAny(new[] { '/', '\\' }) + 1);
+			string pdb = Path.Combine(Path.GetDirectoryName(file), name);
+			if (name != module.Assembly?.Name.Name + ".pdb" || !File.Exists(pdb))
+			{
+				return null;
+			}
+			PdbFile = pdb;
+			return new PortablePdbReaderProvider().GetSymbolReader(module, new MemoryStream(File.ReadAllBytes(pdb)));
+		}
+
+		public ISymbolReader GetSymbolReader(ModuleDefinition module, Stream symbolStream)
+		{
+			return GetSymbolReader(module, "");
+		}
+	}
+
+	/// <summary>
+	/// The image of a prepared assembly, with the debug information it was read with (ReadForPreparing): embedded again,
+	/// or as a PDB for beside it in pdb (the one there no longer fits the code). Without it when Cecil cannot write it.
+	/// </summary>
+	private static byte[] WriteAssembly(AssemblyDefinition assembly, out byte[] pdb)
+	{
+		pdb = null;
+		ModuleDefinition module = assembly.MainModule;
+		if (module.HasSymbols)
+		{
+			try
+			{
+				var image = new MemoryStream();
+				var symbols = new MemoryStream();
+				assembly.Write(image, module.SymbolReader is EmbeddedPortablePdbReader
+					? new WriterParameters { SymbolWriterProvider = new EmbeddedPdbWriterProvider() }
+					: new WriterParameters { SymbolWriterProvider = new PortablePdbWriterProvider(), SymbolStream = symbols });
+				pdb = symbols.Length > 0 ? symbols.ToArray() : null;
+				return image.ToArray();
+			}
+			catch (Exception)
+			{
+				// written as before, without
+			}
+		}
+		var stream = new MemoryStream();
+		assembly.Write(stream);
+		return stream.ToArray();
+	}
+
+	/// <summary>Cecil's writer of an embedded PDB for an assembly written to memory: Cecil's own asks for a file name, which it does not use.</summary>
+	private sealed class EmbeddedPdbWriterProvider : ISymbolWriterProvider
+	{
+		public ISymbolWriter GetSymbolWriter(ModuleDefinition module, string fileName)
+		{
+			return new EmbeddedPortablePdbWriterProvider().GetSymbolWriter(module, "memory");
+		}
+
+		public ISymbolWriter GetSymbolWriter(ModuleDefinition module, Stream symbolStream)
+		{
+			return GetSymbolWriter(module, "memory");
+		}
+	}
+
+	/// <summary>The PDB of a rewritten assembly in place of the one it was read with; a failure costs only the line numbers.</summary>
+	private static void WritePdb(string pdbFile, byte[] pdb, Action<string> log)
+	{
+		try
+		{
+			string temp = pdbFile + ".patched";
+			File.WriteAllBytes(temp, pdb);
+			File.Copy(temp, pdbFile, true);
+			File.Delete(temp);
+		}
+		catch (Exception e)
+		{
+			log(Path.GetFileName(pdbFile) + ": not written (" + e.GetType().Name + ": " + e.Message + "); its assembly's stack traces go without line numbers");
+		}
 	}
 
 	private static Dictionary<string, (int Original, int Prepared)> ReadOriginals(string root)
@@ -1704,13 +1857,11 @@ internal static class ModPrep
 			bool changed = FixMachineType(data);
 			try
 			{
-				using (AssemblyDefinition embedded = AssemblyDefinition.ReadAssembly(new MemoryStream(data), new ReaderParameters { ReadingMode = ReadingMode.Immediate, InMemory = true, AssemblyResolver = resolver }))
+				using (AssemblyDefinition embedded = ReadForPreparing(data, null, resolver, out _))
 				{
 					if (embedded.MainModule.Kind == ModuleKind.Dll && embedded.MainModule.AssemblyReferences.Count > 0 && PrepareAssembly(embedded, resolver, name, result, log) > 0)
 					{
-						var output = new MemoryStream();
-						embedded.Write(output);
-						data = output.ToArray();
+						data = WriteAssembly(embedded, out _);
 						changed = true;
 					}
 				}
