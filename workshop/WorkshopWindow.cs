@@ -50,8 +50,10 @@ namespace PortWorkshop
 		private Vector2 scroll;
 		private string qrFor;
 		private List<BitArray> qr;
-		// What a link asked for (Entry.OpenItem): the items to add once signed in, and the page to offer for the browser.
+		// What a link asked for (Entry.OpenItem): the items to add once signed in, the item to scroll the list to once it is
+		// in it, and the page to offer for the browser.
 		private string pending = "", page;
+		private ulong scrollTo;
 
 		public override Vector2 InitialSize => new Vector2(Mathf.Min(1100f, UI.screenWidth - 20f), Mathf.Min(680f, UI.screenHeight - 8f));
 
@@ -80,6 +82,7 @@ namespace PortWorkshop
 			if (!string.IsNullOrEmpty(item))
 			{
 				pending += " " + item;
+				scrollTo = Downloads.ParseIds(item).FirstOrDefault();
 			}
 			page = url;
 		}
@@ -302,6 +305,14 @@ namespace PortWorkshop
 			Rect outRect = new Rect(rect.x, y, rect.width, rect.yMax - y - bottom);
 			float rowHeight = 46f;
 			Rect viewRect = new Rect(0f, 0f, outRect.width - 16f, Mathf.Max(outRect.height, items.Count * rowHeight));
+			// The list keeps what was added earlier in the run (a collection, the subscriptions) and puts a new item at its end,
+			// while a new window starts at its top: the item of a link is scrolled to, once, when it is in the list.
+			int linked = scrollTo == 0 ? -1 : items.FindIndex(i => i.Id == scrollTo);
+			if (linked >= 0)
+			{
+				scroll.y = Mathf.Min(linked * rowHeight, viewRect.height - outRect.height);
+				scrollTo = 0;
+			}
 			Widgets.DrawMenuSection(outRect);
 			Widgets.BeginScrollView(outRect, ref scroll, viewRect);
 			for (int i = 0; i < items.Count; i++)
