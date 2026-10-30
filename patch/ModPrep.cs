@@ -442,6 +442,22 @@ internal static class ModPrep
 		try
 		{
 			assembly = AssemblyDefinition.ReadAssembly(new MemoryStream(data), new ReaderParameters { ReadingMode = ReadingMode.Immediate, InMemory = true, AssemblyResolver = resolver, SymbolReaderProvider = symbols, ThrowIfSymbolsAreNotMatching = false });
+			if (assembly.MainModule.HasSymbols)
+			{
+				// Cecil puts the debug information on the instructions when it reads a body, and a PDB that fits the assembly
+				// but not its code (an async method's or state machine's offset that starts no instruction) fails there, so
+				// every body is read here, where a failure means reading without the symbols; preparing reads them all anyway.
+				foreach (TypeDefinition type in assembly.MainModule.GetTypes())
+				{
+					foreach (MethodDefinition method in type.Methods)
+					{
+						if (method.HasBody)
+						{
+							_ = method.Body;
+						}
+					}
+				}
+			}
 		}
 		catch (Exception) when (symbols.Asked)
 		{
@@ -465,7 +481,7 @@ internal static class ModPrep
 
 		private readonly string file;
 
-		/// <summary>Cecil asked for the debug information, which it does once the rest of the module is read: a failure from there on is the symbols'.</summary>
+		/// <summary>Cecil asked for the debug information, which it does once the rest of the module is read: a failure from there on is taken for the symbols' (one that is not theirs comes again without them).</summary>
 		public bool Asked;
 
 		/// <summary>The PDB beside the assembly that the reader reads, or null.</summary>
