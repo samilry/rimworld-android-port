@@ -18,11 +18,11 @@ namespace PortMobile
 	///   the tooltips of a tap do not linger (the engine's mouse stays where the last finger was);
 	///   the soft keyboard comes up while a text field has the focus;
 	///   a search box (the game's QuickSearchWidget: the info card's, the load dialog's; a mod's, by "search" in its name),
-	///   and the name field of a save dialog (the game's, a scenario's, an ideoligion's, a mod list's: Dialog_FileList),
-	///   take the focus only from a finger on them: given the focus by code (as when their window opens), it is let go
-	///   at once, so that the keyboard does not come up by itself (testers, 2026-10-22: saving by hand brought it up over
-	///   the save dialog; the name is typed only to change it). Other text fields (a name to type in a rename window)
-	///   keep such a focus. mobile.txt: searchFocusOnTap=0 lets them all keep it;
+	///   and the name field of a save dialog (the game's, a scenario's, an ideoligion's, a mod list's: Dialog_FileList;
+	///   those of mods made like it: NameFields), take the focus only from a finger on them: given the focus by code (as
+	///   when their window opens), it is let go at once, so that the keyboard does not come up by itself (testers,
+	///   2026-10-22: saving by hand brought it up over the save dialog; the name is typed only to change it). Other text
+	///   fields (a name to type in a rename window) keep such a focus. mobile.txt: searchFocusOnTap=0 lets them all keep it;
 	///   a finger that lands anywhere but on a text field takes the focus from the field that has it, and the keyboard
 	///   goes down (the game means to do that for its search boxes, but under this engine the press has already been
 	///   used by the window when the search box looks at it);
@@ -398,7 +398,7 @@ namespace PortMobile
 			return digit;
 		}
 
-		/// <summary>Once a frame, before the keyboard follows the focus: a search box or a save dialog's name that got the focus some other way than from a finger lets it go.</summary>
+		/// <summary>Once a frame, before the keyboard follows the focus: a search box or a save dialog's name (NameFields) that got the focus some other way than from a finger lets it go.</summary>
 		private static void LetGoOfGivenSearchFocus()
 		{
 			int focus = GUIUtility.keyboardControl;
@@ -420,7 +420,7 @@ namespace PortMobile
 				return;
 			}
 			string name = GUI.GetNameOfFocusedControl();
-			if (IsSearchBox(name) || name == SaveNameField)
+			if (IsSearchBox(name) || NameFields.Contains(name))
 			{
 				GUI.FocusControl(null);
 				lastFocus = 0;
@@ -428,8 +428,13 @@ namespace PortMobile
 			}
 		}
 
-		/// <summary>The name field of the game's save dialogs (Dialog_FileList.DoTypeInField), which focus it when they open.</summary>
-		private const string SaveNameField = "MapNameField";
+		/// <summary>
+		/// The name fields of save dialogs, which focus them when they open: the game's (Dialog_FileList.DoTypeInField), and
+		/// those mods made after it, RimHUD's for a layout preset (Dialog_SavePreset, again when its docked or floating box
+		/// is ticked) and UF Light Industries' for a configuration (Dialog_UFConfigList): the keyboard came up over them by
+		/// itself (the compatibility audit, 2026-10-30).
+		/// </summary>
+		private static readonly HashSet<string> NameFields = new HashSet<string> { "MapNameField", "PresetName", "UFConfigNameField" };
 
 		/// <summary>
 		/// A search box by the name it was given: the game's QuickSearchWidget, and the mods' own (Dubs Mint Menus focuses
