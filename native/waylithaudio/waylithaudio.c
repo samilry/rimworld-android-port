@@ -1106,8 +1106,12 @@ EXPORT void wa_voice_set_3d(uint64_t voice, int enabled, float minDistance, floa
         if (enabled)
         {
             ma_sound_set_positioning(&v->snd, ma_positioning_absolute);
-            ma_sound_set_min_distance(&v->snd, minDistance);
-            ma_sound_set_max_distance(&v->snd, maxDistance);
+            // The distances as the PC's library passes them on: the minimum at least 0.0001, and a maximum that is
+            // not above the engine's minimum becomes that minimum plus 0.0001. miniaudio plays a sound whose maximum
+            // is not above its minimum at full level at any distance; on the PC such a sound (a distRange like
+            // 30~30) falls silent with linear rolloff just beyond its minimum.
+            ma_sound_set_min_distance(&v->snd, minDistance > 0.0001f ? minDistance : 0.0001f);
+            ma_sound_set_max_distance(&v->snd, maxDistance > minDistance ? maxDistance : minDistance + 0.0001f);
             ma_sound_set_attenuation_model(&v->snd, rolloff == 1 ? ma_attenuation_model_linear : ma_attenuation_model_inverse);
             ma_sound_set_rolloff(&v->snd, 1.0f);
             if (!v->mix) v->mix = mix_create();
