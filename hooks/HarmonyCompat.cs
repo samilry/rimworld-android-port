@@ -775,4 +775,50 @@ namespace PortHooks
 			return true;
 		}
 	}
+
+	/// <summary>
+	/// A mod that takes every owner's patches off (Harmony.UnpatchAll() without an owner, Unpatch with the owner "*";
+	/// RimHUD does it when its own start fails) takes the port's off too, through PatchInfo.Remove with the owner "*":
+	/// textures and fonts for this phone's GPU, the mod loading, the touch layer. On the PC those are the engine's own
+	/// code, not patches, and stay. So where every owner's patches go, those of the port's owners ("port17.*") stay.
+	/// </summary>
+	internal static class PortPatches
+	{
+		private static bool told;
+
+		/// <summary>From the startup hook, before any mod runs.</summary>
+		public static void Keep(Harmony harmony)
+		{
+			try
+			{
+				MethodInfo remove = AccessTools.Method(typeof(PatchInfo), "Remove", new[] { typeof(string), typeof(Patch[]) });
+				if (remove == null)
+				{
+					Console.WriteLine("[port17] this Harmony has no PatchInfo.Remove(owner, patches); a mod that takes every owner's patches off takes the port's too");
+					return;
+				}
+				harmony.Patch(remove, prefix: new HarmonyMethod(typeof(PortPatches), nameof(BeforeRemove)));
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[port17] the port's patches are not kept from a mod's unpatch-all: " + e.Message);
+			}
+		}
+
+		/// <summary>Prefix of PatchInfo.Remove(owner, current), which takes one owner's patches out of a list, or all for "*".</summary>
+		public static bool BeforeRemove(string owner, Patch[] current, ref Patch[] __result)
+		{
+			if (owner != "*" || current == null)
+			{
+				return true;
+			}
+			__result = Array.FindAll(current, patch => patch.owner != null && patch.owner.StartsWith("port17.", StringComparison.Ordinal));
+			if (__result.Length > 0 && !told)
+			{
+				told = true;
+				Console.WriteLine("[port17] a mod took every owner's Harmony patches off; the port's own stay (on the PC its changes are the engine's code)");
+			}
+			return false;
+		}
+	}
 }

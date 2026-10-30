@@ -632,6 +632,8 @@ internal static class StartupHook
 		DropAtlasCacheIfAsked();
 		MoveBackslashNames();
 		MakeHomeFolders();
+		// A mod that takes every owner's patches off leaves the port's, which are engine code on the PC.
+		PortHooks.PortPatches.Keep(new HarmonyLib.Harmony("port17.keeppatches"));
 		PortHooks.Textures.Start();
 		PortHooks.UiDescriptors.Start();
 		PortHooks.AndroidFonts.Start();
