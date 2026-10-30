@@ -44,6 +44,9 @@ namespace PortWorkshop
 		private static Client cdn;
 		private static Thread pump;
 		private static volatile bool wanted, connected;
+		// Set when this side ends the connection (Stop): a window opened again before the end has come finds the
+		// connection still up and makes no new one, so it is made once the end has come (OnDisconnected).
+		private static volatile bool endAsked;
 		private static CancellationTokenSource authCancel;
 		private static TaskCompletionSource<string> codeSource;
 		private static uint cellId;
@@ -164,8 +167,14 @@ namespace PortWorkshop
 			CancelAuth();
 			if (client != null && connected)
 			{
-				client.Disconnect();
+				Disconnect();
 			}
+		}
+
+		private static void Disconnect()
+		{
+			endAsked = true;
+			client.Disconnect();
 		}
 
 		private static void OnConnected(SteamClient.ConnectedCallback callback)
@@ -173,6 +182,13 @@ namespace PortWorkshop
 			connected = true;
 			Message = "";
 			Log("connected");
+			if (!wanted)
+			{
+				// The window was closed while the connection was being made (the first one from China takes about 45 s):
+				// nobody needs it now, and signed in it would stay for the rest of the run.
+				Disconnect();
+				return;
+			}
 			if (TryReadLogin(out string account, out string token))
 			{
 				LogOn(account, token);
@@ -187,6 +203,8 @@ namespace PortWorkshop
 		private static void OnDisconnected(SteamClient.DisconnectedCallback callback)
 		{
 			connected = false;
+			bool asked = endAsked;
+			endAsked = false;
 			CancelAuth();
 			Log("disconnected" + (callback.UserInitiated ? " (asked for)" : ""));
 			if (wanted && logOnElsewhere)
@@ -212,6 +230,14 @@ namespace PortWorkshop
 						client.Connect();
 					}
 				});
+			}
+			else if (wanted && asked)
+			{
+				// Ended for a window that was closed, and wanted by one opened again before the end came: without this the
+				// new window stayed at "connecting" for good.
+				State = SessionState.Connecting;
+				Message = "";
+				client.Connect();
 			}
 			else
 			{
