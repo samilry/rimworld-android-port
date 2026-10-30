@@ -205,6 +205,24 @@ final class Diagnostics
         {
             Log.w(TAG, "no export shortcut: " + t);
         }
+        // The game's folders in the system's Files app (FilesProvider): most makers' launchers leave that app out, and a
+        // file chooser only picks, it does not copy. A call of its own: a launcher that refuses it keeps the ones above.
+        try
+        {
+            Intent files = FilesProvider.placesIntent(context);
+            if (files != null)
+            {
+                context.getSystemService(ShortcutManager.class).addDynamicShortcuts(java.util.Collections.singletonList(new ShortcutInfo.Builder(context, "game-files")
+                    .setShortLabel("存档和 Mod")
+                    .setLongLabel("在「文件」里打开存档、设置和 Mod")
+                    .setIntent(files)
+                    .build()));
+            }
+        }
+        catch (Throwable t)
+        {
+            Log.w(TAG, "no files shortcut: " + t);
+        }
     }
 
     // ---- why the game ended ----
