@@ -16,6 +16,10 @@
          once, and the tombstone names where it was allocated and freed (Diagnostics puts that in the crash report).
          A tester, 2026-10-27: "Scudo ERROR: corrupted chunk header", found only at a later free of a dead thread's
          record, by whom it was overwritten unknown. A few percent of memory, no measurable speed. -->
+    <!-- hasFragileUserData: the saves, Config, mods and the game's files live in the app's own folders, which an
+         uninstall deletes; with it the system's uninstall dialog (Android 10 and later) offers to keep them, and a
+         reinstall finds them again. On the PC they stay in AppData when the game is uninstalled. The box starts
+         unticked. A reinstall must be signed with the same key (port17.keystore) while kept data is there. -->
     <application android:allowNativeHeapPointerTagging="false"
         android:gwpAsanMode="always"
         android:appCategory="game"
@@ -24,6 +28,7 @@
         android:hasCode="true"
         android:extractNativeLibs="true"
         android:allowBackup="false"
+        android:hasFragileUserData="true"
         android:largeHeap="true">
         <activity
             android:name="com.local.waylith.port.MainActivity"
