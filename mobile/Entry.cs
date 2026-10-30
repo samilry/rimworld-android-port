@@ -183,7 +183,8 @@ namespace PortMobile
 
 		/// <summary>
 		/// mobile.txt corelibTest=1: the WaylithClr switches the phone's CoreLib has as Ludeon's (patch/Patch.cs
-		/// AddLudeonSwitches), each against what the PC gives. One line each in the log, "ok" or what came instead.
+		/// AddLudeonSwitches) and MonoMod's instruction cache flush, each against what the PC gives. One line each in the
+		/// log, "ok" or what came instead.
 		/// </summary>
 		private static void CoreLibTest()
 		{
@@ -257,6 +258,21 @@ namespace PortMobile
 				typeof(TimeSpan).GetField("Zero").SetValue(null, TimeSpan.Zero);
 				return "written";
 			}, "written");
+			// MonoMod flushes the instruction cache after it writes code, as on Windows: the game folder's 0Harmony.dll calls
+			// mm_clear_cache of the APK's libmonomodc.so (patch/Patch.cs FlushAfterPatchData). PatchData goes on without a
+			// word when either half is older, so this line is where that shows.
+			Line("MonoMod's instruction cache flush (mm_clear_cache)", () =>
+			{
+				System.Reflection.MethodInfo clearCache = typeof(Harmony).Assembly.GetType("MonoMod.Core.Interop.Unix")?.GetMethod("ClearCache");
+				if (clearCache == null)
+				{
+					return "not in 0Harmony.dll";
+				}
+				// Over compiled code, as PatchData does after a detour's jump.
+				IntPtr code = new Action(CoreLibTest).Method.MethodHandle.GetFunctionPointer();
+				clearCache.Invoke(null, System.Reflection.BindingFlags.DoNotWrapExceptions, null, new object[] { code, (UIntPtr)16 }, null);
+				return "flushed";
+			}, "flushed");
 		}
 
 		/// <summary>
