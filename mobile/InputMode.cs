@@ -18,7 +18,8 @@ namespace PortMobile
 	/// With a mouse connected the game's own pointer handling comes back:
 	///   tooltips show under the pointer (Interface.BeforeTooltips took every tooltip away while no finger was down);
 	///   a building, a drag and a landing spot are placed by the click, without the confirm buttons (Settings.PlaceConfirm);
-	///   float menus and thing filters have the game's row spacing (TouchSizes).
+	///   float menus and thing filters have the game's row spacing (TouchSizes);
+	///   the on-screen left and right buttons for a finger are left out (MouseButtons): the mouse has its own.
 	/// With a keyboard connected:
 	///   a text field does not force the soft keyboard up (the input method shows it if the player wants it with a
 	///   hardware keyboard), and search boxes keep the focus the game gives them when their window opens (Interface);
@@ -218,8 +219,8 @@ namespace PortMobile
 		{
 			string shown = setting == Auto ? Name(Auto) + (Texts.Chinese ? "（现在：" + Now() + "）" : " (now: " + Now() + ")") : Name(setting);
 			if (listing.ButtonTextLabeledPct(Texts.Chinese ? "操作方式" : "Input", shown, 0.6f, TextAnchor.MiddleLeft, null, Texts.Chinese
-				? "自动：接入鼠标时用电脑版的鼠标操作（悬停显示提示、点击直接放置建筑和选降落点、不出确定按钮、菜单行距同电脑版），接入键盘时用电脑版的键盘操作（输入框不强制弹出屏幕键盘、搜索框打开就能直接打字、隐藏自定义按键盘）；拔掉后自动改回触屏操作。手指照样可以点、拖地图、双指缩放。\n触屏：始终按触屏操作。\n键鼠：始终按键鼠操作。" + (devices.Length > 0 ? "\n\n现在接着的：" + devices : "\n\n现在没有接鼠标或键盘。")
-				: "Automatic: with a mouse connected the PC's mouse handling (tooltips under the pointer, a click places a building or a landing spot at once, no confirm buttons, the PC's menu spacing); with a keyboard connected the PC's keyboard handling (no forced soft keyboard, search boxes take typing at once, no key wheel); back to touch when they are gone. Fingers still tap, drag the map and pinch.\nTouch: always touch.\nMouse and keyboard: always the PC's." + (devices.Length > 0 ? "\n\nConnected now: " + devices : "\n\nNo mouse or keyboard is connected now.")))
+				? "自动：接入鼠标时用电脑版的鼠标操作（悬停显示提示、点击直接放置建筑和选降落点、不出确定按钮、菜单行距同电脑版、不显示屏幕上的左键右键），接入键盘时用电脑版的键盘操作（输入框不强制弹出屏幕键盘、搜索框打开就能直接打字、隐藏自定义按键盘）；拔掉后自动改回触屏操作。手指照样可以点、拖地图、双指缩放。\n触屏：始终按触屏操作。\n键鼠：始终按键鼠操作。" + (devices.Length > 0 ? "\n\n现在接着的：" + devices : "\n\n现在没有接鼠标或键盘。")
+				: "Automatic: with a mouse connected the PC's mouse handling (tooltips under the pointer, a click places a building or a landing spot at once, no confirm buttons, the PC's menu spacing, no on-screen mouse buttons); with a keyboard connected the PC's keyboard handling (no forced soft keyboard, search boxes take typing at once, no key wheel); back to touch when they are gone. Fingers still tap, drag the map and pinch.\nTouch: always touch.\nMouse and keyboard: always the PC's." + (devices.Length > 0 ? "\n\nConnected now: " + devices : "\n\nNo mouse or keyboard is connected now.")))
 			{
 				var choices = new List<FloatMenuOption>();
 				foreach (string value in new[] { Auto, TouchOnly, MouseAndKeys })

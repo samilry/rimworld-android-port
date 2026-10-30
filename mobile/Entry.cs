@@ -362,6 +362,8 @@ namespace PortMobile
 		public static void AfterUIRootOnGUI()
 		{
 			PortHooks.Watch.Beat();
+			// The mouse buttons first: the wheel lays its keys round them.
+			MouseButtons.OnGui();
 			KeyWheel.OnGui();
 			TypingBar.OnGui();
 			if (!menuTimed && Verse.Current.ProgramState == Verse.ProgramState.Entry && !Verse.LongEventHandler.AnyEventNowOrWaiting)

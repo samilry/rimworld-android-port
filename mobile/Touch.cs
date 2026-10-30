@@ -22,7 +22,8 @@ namespace PortMobile
 	///   (with mobile.txt squadTaps=1 and a drafted squad selected, Squad: a tap is the order, a right click, or, on one
 	///                  of the colony's own, adds it to the selection or takes it out; a hold is the left button)
 	///   two fingers    pinch to zoom around the fingers, drag to move
-	/// anywhere but on the key wheel, while its right or middle mouse button is switched on (KeyWheel)
+	/// anywhere but on the key wheel and the mouse buttons, while the right mouse button is on (MouseButtons: for the next
+	/// touch, or locked) or the key wheel's middle one is (KeyWheel)
 	///   one finger     that button, pressed from landing to lifting (a tap is a right or a middle click)
 	/// on the interface
 	///   tap, drag      the left button, as a mouse
@@ -76,11 +77,11 @@ namespace PortMobile
 			ListHeld,  // it rested there: tooltips; a drag from here drags what the finger is on
 			ListScroll, // it dragged along the list: the list follows, nothing is pressed at all
 			Two,       // two fingers: zoom and pan (for the map) or wheel and middle drag (for a window)
-			Mouse,     // the key wheel's right or middle button is on: the finger is that button until it lifts, nothing else
+			Mouse,     // the right mouse button or the key wheel's middle one is on: the finger is that button until it lifts, nothing else
 			Finished   // nothing more to recognise in this touch; wait for all fingers to lift
 		}
 
-		private const double HoldSeconds = 0.45;
+		internal const double HoldSeconds = 0.45;
 		// How far the wheel turns (GLFW units; a mouse notch is 1) when the fingers of a pinch double their distance.
 		private const double WheelPerDoubling = 5.0;
 		private static readonly AccessTools.FieldRef<CameraDriver, Vector2> MapDolly = AccessTools.FieldRefAccess<CameraDriver, Vector2>("desiredDollyRaw");
@@ -182,6 +183,7 @@ namespace PortMobile
 			TypingBar.Start(harmony);
 			EdgeScroll.Start(harmony);
 			KeyWheel.Start();
+			MouseButtons.Start();
 			if (!Compat.On)
 			{
 				BarInset.Start(harmony);
@@ -352,6 +354,7 @@ namespace PortMobile
 			TouchSizes.BeforeInterface();
 			LatchedKey.UpdateAll();
 			KeyWheel.Update();
+			MouseButtons.Update();
 			UiScale.Update();
 			Interface.Update();
 			MapTools.Update();
@@ -391,7 +394,7 @@ namespace PortMobile
 				if (leftDown) Button(Left, false);
 				if (pendingPress >= 0)
 				{
-					// Lifted before the key wheel's middle button went down: it goes down now, and up next frame.
+					// Lifted before the middle button went down: it goes down now, and up next frame.
 					ForgetMouseTravel();
 					Button(pendingPress, true);
 					pendingPress = -1;
@@ -427,7 +430,7 @@ namespace PortMobile
 					touchInList = Interface.ListTouch && TapAssist.ListAt(at, out listDown, out listAcross, out listX, out listY);
 					Interface.FingerLanded(at);
 					Cursor(at);
-					int button = KeyWheel.TapButton(at);
+					int button = MouseButtons.TapButton(at);
 					if (button == Middle)
 					{
 						pendingPress = Middle;
@@ -480,10 +483,10 @@ namespace PortMobile
 				cursorOffset = Vector2.zero;
 				dragged = false;
 				Cursor(pressAt);
-				int button = KeyWheel.TapButton(pressAt);
+				int button = MouseButtons.TapButton(pressAt);
 				if (button != Left)
 				{
-					// The key wheel's right or middle mouse button: pressed now, let go when the finger lifts.
+					// The right mouse button (MouseButtons) or the key wheel's middle one: pressed now, let go when the finger lifts.
 					mode = Mode.Mouse;
 					if (button == Middle)
 					{
@@ -759,7 +762,7 @@ namespace PortMobile
 			GUIUtility.hotControl = 0;
 			Interface.StopWindowDrag();
 			if (leftDown) Button(Left, false);
-			// The key wheel's buttons (a press from a hold waits for its own release).
+			// The right and the middle button of a finger (a press from a hold waits for its own release).
 			pendingPress = -1;
 			if (rightDown && releaseRightNextFrame == 0) Button(Right, false);
 			if (middleDown) Button(Middle, false);

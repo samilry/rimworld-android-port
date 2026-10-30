@@ -143,8 +143,9 @@ namespace PortMobile
 				}
 				// Touch, or the game's mouse and keyboard handling.
 				InputMode.OptionRow(listing);
-				// The key wheel's switch, in the same place.
+				// The key wheel's switch, in the same place, and the mouse buttons' after it.
 				KeyWheel.OptionRow(listing);
+				MouseButtons.OptionRow(listing);
 				// The interface as on a PC; while it is on, the rows of what it leaves out are not shown.
 				Compat.OptionRow(listing);
 				if (!Compat.On)
