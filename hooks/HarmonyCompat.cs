@@ -31,6 +31,18 @@ namespace PortHooks
 	/// GravshipLandingMarker.DrawAt into a single "pop", so the cells stay on the stack into the try block of the
 	/// foreach that follows; here the whole mod failed in its constructor ("invalid program"). The values are popped
 	/// in front of the try block (outside it) or of the return.
+	///
+	/// Harmony 3 follows the stack itself before the JIT sees the method (DynamicMethodBodyWriter.MaximumStack throws
+	/// "Inconsistent stack depth" where two paths bring different depths), on the PC as here. Values under the return
+	/// value of a method that returns something, as many on every path, get past it; the PC's JIT returns the top one
+	/// and this one refuses the method (measured 2026-10-30 with the same Harmony on both runtimes, the PC's own
+	/// runtime files, and transpilers that leave each shape). Here the return value is put aside in a local while the
+	/// others are popped. Not where the return comes right after a call: the JIT takes "call; ret" for a tail call and
+	/// wants nothing else on the stack, and the PC refuses the method then too ("Stack should be empty after tailcall").
+	/// Where the original's returns meet, a method that returns something keeps the return value on top and what a
+	/// transpiler left over under it, so paths that arrive there with different depths get no pops: the PC's Harmony
+	/// refuses that method, and here Harmony is left to refuse it too. Until 2026-10-30 the pops took the return value
+	/// itself, and the patched method returned whatever had been under it.
 	/// </summary>
 	internal static class HarmonyCompat
 	{
@@ -42,27 +54,21 @@ namespace PortHooks
 			{
 				return;
 			}
-			var labels = new Dictionary<Label, int>();
-			for (int i = 0; i < codes.Count; i++)
-			{
-				if (codes[i].labels != null)
-				{
-					foreach (Label label in codes[i].labels)
-					{
-						labels[label] = i;
-					}
-				}
-			}
+			Dictionary<Label, int> labels = LabelsOf(codes);
 			int[] depth = Follow(codes, labels, out bool certain);
 			if (!certain)
 			{
 				return;
 			}
 			// (index to insert before, how many pops, what they take over from the instruction there: Fall nothing, Jump its
-			// labels and block starts, TryEntry its labels only: the try block itself starts after them)
+			// labels and block starts, TryEntry its labels only: the try block itself starts after them, UnderReturn as Jump)
 			var fixes = new List<(int At, int Count, int Kind)>();
-			bool repairable = true;
-			bool? voidReturn = ReturnsNothing(creator);
+			bool repairable = true, returnValueAtStake = false;
+			Type returnType = ReturnTypeOf(creator);
+			bool? voidReturn = returnType == null ? (bool?)null : returnType == typeof(void);
+			// Where Harmony's jumps for the original's returns meet: in a method that returns something, the value on top
+			// there is the return value.
+			int returnJoin = voidReturn == false ? ReturnJoin(codes) : -1;
 			for (int i = 0; i < codes.Count && repairable; i++)
 			{
 				if (depth[i] == Unvisited)
@@ -76,7 +82,12 @@ namespace PortHooks
 				bool leave = code.opcode == OpCodes.Leave || code.opcode == OpCodes.Leave_S;
 				if (flow == FlowControl.Branch && !leave && code.operand is Label target && labels.TryGetValue(target, out int t) && depth[t] != Unvisited)
 				{
-					if (after > depth[t])
+					if (after > depth[t] && t == returnJoin)
+					{
+						returnValueAtStake = true;
+						repairable = false;
+					}
+					else if (after > depth[t])
 					{
 						fixes.Add((i, after - depth[t], Jump));
 					}
@@ -93,7 +104,12 @@ namespace PortHooks
 				}
 				if (FallsThrough(code) && i + 1 < codes.Count && depth[i + 1] != Unvisited && !BeginsHandler(codes[i + 1]) && !Ends(code))
 				{
-					if (after > depth[i + 1])
+					if (after > depth[i + 1] && i + 1 == returnJoin)
+					{
+						returnValueAtStake = true;
+						repairable = false;
+					}
+					else if (after > depth[i + 1])
 					{
 						fixes.Add((i + 1, after - depth[i + 1], Fall));
 					}
@@ -107,8 +123,22 @@ namespace PortHooks
 				{
 					fixes.Add((i, depth[i], Jump));
 				}
+				else if (depth[i] > 1 && code.opcode == OpCodes.Ret && voidReturn == false && !CallJustBefore(codes, i))
+				{
+					// As many values under the return value on every path (Harmony has checked that much): the PC returns the top one.
+					fixes.Add((i, depth[i] - 1, UnderReturn));
+				}
+			}
+			if (returnValueAtStake)
+			{
+				Console.WriteLine("[port17] a patch of " + NameOf(creator) + " reaches the end of the original with more values on some paths than on others; left as it is, for Harmony to refuse as on the PC (pops there would take the return value)");
 			}
 			if (fixes.Count == 0 || !repairable)
+			{
+				return;
+			}
+			LocalBuilder aside = null;
+			if (fixes.Exists(f => f.Kind == UnderReturn) && (aside = DeclareLocal(creator, returnType)) == null)
 			{
 				return;
 			}
@@ -121,47 +151,40 @@ namespace PortHooks
 			int added = 0;
 			foreach ((int at, int count, int kind) in fixes)
 			{
+				var inserted = new List<CodeInstruction>();
+				if (kind == UnderReturn)
+				{
+					inserted.Add(new CodeInstruction(OpCodes.Stloc, aside));
+				}
 				for (int k = 0; k < count; k++)
 				{
-					repaired.Insert(at, new CodeInstruction(OpCodes.Pop));
-					added++;
+					inserted.Add(new CodeInstruction(OpCodes.Pop));
 				}
+				if (kind == UnderReturn)
+				{
+					inserted.Add(new CodeInstruction(OpCodes.Ldloc, aside));
+				}
+				added += count;
 				if (kind != Fall)
 				{
 					// Every path that reaches the jump has to pass the pops: its labels (and, for a jump or a return, its block
-					// starts) move to the first of them. A try block starts after its pops.
-					CodeInstruction first = repaired[at], jump = repaired[at + count];
-					first.labels.AddRange(jump.labels);
-					jump.labels.Clear();
-					if (kind == Jump)
+					// starts) move to the first of them. A try block starts after its pops. The instruction there is replaced by
+					// a copy without them: the original list keeps its own as they were.
+					CodeInstruction there = repaired[at], copy = new CodeInstruction(there);
+					inserted[0].labels.AddRange(there.labels);
+					copy.labels.Clear();
+					if (kind != TryEntry)
 					{
-						first.blocks.AddRange(jump.blocks.FindAll(b => b.blockType != ExceptionBlockType.EndExceptionBlock));
-						jump.blocks.RemoveAll(b => b.blockType != ExceptionBlockType.EndExceptionBlock);
+						inserted[0].blocks.AddRange(there.blocks.FindAll(b => b.blockType != ExceptionBlockType.EndExceptionBlock));
+						copy.blocks.RemoveAll(b => b.blockType != ExceptionBlockType.EndExceptionBlock);
 					}
+					repaired[at] = copy;
 				}
+				repaired.InsertRange(at, inserted);
 			}
 			// Only a list that is balanced afterwards replaces the original.
-			var check = new Dictionary<Label, int>();
-			for (int i = 0; i < repaired.Count; i++)
+			if (!Balanced(repaired, voidReturn))
 			{
-				foreach (Label label in repaired[i].labels)
-				{
-					check[label] = i;
-				}
-			}
-			int[] again = Follow(repaired, check, out bool stillCertain);
-			if (!stillCertain || !Balanced(repaired, check, again, voidReturn == true))
-			{
-				// Put the labels and blocks back where they were (the instruction objects are shared with the original list).
-				foreach ((int at, int count, int kind) in fixes)
-				{
-					if (kind != Fall)
-					{
-						CodeInstruction first = repaired[at], jump = repaired[at + count];
-						jump.labels.AddRange(first.labels);
-						jump.blocks.AddRange(first.blocks);
-					}
-				}
 				return;
 			}
 			codes.Clear();
@@ -169,12 +192,60 @@ namespace PortHooks
 			Console.WriteLine("[port17] a patch of " + NameOf(creator) + " left values on the stack at " + fixes.Count + " place(s) (jumps, try blocks, returns); " + added + " pop(s) added (Mono and the PC's runtime drop them, this runtime refuses the method)");
 		}
 
-		private const int Fall = 0, Jump = 1, TryEntry = 2;
+		private const int Fall = 0, Jump = 1, TryEntry = 2, UnderReturn = 3;
 
 		/// <summary>Where several fixes fall on one place: those taking labels are inserted first (they end up last), a try entry's before all.</summary>
 		private static int InsertOrder(int kind)
 		{
-			return kind == TryEntry ? 0 : kind == Jump ? 1 : 2;
+			return kind == TryEntry ? 0 : kind == Fall ? 2 : 1;
+		}
+
+		private static Dictionary<Label, int> LabelsOf(List<CodeInstruction> codes)
+		{
+			var labels = new Dictionary<Label, int>();
+			for (int i = 0; i < codes.Count; i++)
+			{
+				if (codes[i].labels != null)
+				{
+					foreach (Label label in codes[i].labels)
+					{
+						labels[label] = i;
+					}
+				}
+			}
+			return labels;
+		}
+
+		/// <summary>Where Harmony's jumps for the original's returns land: the instruction after its note "end original" (CreateReplacement, CleanupCodes); -1 when there is none.</summary>
+		private static int ReturnJoin(List<CodeInstruction> codes)
+		{
+			for (int i = 0; i + 1 < codes.Count; i++)
+			{
+				if (codes[i].opcode == OpCodes.Nop && codes[i].operand is string note && note == "end original")
+				{
+					return i + 1;
+				}
+			}
+			return -1;
+		}
+
+		/// <summary>Whether the instruction emitted right before this one is a call (Harmony's notes, nops with a text, are not emitted).</summary>
+		private static bool CallJustBefore(List<CodeInstruction> codes, int index)
+		{
+			if (BeginsTry(codes[index]) || BeginsHandler(codes[index]))
+			{
+				return false;
+			}
+			for (int i = index - 1; i >= 0; i--)
+			{
+				CodeInstruction code = codes[i];
+				if (code.opcode == OpCodes.Nop && code.operand is string)
+				{
+					continue;
+				}
+				return !Ends(code) && (code.opcode == OpCodes.Call || code.opcode == OpCodes.Callvirt || code.opcode == OpCodes.Calli);
+			}
+			return false;
 		}
 
 		private static bool BeginsTry(CodeInstruction code)
@@ -182,28 +253,56 @@ namespace PortHooks
 			return code.blocks != null && code.blocks.Exists(b => b.blockType == ExceptionBlockType.BeginExceptionBlock);
 		}
 
-		/// <summary>Whether the method being patched returns nothing (null when that cannot be told).</summary>
-		private static bool? ReturnsNothing(object creator)
+		/// <summary>
+		/// What the method being made returns (void for a constructor; null when that cannot be told): Harmony's
+		/// MethodCreator.config.returnType, which is also right for the helper methods of inner patches, where the
+		/// original is the patched method around them.
+		/// </summary>
+		private static Type ReturnTypeOf(object creator)
 		{
+			if (ConfigField(creator, "returnType") is Type type)
+			{
+				return type;
+			}
 			MethodBase original = OriginalOf(creator);
 			if (original is MethodInfo info)
 			{
-				return info.ReturnType == typeof(void);
+				return info.ReturnType;
 			}
-			if (original is ConstructorInfo)
-			{
-				return true;
-			}
-			return null;
+			return original is ConstructorInfo ? typeof(void) : null;
 		}
 
 		/// <summary>The method being patched: Harmony's MethodCreator.config.original.</summary>
 		private static MethodBase OriginalOf(object creator)
 		{
+			return ConfigField(creator, "original") as MethodBase;
+		}
+
+		/// <summary>The generator of the method being made (MethodCreator.config.il), for labels and locals of its own.</summary>
+		private static ILGenerator IlOf(object creator)
+		{
+			return ConfigField(creator, "il") as ILGenerator;
+		}
+
+		private static object ConfigField(object creator, string name)
+		{
 			try
 			{
 				object config = creator?.GetType().GetField("config", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)?.GetValue(creator);
-				return config?.GetType().GetField("original", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)?.GetValue(config) as MethodBase;
+				return config?.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)?.GetValue(config);
+			}
+			catch (Exception)
+			{
+				return null;
+			}
+		}
+
+		/// <summary>A new local of the given type in the method being made; null when there can be none.</summary>
+		private static LocalBuilder DeclareLocal(object creator, Type type)
+		{
+			try
+			{
+				return type == null || type == typeof(void) ? null : IlOf(creator)?.DeclareLocal(type);
 			}
 			catch (Exception)
 			{
@@ -462,9 +561,18 @@ namespace PortHooks
 			return depth;
 		}
 
-		/// <summary>Whether every jump and every fall into the next instruction arrives with the depth found for its target.</summary>
-		private static bool Balanced(List<CodeInstruction> codes, Dictionary<Label, int> labels, int[] depth, bool voidReturn)
+		/// <summary>
+		/// Whether the list can be followed and every jump and every fall into the next instruction arrives with the depth
+		/// found for its target; try blocks start with an empty stack, returns have nothing or only the return value on it.
+		/// </summary>
+		private static bool Balanced(List<CodeInstruction> codes, bool? voidReturn)
 		{
+			Dictionary<Label, int> labels = LabelsOf(codes);
+			int[] depth = Follow(codes, labels, out bool certain);
+			if (!certain)
+			{
+				return false;
+			}
 			for (int i = 0; i < codes.Count; i++)
 			{
 				if (depth[i] == Unvisited)
@@ -472,7 +580,11 @@ namespace PortHooks
 					continue;
 				}
 				CodeInstruction code = codes[i];
-				if (depth[i] != 0 && (BeginsTry(code) || (voidReturn && code.opcode == OpCodes.Ret)))
+				if (depth[i] != 0 && (BeginsTry(code) || (voidReturn == true && code.opcode == OpCodes.Ret)))
+				{
+					return false;
+				}
+				if (depth[i] > 1 && voidReturn == false && code.opcode == OpCodes.Ret)
 				{
 					return false;
 				}
