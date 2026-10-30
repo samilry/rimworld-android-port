@@ -18,6 +18,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -876,6 +877,52 @@ API int glfwAndroidPerfHint(int mainTid, int renderTid, int64_t targetNanos)
     int32_t tids[2] = { mainTid, renderTid };
     g_hintSession = createSession(manager, tids, renderTid > 0 ? 2 : 1, targetNanos);
     LOGI("glfw: performance hint session for threads %d and %d, target %lld ns: %s", mainTid, renderTid, (long long)targetNanos, g_hintSession ? "open" : "refused");
+    return g_hintSession != NULL;
+}
+
+// The session as Android 16 makes it (APerformanceHint_createSessionUsingConfig): flags 1 marks it as the game's
+// graphics pipeline, 2 ties it to the game's window, 4 lets the system time the frames itself from that window (then
+// nothing need be reported). Returns 1 when a session is open; 0 also when this system has not the call.
+API int glfwAndroidPerfHintConfig(int mainTid, int renderTid, int64_t targetNanos, int flags)
+{
+    glfwAndroidPerfHint(0, 0, 0);
+    if (targetNanos <= 0) return 0;
+    void* lib = dlopen("libandroid.so", RTLD_NOW);
+    if (!lib) return 0;
+    void* (*getManager)(void) = (void* (*)(void))dlsym(lib, "APerformanceHint_getManager");
+    void* (*create)(void) = (void* (*)(void))dlsym(lib, "ASessionCreationConfig_create");
+    void (*release)(void*) = (void (*)(void*))dlsym(lib, "ASessionCreationConfig_release");
+    int (*setTids)(void*, const int32_t*, size_t) = (int (*)(void*, const int32_t*, size_t))dlsym(lib, "ASessionCreationConfig_setTids");
+    int (*setTarget)(void*, int64_t) = (int (*)(void*, int64_t))dlsym(lib, "ASessionCreationConfig_setTargetWorkDurationNanos");
+    int (*setEfficient)(void*, bool) = (int (*)(void*, bool))dlsym(lib, "ASessionCreationConfig_setPreferPowerEfficiency");
+    int (*setGraphics)(void*, bool) = (int (*)(void*, bool))dlsym(lib, "ASessionCreationConfig_setGraphicsPipeline");
+    int (*setSurfaces)(void*, ANativeWindow**, size_t, void**, size_t) = (int (*)(void*, ANativeWindow**, size_t, void**, size_t))dlsym(lib, "ASessionCreationConfig_setNativeSurfaces");
+    int (*setAutoTiming)(void*, bool, bool) = (int (*)(void*, bool, bool))dlsym(lib, "ASessionCreationConfig_setUseAutoTiming");
+    int (*createSession)(void*, void*, void**) = (int (*)(void*, void*, void**))dlsym(lib, "APerformanceHint_createSessionUsingConfig");
+    g_hintReport = (int (*)(void*, int64_t))dlsym(lib, "APerformanceHint_reportActualWorkDuration");
+    g_hintUpdateTarget = (int (*)(void*, int64_t))dlsym(lib, "APerformanceHint_updateTargetWorkDuration");
+    g_hintClose = (void (*)(void*))dlsym(lib, "APerformanceHint_closeSession");
+    void* manager = getManager ? getManager() : NULL;
+    if (!manager || !create || !setTids || !setTarget || !createSession)
+    {
+        LOGI("glfw: no session config on this system (Android 16)");
+        return 0;
+    }
+    void* config = create();
+    int32_t tids[2] = { mainTid, renderTid };
+    setTids(config, tids, renderTid > 0 ? 2 : 1);
+    setTarget(config, targetNanos);
+    if (setEfficient) setEfficient(config, false);
+    int graphics = (flags & 1) && setGraphics ? setGraphics(config, true) : -1;
+    ANativeWindow* window = g_window;
+    int surfaces = (flags & 2) && window && setSurfaces ? setSurfaces(config, &window, 1, NULL, 0) : -1;
+    int timing = (flags & 4) && setAutoTiming ? setAutoTiming(config, true, true) : -1;
+    void* session = NULL;
+    int r = createSession(manager, config, &session);
+    if (release) release(config);
+    g_hintSession = r == 0 ? session : NULL;
+    LOGI("glfw: performance hint session (config, flags %d: graphics %d, surface %d, auto timing %d) for threads %d and %d, target %lld ns: %d %s",
+         flags, graphics, surfaces, timing, mainTid, renderTid, (long long)targetNanos, r, g_hintSession ? "open" : "refused");
     return g_hintSession != NULL;
 }
 

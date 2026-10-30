@@ -22,6 +22,8 @@ namespace PortMobile
 	///                  nosmall (large and fastest), all
 	///     render=...   the render thread: sys, big, nosmall, or one core's number
 	///     hint=N       Android's performance hint session for the main and the render thread, a frame to take N ms
+	///     hintflags=F  with hint: the session made as Android 16 makes it (1 the graphics pipeline, 2 tied to the game's
+	///                  window, 4 timed by the system from that window); 0 the Android 13 way
 	///     rate=N       the frame rate told to the compositor (and through it to whoever listens)
 	///     batches=N    a parallel job's share per thread is cut into N pieces (0: the game's own rule), so that the work
 	///                  goes to whichever thread is free instead of waiting for the slowest core's whole share. With 57
@@ -33,6 +35,7 @@ namespace PortMobile
 		[DllImport("libc", SetLastError = true)] private static extern int sched_getaffinity(int pid, IntPtr size, ref ulong mask);
 		[DllImport("libc")] private static extern int gettid();
 		[DllImport("glfw")] private static extern int glfwAndroidPerfHint(int mainTid, int renderTid, long targetNanos);
+		[DllImport("glfw")] private static extern int glfwAndroidPerfHintConfig(int mainTid, int renderTid, long targetNanos, int flags);
 		[DllImport("glfw")] private static extern void glfwAndroidPerfReport(long actualNanos);
 		[DllImport("glfw")] private static extern int glfwAndroidSetFrameRate(float framesPerSecond);
 
@@ -44,7 +47,7 @@ namespace PortMobile
 		private static int pin, clear, batches = Settings.Get("jobBatches", 8);
 		private static string workers = "sys", render = "sys";
 		private static bool dirty;
-		private static int hintMs, hintOpenFor;
+		private static int hintMs, hintOpenFor, hintFlags, hintFlagsOpen;
 		private static float rate;
 		private static double lastFrameAt;
 		private static ulong fastest, large, small, all;
@@ -112,6 +115,7 @@ namespace PortMobile
 				case "workers": workers = value; break;
 				case "render": render = value; break;
 				case "hint": hintMs = int.Parse(value); break;
+				case "hintflags": hintFlags = int.Parse(value); break;
 				case "rate":
 					rate = float.Parse(value, System.Globalization.CultureInfo.InvariantCulture);
 					try { glfwAndroidSetFrameRate(rate); } catch (Exception e) { Console.WriteLine("[mobile] sched: frame rate not told: " + e.Message); }
@@ -128,7 +132,7 @@ namespace PortMobile
 			{
 				sched_getaffinity(MainThreadId, (IntPtr)8, ref mainMask);
 			}
-			return "pin=" + pin + " clear=" + clear + " workers=" + workers + " render=" + render + " batches=" + batches + " hint=" + hintMs + " rate=" + rate + " (main on " + Mask(mainMask) + ", " + changes + " set, " + refusals + " refused)";
+			return "pin=" + pin + " clear=" + clear + " workers=" + workers + " render=" + render + " batches=" + batches + " hint=" + hintMs + " hintflags=" + hintFlags + " rate=" + rate + " (main on " + Mask(mainMask) + ", " + changes + " set, " + refusals + " refused)";
 		}
 
 		/// <summary>Postfix of UnityData.GetIdealBatchCount.</summary>
@@ -170,19 +174,21 @@ namespace PortMobile
 		{
 			try
 			{
-				if (hintMs != hintOpenFor)
+				if (hintMs != hintOpenFor || (hintMs > 0 && hintFlags != hintFlagsOpen))
 				{
 					if (renderTid == 0)
 					{
 						renderTid = Perf.FindThread("RenderThread");
 					}
-					hintOpenFor = glfwAndroidPerfHint(MainThreadId, renderTid, hintMs * 1000000L) != 0 ? hintMs : 0;
+					bool open = hintFlags > 0 && hintMs > 0 ? glfwAndroidPerfHintConfig(MainThreadId, renderTid, hintMs * 1000000L, hintFlags) != 0 : glfwAndroidPerfHint(MainThreadId, renderTid, hintMs * 1000000L) != 0;
+					hintOpenFor = open ? hintMs : 0;
+					hintFlagsOpen = open ? hintFlags : 0;
 					if (hintOpenFor == 0)
 					{
 						hintMs = 0;
 					}
 				}
-				else if (hintOpenFor > 0 && lastFrameAt > 0)
+				else if (hintOpenFor > 0 && lastFrameAt > 0 && (hintFlagsOpen & 4) == 0)
 				{
 					glfwAndroidPerfReport((long)((now - lastFrameAt) * 1e9));
 				}
