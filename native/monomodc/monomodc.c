@@ -5,6 +5,7 @@
 //   - there is no /tmp: MonoMod drops its exception-helper library at /tmp/mm-exhelper.so.XXXXXX with mkstemp and
 //     dlopens that name, so the file is made under TMPDIR and the dlopen of the /tmp name is redirected;
 //   - dlopen and friends come from libdl.so (and libc.so does not export them).
+// One function is not glibc's: mm_clear_cache, which patch/Patch.cs has MonoMod's LinuxSystem.PatchData call.
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -31,6 +32,12 @@ EXPORT int mm_munmap(void* addr, size_t length) { return munmap(addr, length); }
 EXPORT int mm_mprotect(void* addr, size_t len, int prot) { return mprotect(addr, len, prot); }
 EXPORT int mm_mincore(void* addr, size_t len, unsigned char* vec) { return mincore(addr, len, vec); }
 EXPORT int mm_uname(struct utsname* buf) { return uname(buf); }
+
+// MonoMod writes code (a detour's jump over a compiled method, the stubs it builds) with a plain copy, and its Linux
+// system, made for x86-64, never flushes the instruction cache after it, where its Windows and macOS systems do. On
+// arm64 a core may go on running the old instructions of a method patched after it had run. PatchData calls this after
+// it wrote executable memory.
+EXPORT void mm_clear_cache(void* start, size_t length) { __builtin___clear_cache((char*)start, (char*)start + length); }
 
 // glibc's _SC_* numbering (MonoMod's SysconfName enum) to bionic's.
 EXPORT long mm_sysconf(int glibcName)

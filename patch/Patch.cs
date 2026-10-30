@@ -311,6 +311,10 @@ internal static class Patch
 						}
 					}
 				}
+				if (name == "0Harmony.dll")
+				{
+					changes += FlushAfterPatchData(module);
+				}
 				// The runtime fork's own types (WaylithClr.*, referenced as living in System.Runtime) come from PortHooks instead.
 				foreach (TypeReference t in module.GetTypeReferences())
 				{
@@ -330,6 +334,79 @@ internal static class Patch
 		}
 		Console.WriteLine($"{filesChanged} assemblies changed");
 		return 0;
+	}
+
+	/// <summary>
+	/// MonoMod writes code through LinuxSystem.PatchData (a detour's jump over a compiled method, the stubs it builds): an
+	/// mprotect and a plain copy. Its Windows and macOS systems flush the instruction cache after writing executable memory,
+	/// the Linux one, made for x86-64, does not; on arm64 a core may go on running the old instructions of a method patched
+	/// after it had run. Here PatchData ends with
+	///   if (patchKind == PatchTargetKind.Executable) Unix.ClearCache(patchTarget, (nuint)data.Length);
+	/// (mm_clear_cache in libmonomodc.so, native/monomodc), in a try: an APK whose libmonomodc.so is older than this leaves
+	/// the flush out, as before, instead of failing every patch with EntryPointNotFoundException.
+	/// </summary>
+	private static int FlushAfterPatchData(ModuleDefinition module)
+	{
+		TypeDefinition unix = module.GetType("MonoMod.Core.Interop.Unix");
+		MethodDefinition patchData = module.GetType("MonoMod.Core.Platforms.Systems.LinuxSystem")?.Methods.SingleOrDefault(m => m.Name == "PatchData" && m.Parameters.Count == 4);
+		if (unix == null || patchData == null || unix.Methods.Any(m => m.Name == "ClearCache"))
+		{
+			return 0;
+		}
+		MethodBody body = patchData.Body;
+		List<Instruction> rets = body.Instructions.Where(i => i.OpCode == OpCodes.Ret).ToList();
+		MethodReference dataLength = body.Instructions.Select(i => i.Operand).OfType<MethodReference>().FirstOrDefault(m => m.Name == "get_Length" && m.DeclaringType.Name == "ReadOnlySpan`1");
+		if (rets.Count != 1 || body.HasExceptionHandlers || dataLength == null)
+		{
+			Console.WriteLine("0Harmony.dll: LinuxSystem.PatchData is not as expected; no instruction cache flush after it");
+			return 0;
+		}
+
+		// [DllImport("monomodc", EntryPoint = "mm_clear_cache", CallingConvention = CallingConvention.Cdecl)]
+		// public static extern void ClearCache(nint start, nuint length);   (as MonoMod's other P/Invokes here)
+		ModuleReference shim = module.ModuleReferences.FirstOrDefault(m => m.Name == "monomodc");
+		if (shim == null)
+		{
+			module.ModuleReferences.Add(shim = new ModuleReference("monomodc"));
+		}
+		var clearCache = new MethodDefinition("ClearCache", MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig | MethodAttributes.PInvokeImpl, module.TypeSystem.Void)
+		{
+			ImplAttributes = MethodImplAttributes.PreserveSig,
+			PInvokeInfo = new PInvokeInfo(PInvokeAttributes.CallConvCdecl, "mm_clear_cache", shim),
+		};
+		clearCache.Parameters.Add(new ParameterDefinition("start", ParameterAttributes.None, module.TypeSystem.IntPtr));
+		clearCache.Parameters.Add(new ParameterDefinition("length", ParameterAttributes.None, module.TypeSystem.UIntPtr));
+		unix.Methods.Add(clearCache);
+
+		// Before the return: the flush, in a try that catches EntryPointNotFoundException.
+		Instruction ret = rets[0];
+		Instruction flush = Instruction.Create(OpCodes.Ldarg_1);
+		Instruction tryStart = Instruction.Create(OpCodes.Ldarg_2);
+		Instruction catchStart = Instruction.Create(OpCodes.Pop);
+		foreach (Instruction branch in body.Instructions.Where(i => i.Operand == ret).ToList())
+		{
+			branch.Operand = flush;
+		}
+		ILProcessor il = body.GetILProcessor();
+		il.InsertBefore(ret, flush);
+		il.InsertBefore(ret, Instruction.Create(OpCodes.Brtrue, ret));
+		il.InsertBefore(ret, tryStart);
+		il.InsertBefore(ret, Instruction.Create(OpCodes.Ldarga, patchData.Parameters[2]));
+		il.InsertBefore(ret, Instruction.Create(OpCodes.Call, dataLength));
+		il.InsertBefore(ret, Instruction.Create(OpCodes.Conv_U));
+		il.InsertBefore(ret, Instruction.Create(OpCodes.Call, clearCache));
+		il.InsertBefore(ret, Instruction.Create(OpCodes.Leave, ret));
+		il.InsertBefore(ret, catchStart);
+		il.InsertBefore(ret, Instruction.Create(OpCodes.Leave, ret));
+		body.ExceptionHandlers.Add(new ExceptionHandler(ExceptionHandlerType.Catch)
+		{
+			TryStart = tryStart,
+			TryEnd = catchStart,
+			HandlerStart = catchStart,
+			HandlerEnd = ret,
+			CatchType = new TypeReference("System", "EntryPointNotFoundException", module, module.TypeSystem.CoreLibrary),
+		});
+		return 1;
 	}
 
 	/// <summary>
