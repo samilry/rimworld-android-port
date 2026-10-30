@@ -800,6 +800,12 @@ namespace PortMobile
 		// What the mod screen does when it opens, minus what belongs to "changes since it was opened".
 		private static void Refresh(string select)
 		{
+			// In a game (a mod's Workshop link opens the Workshop window there too) the list is left as it is, as on the PC,
+			// where Steam's installs reach the list when the mod screen opens and reads the folders again.
+			if (Current.ProgramState != ProgramState.Entry)
+			{
+				return;
+			}
 			try
 			{
 				ModLister.RebuildModList();

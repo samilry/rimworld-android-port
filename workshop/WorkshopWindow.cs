@@ -10,7 +10,7 @@ using Verse.Sound;
 
 namespace PortWorkshop
 {
-	/// <summary>Opened from the mod page (PortMobile.WorkshopLoader, through the import menu).</summary>
+	/// <summary>Opened from the mod page (PortMobile.WorkshopLoader, through the import menu), or for a Workshop link.</summary>
 	public static class Entry
 	{
 		public static void Open()
@@ -20,14 +20,29 @@ namespace PortWorkshop
 				Find.WindowStack.Add(new WorkshopWindow());
 			}
 		}
+
+		/// <summary>
+		/// A Workshop link the game or a mod opened (PortMobile.OpenUrl): a required mod that is missing on the mod page, a
+		/// mod's Workshop button. The item is added as if typed in, once signed in; its page stays a button away.
+		/// </summary>
+		public static void OpenItem(string item, string page)
+		{
+			WorkshopWindow window = Find.WindowStack.WindowOfType<WorkshopWindow>();
+			if (window == null)
+			{
+				window = new WorkshopWindow();
+				Find.WindowStack.Add(window);
+			}
+			window.Follow(item, page);
+		}
 	}
 
 	/// <summary>
 	/// The Steam Workshop on the phone. Signed out: a QR code for the Steam app on another device, or the account name and
 	/// password (typed by the player, used once, not kept), then Steam Guard. Signed in: items are added by link or id
-	/// (a collection adds its items; an item adds the items it requires), from the account's subscriptions, or from the
-	/// Workshop mods already installed (which shows the ones with a newer version); the chosen ones are downloaded and
-	/// installed as the import installs a mod.
+	/// (a collection adds its items; an item adds the items it requires), from the account's subscriptions, from the
+	/// Workshop mods already installed (which shows the ones with a newer version), or by a Workshop link the game or a
+	/// mod opened; the chosen ones are downloaded and installed as the import installs a mod.
 	/// </summary>
 	internal sealed class WorkshopWindow : Window
 	{
@@ -35,6 +50,8 @@ namespace PortWorkshop
 		private Vector2 scroll;
 		private string qrFor;
 		private List<BitArray> qr;
+		// What a link asked for (Entry.OpenItem): the items to add once signed in, and the page to offer for the browser.
+		private string pending = "", page;
 
 		public override Vector2 InitialSize => new Vector2(Mathf.Min(1100f, UI.screenWidth - 20f), Mathf.Min(680f, UI.screenHeight - 8f));
 
@@ -58,6 +75,15 @@ namespace PortWorkshop
 			}
 		}
 
+		public void Follow(string item, string url)
+		{
+			if (!string.IsNullOrEmpty(item))
+			{
+				pending += " " + item;
+			}
+			page = url;
+		}
+
 		public override void DoWindowContents(Rect inRect)
 		{
 			if (Downloads.ReportReady)
@@ -69,6 +95,11 @@ namespace PortWorkshop
 			Text.Font = GameFont.Medium;
 			Widgets.Label(new Rect(inRect.x, inRect.y, 400f, 36f), Texts.Say("Steam 创意工坊", "Steam Workshop"));
 			Text.Font = GameFont.Small;
+			// Clear of the close button in the corner.
+			if (page != null && Widgets.ButtonText(new Rect(inRect.xMax - 270f, inRect.y, 240f, 36f), Texts.Say("在浏览器里打开页面", "Open the page in the browser")))
+			{
+				OpenPage();
+			}
 			Rect body = new Rect(inRect.x, inRect.y + 44f, inRect.width, inRect.height - 44f);
 			SessionState state = Session.State;
 			if (state == SessionState.Online)
@@ -167,6 +198,12 @@ namespace PortWorkshop
 			}
 		}
 
+		/// <summary>The page of the link the window was opened for: the item's description, discussions and changes, as the PC's Steam shows them.</summary>
+		private void OpenPage()
+		{
+			PortMobile.OpenUrl.InPhoneApp(page);
+		}
+
 		/// <summary>The QR code, one dark run of modules after another, each a hair larger than its share so that no light line shows between them.</summary>
 		private void DrawQr(Rect rect, string url)
 		{
@@ -210,6 +247,11 @@ namespace PortWorkshop
 			if (Time.frameCount % 120 == 0)
 			{
 				Downloads.TestManifests();
+			}
+			if (pending.Length > 0 && !Downloads.Busy)
+			{
+				Downloads.AddFromText(pending);
+				pending = "";
 			}
 			bool busy = Downloads.Busy;
 			float y = rect.y;

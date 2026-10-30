@@ -31,26 +31,60 @@ namespace PortMobile
 			}
 		}
 
-		private static MethodInfo open;
+		private static Type entry;
+
+		/// <summary>PortWorkshop.Entry, loaded on first use.</summary>
+		private static Type Entry
+		{
+			get
+			{
+				if (entry == null)
+				{
+					string folder = Path.Combine(AppContext.BaseDirectory, "workshop");
+					var context = new Context(folder);
+					Assembly assembly = context.LoadFromAssemblyPath(Path.Combine(folder, "PortWorkshop.dll"));
+					entry = assembly.GetType("PortWorkshop.Entry", true);
+				}
+				return entry;
+			}
+		}
 
 		public static void Open()
 		{
 			try
 			{
-				if (open == null)
-				{
-					string folder = Path.Combine(AppContext.BaseDirectory, "workshop");
-					var context = new Context(folder);
-					Assembly assembly = context.LoadFromAssemblyPath(Path.Combine(folder, "PortWorkshop.dll"));
-					open = assembly.GetType("PortWorkshop.Entry", true).GetMethod("Open", BindingFlags.Public | BindingFlags.Static);
-				}
-				open.Invoke(null, null);
+				Entry.GetMethod("Open", BindingFlags.Public | BindingFlags.Static).Invoke(null, null);
 			}
 			catch (Exception e)
 			{
 				Exception inner = e is TargetInvocationException && e.InnerException != null ? e.InnerException : e;
 				Console.WriteLine("[mobile] workshop: could not open: " + inner);
 				Find.WindowStack.Add(new Dialog_MessageBox((Texts.Chinese ? "创意工坊打不开：" : "The Workshop could not be opened: ") + inner.Message));
+			}
+		}
+
+		/// <summary>
+		/// The window for a Workshop link (OpenUrl): the item goes into its list, and its page is offered for the browser.
+		/// False when the Workshop could not be opened (the caller then opens the page in the browser).
+		/// </summary>
+		public static bool OpenItem(string item, string page)
+		{
+			try
+			{
+				// A PortWorkshop.dll from before links (put on the phone by itself) has no OpenItem.
+				MethodInfo openItem = Entry.GetMethod("OpenItem", BindingFlags.Public | BindingFlags.Static);
+				if (openItem == null)
+				{
+					return false;
+				}
+				openItem.Invoke(null, new object[] { item, page });
+				return true;
+			}
+			catch (Exception e)
+			{
+				Exception inner = e is TargetInvocationException && e.InnerException != null ? e.InnerException : e;
+				Console.WriteLine("[mobile] workshop: could not open for a link: " + inner);
+				return false;
 			}
 		}
 	}
