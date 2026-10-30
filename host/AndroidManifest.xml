@@ -10,6 +10,18 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x403000" android:required="false" />
+    <!-- The system's Files app, which FilesProvider.folderIntent opens at the game's folders: since Android 11 an app sees
+         another only when it names here what it looks for (the document chooser, what shows a folder). -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="vnd.android.document/directory" />
+        </intent>
+    </queries>
     <!-- appCategory/isGame: the system (and the maker's game mode on top of it) schedules and cools a declared game as one. -->
     <!-- gwpAsanMode: the system's sampling memory checker for the native heap (Android 11 and later), every launch. A
          native write past an allocation, a use after free or a double free of a sampled allocation stops the game at
@@ -64,5 +76,21 @@
         <service android:name="com.local.waylith.port.ImportService" android:exported="false" android:foregroundServiceType="dataSync" />
         <!-- Keeps the game from being ended in the background while the player looks at another app (GameService.java). -->
         <service android:name="com.local.waylith.port.GameService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <!-- The game's data folder and its Mods as places in the system's Files app and in every app's file chooser
+             (FilesProvider.java), as Explorer shows them on the PC. Only the system's documents UI may ask it
+             (MANAGE_DOCUMENTS), other apps only for what the player picked for them. A process of its own: a restart or a
+             crash of the game loses no write and ends no app that has a file of it open. host/build.sh gives a
+             TEST_PACKAGE build its own authority. -->
+        <provider
+            android:name="com.local.waylith.port.FilesProvider"
+            android:authorities="com.local.waylith.port.files"
+            android:process=":files"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
     </application>
 </manifest>

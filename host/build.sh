@@ -10,7 +10,8 @@
 #                                  an APK for a phone they are not copied to by hand. Output build/port17-full.apk.
 #                                  Only for the owner's own devices: it holds the whole game.
 #   TEST_PACKAGE=name host/build.sh  another package name and the label "Port17 测试", to try an APK beside the
-#                                  installed game (its own data folder; uninstalling it touches nothing else);
+#                                  installed game (its own data folder and files provider; uninstalling it touches
+#                                  nothing else);
 #                                  TEST_LABEL=Port17 keeps the normal label (screenshots for the tester guide)
 set -e
 cd "$(dirname "$0")/.."
@@ -59,14 +60,16 @@ ls -la "$LIB" | awk 'NR>3 {print $5"\t"$9}'
 # The Java side: our Boot class plus the runtime's crypto helper classes, in one classes.dex.
 rm -rf "$OUT/classes" "$OUT/dex"
 mkdir -p "$OUT/classes" "$OUT/dex"
-"$JDK/bin/javac.exe" -encoding UTF-8 -source 8 -target 8 -nowarn -bootclasspath "$SDK/platforms/android-34/android.jar" -d "$OUT/classes" host/java/com/local/waylith/port/Boot.java host/java/com/local/waylith/port/MainActivity.java host/java/com/local/waylith/port/TextInputView.java host/java/com/local/waylith/port/ZipNames.java host/java/com/local/waylith/port/Payload.java host/java/com/local/waylith/port/SetupService.java host/java/com/local/waylith/port/ImportService.java host/java/com/local/waylith/port/GameService.java host/java/com/local/waylith/port/DocumentReader.java host/java/com/local/waylith/port/Diagnostics.java host/java/com/local/waylith/port/ReportSummary.java host/java/com/local/waylith/port/ExportLogsActivity.java host/java/com/local/waylith/port/ReimportActivity.java
+"$JDK/bin/javac.exe" -encoding UTF-8 -source 8 -target 8 -nowarn -bootclasspath "$SDK/platforms/android-34/android.jar" -d "$OUT/classes" host/java/com/local/waylith/port/Boot.java host/java/com/local/waylith/port/MainActivity.java host/java/com/local/waylith/port/TextInputView.java host/java/com/local/waylith/port/ZipNames.java host/java/com/local/waylith/port/Payload.java host/java/com/local/waylith/port/SetupService.java host/java/com/local/waylith/port/ImportService.java host/java/com/local/waylith/port/GameService.java host/java/com/local/waylith/port/DocumentReader.java host/java/com/local/waylith/port/Diagnostics.java host/java/com/local/waylith/port/ReportSummary.java host/java/com/local/waylith/port/ExportLogsActivity.java host/java/com/local/waylith/port/ReimportActivity.java host/java/com/local/waylith/port/FilesProvider.java
 # (d8.bat breaks on the space in the JDK path; the jar is run directly.)
 "$JDK/bin/java.exe" -cp "$BT/lib/d8.jar" com.android.tools.r8.D8 --release --min-api 26 --lib "$SDK/platforms/android-34/android.jar" --output "$OUT/dex" "$OUT"/classes/com/local/waylith/port/*.class dotnet-android-coreclr/runtimes/android-arm64/native/libSystem.Security.Cryptography.Native.Android.dex
 cp "$OUT/dex/classes.dex" "$OUT/apk/classes.dex"
 
 MANIFEST=host/AndroidManifest.xml
 if [ -n "$TEST_PACKAGE" ]; then
-  sed -e "s/package=\"com.local.waylith.port\"/package=\"$TEST_PACKAGE\"/" -e "s/android:label=\"Port17\"/android:label=\"${TEST_LABEL:-Port17 测试}\"/g" host/AndroidManifest.xml > "$OUT/AndroidManifest.test.xml"
+  # The files provider's authority goes with the package (FilesProvider.authority): two apps may not have the same one,
+  # and the test package would not install beside the game.
+  sed -e "s/package=\"com.local.waylith.port\"/package=\"$TEST_PACKAGE\"/" -e "s/android:authorities=\"com.local.waylith.port\./android:authorities=\"$TEST_PACKAGE./" -e "s/android:label=\"Port17\"/android:label=\"${TEST_LABEL:-Port17 测试}\"/g" host/AndroidManifest.xml > "$OUT/AndroidManifest.test.xml"
   MANIFEST="$OUT/AndroidManifest.test.xml"
   APK_NAME="${APK_NAME%.apk}-test.apk"
 fi
