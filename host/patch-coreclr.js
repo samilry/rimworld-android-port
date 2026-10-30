@@ -44,15 +44,17 @@ const patches = [
   },
 ];
 const data = fs.readFileSync(file);
+// Told once the file is written: a later patch that finds other bytes leaves the file as it was, the earlier ones too.
+const told = [];
 let changed = false;
 for (const patch of patches) {
   const now = data.subarray(patch.at, patch.at + 4);
   if (now.equals(patch.patched)) {
-    console.log('libcoreclr.so: ' + patch.name + ' already in place');
+    told.push(patch.name + ' already in place');
   } else if (now.equals(patch.original)) {
     patch.patched.copy(data, patch.at);
     changed = true;
-    console.log('libcoreclr.so: ' + patch.done);
+    told.push(patch.done);
   } else {
     console.error('libcoreclr.so: unexpected bytes at 0x' + patch.at.toString(16) + ' (' + now.toString('hex') + '): another runtime build? The ' + patch.name + ' is not applied, nor any other.');
     process.exit(1);
@@ -60,4 +62,7 @@ for (const patch of patches) {
 }
 if (changed) {
   fs.writeFileSync(file, data);
+}
+for (const line of told) {
+  console.log('libcoreclr.so: ' + line);
 }
