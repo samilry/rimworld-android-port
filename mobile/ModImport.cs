@@ -533,6 +533,7 @@ namespace PortMobile
 			public readonly List<string> Updated = new List<string>();
 			public readonly List<string> UpdatedIds = new List<string>();
 			public readonly List<string> Beside = new List<string>();
+			public readonly List<string> BesideIds = new List<string>();
 			public readonly List<string> Problems = new List<string>();
 			public readonly List<string> PrepProblems = new List<string>();
 			public string FirstPackage;
@@ -862,6 +863,7 @@ namespace PortMobile
 						{
 							string other = NameOf(beside);
 							outcome.Beside.Add(shown + Say("（和已有的“" + other + "”）", " (beside \"" + other + "\")"));
+							outcome.BesideIds.Add(id);
 						}
 						else
 						{
@@ -932,6 +934,9 @@ namespace PortMobile
 			List<string> imported = outcome.Imported, updated = outcome.Updated, beside = outcome.Beside, problems = outcome.Problems;
 			// Asked before the list is rebuilt: a mod that is in use keeps running its old code until the game starts again.
 			bool updatedActive = outcome.UpdatedIds.Any(id => ModLister.GetModWithIdentifier(id)?.Active ?? false);
+			// Of two copies of a mod in use, the one the rebuilt list has is the one that runs from the next start, and
+			// that need not be the one running now (the folders are read in the order the file system keeps them).
+			bool besideActive = outcome.BesideIds.Any(id => ModLister.GetModWithIdentifier(id)?.Active ?? false);
 			if (imported.Count + updated.Count + beside.Count > 0)
 			{
 				Refresh(outcome.FirstPackage);
@@ -950,8 +955,9 @@ namespace PortMobile
 			}
 			if (beside.Count > 0)
 			{
-				text.Append(Say($"这 {beside.Count} 个mod和已有的mod用同一个 packageId，但在创意工坊上是另一个物品（比如原版和续作），所以各放在自己的文件夹里，不再互相替换，和电脑上两个都订阅时一样。游戏只列出、只加载其中一个，另一个启动时在日志里报重复；不要的那个可以用“删除Mod…”删掉（没列出的在“删除没列出的重复 mod”里）：\n",
-					$"These {beside.Count} mod(s) have the package id of a mod that is here already but are other Workshop items (an original and its continuation, say), so each keeps a folder of its own instead of replacing the other, as on a PC subscribed to both. The game lists and loads only one of them and logs the other as a duplicate when it starts; delete the one you do not want with \"Delete mods...\" (the one not listed is under \"Delete the duplicates that are not listed\"):\n"));
+				text.Append(Say($"这 {beside.Count} 个mod和已有的mod用同一个 packageId，但在创意工坊上是另一个物品（比如原版和续作），所以各放在自己的文件夹里，不再互相替换，和电脑上两个都订阅时一样。游戏只列出、只加载其中一个，另一个启动时在日志里报重复；不要的那个可以用“删除Mod…”删掉（没列出的在“删除没列出的重复 mod”里）",
+					$"These {beside.Count} mod(s) have the package id of a mod that is here already but are other Workshop items (an original and its continuation, say), so each keeps a folder of its own instead of replacing the other, as on a PC subscribed to both. The game lists and loads only one of them and logs the other as a duplicate when it starts; delete the one you do not want with \"Delete mods...\" (the one not listed is under \"Delete the duplicates that are not listed\")"));
+				text.Append(besideActive ? Say("。其中有正在使用的，重新启动游戏后运行的是 mod 页上列出的那一个；正在运行的那个如果不是列出的那个，要重新启动后才能删：\n", ". Some are in use: from the next start, the one the mod page lists is the one that runs; if the one running now is not the one listed, it can be deleted only after that start:\n") : Say("：\n", ":\n"));
 				text.Append("  " + string.Join("\n  ", beside.ToArray()) + "\n\n");
 			}
 			if (imported.Count + updated.Count + beside.Count == 0 && problems.Count == 0)
@@ -1047,6 +1053,7 @@ namespace PortMobile
 				all.Updated.AddRange(one.Updated);
 				all.UpdatedIds.AddRange(one.UpdatedIds);
 				all.Beside.AddRange(one.Beside);
+				all.BesideIds.AddRange(one.BesideIds);
 				all.Problems.AddRange(one.Problems);
 				all.PrepProblems.AddRange(one.PrepProblems);
 				all.FirstPackage = all.FirstPackage ?? one.FirstPackage;
