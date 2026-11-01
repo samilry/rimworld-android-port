@@ -410,7 +410,7 @@ namespace PortMobile
 			__state = GUIUtility.keyboardControl;
 		}
 
-		/// <summary>Postfix of the engine's TextFieldImpl: a field that took the focus while handling a press took it from a finger, and one pressed while it has the focus keeps it.</summary>
+		/// <summary>Postfix of the engine's TextFieldImpl: a field that took the focus while handling a press took it from a finger, and one pressed while it has the focus keeps it (put away, it is the player's again).</summary>
 		public static void AfterTextField(int __state, string __result)
 		{
 			int focus = GUIUtility.keyboardControl;
@@ -418,12 +418,24 @@ namespace PortMobile
 			{
 				return;
 			}
-			if (focus == GUIUtility.hotControl && Touch.TouchInProgress)
+			if (focus == GUIUtility.hotControl)
 			{
-				// The press is on the field that has the focus (it holds the press now): the focus stays after the touch, and
-				// a keyboard the system put away comes back, also where TapAssist does not know the field (tapAssist=0).
-				letGoFocus = 0;
-				askKeyboardAgain = true;
+				// The press is on the field that has the focus (it holds the press now). A field the player put away is
+				// theirs again, and code may give it the focus as before. The press does not always change the focus, which
+				// is how LetGoOfGivenSearchFocus knows a finger's (fromFinger): Phinix's chat gives its field the focus in the
+				// layout pass that comes before the press, so, once put away, the chat was let go again in every frame
+				// however often a finger tapped it.
+				if (focus == putAwayFocus && GUI.GetFocusedControlWindowId() == putAwayWindow)
+				{
+					putAwayFocus = 0;
+				}
+				if (Touch.TouchInProgress)
+				{
+					// The focus stays after the touch, and a keyboard the system put away comes back, also where TapAssist
+					// does not know the field (tapAssist=0).
+					letGoFocus = 0;
+					askKeyboardAgain = true;
+				}
 			}
 			if (focus != __state)
 			{
