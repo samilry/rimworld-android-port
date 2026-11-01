@@ -90,6 +90,16 @@ namespace PortMobile
 			Console.WriteLine("[mobile] mouse buttons " + (enabled ? "on" : "off"));
 		}
 
+		/// <summary>Both buttons back where they are first put (the key wheel's setup puts its own button and these back together).</summary>
+		internal static void ResetPlaces()
+		{
+			for (int i = 0; i < places.Length; i++)
+			{
+				places[i] = new Vector2(-1f, -1f);
+				Settings.Set(PlaceKeys[i], "");
+			}
+		}
+
 		/// <summary>A mouse button's name, as the buttons and the key wheel show it.</summary>
 		internal static string Name(int button)
 		{

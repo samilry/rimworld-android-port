@@ -25,8 +25,8 @@ namespace PortMobile
 	/// tapped with the left). The left and the right button were switches of the wheel too until 2026-10-30; they are
 	/// buttons of their own now (MouseButtons), and the wheel's keys go round them. While the ring is closed the button
 	/// shows what is on, the right mouse button too. The last key opens the setup: keys added from the full list (with
-	/// Ctrl / Shift / Alt ticked: as combinations), taken out, moved; the defaults back; the button back to its place. The
-	/// button is moved by dragging it.
+	/// Ctrl / Shift / Alt ticked: as combinations), taken out, moved; the defaults back; the button, and the mouse
+	/// buttons, back to their places. The button is moved by dragging it.
 	/// A key can be given a text of the player's own, shown on it instead of the key (the user, 2026-10-24: with many keys
 	/// one forgets what each is for): "改名" in the setup, kept in mobile.txt as keyWheelLabel.&lt;key's name&gt;=text.
 	/// Left out while a hardware keyboard is in use (InputMode).
@@ -823,7 +823,7 @@ namespace PortMobile
 		}
 	}
 
-	/// <summary>The setup of the key wheel: its keys (moved, taken out), the keys to add from, the defaults, the button's place.</summary>
+	/// <summary>The setup of the key wheel: its keys (moved, taken out), the keys to add from, the defaults, the round buttons' places.</summary>
 	internal sealed class Dialog_KeyWheel : Window
 	{
 		private Vector2 chosenScroll, allScroll;
@@ -975,10 +975,14 @@ namespace PortMobile
 			{
 				KeyWheel.SetKeys(KeyWheel.Defaults.Select(WheelKey.Named).Where(k => k != null).ToList());
 			}
-			if (Widgets.ButtonText(new Rect(inRect.x + bw + 10f, inRect.yMax - 38f, bw, 36f), chinese ? "圆钮放回原处" : "Button back"))
+			var back = new Rect(inRect.x + bw + 10f, inRect.yMax - 38f, bw, 36f);
+			if (Widgets.ButtonText(back, chinese ? "圆钮放回原处" : "Buttons back"))
 			{
+				// The mouse buttons too: round buttons like the wheel's, and nothing else in a game puts them back.
 				KeyWheel.ResetPlace();
+				MouseButtons.ResetPlaces();
 			}
+			TooltipHandler.TipRegion(back, chinese ? "“按键”“左键”“右键”三个圆钮都放回最初的位置。" : "Puts the three round buttons, Keys, LMB and RMB, back where they first were.");
 			if (Widgets.ButtonText(new Rect(inRect.xMax - bw, inRect.yMax - 38f, bw, 36f), chinese ? "完成" : "Done"))
 			{
 				Close();
