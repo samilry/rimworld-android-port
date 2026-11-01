@@ -32,8 +32,10 @@ namespace PortMobile
 		private static bool on = Settings.Get("workshopUpdates", true);
 		// Patched, and the main menu's column of links found: only then is there anywhere to tell.
 		private static bool ready;
-		// Whether this visit of the main menu has yet to start its check (Entry.Start says when a visit begins).
+		// Whether this visit of the main menu has yet to start its check (Entry.Start says when a visit begins), and the
+		// frame since which the menu has been up without long events (-1: it is not).
 		private static bool due;
+		private static int upSince = -1;
 		// What PortWorkshop last told, from any thread: the names of the installed Workshop mods with a newer version.
 		private static volatile string[] names = new string[0];
 		private static string[] tipFor;
@@ -71,16 +73,30 @@ namespace PortMobile
 		}
 
 		/// <summary>
-		/// From the end of every OnGUI: once this visit's main menu is up (the start's or a game's long events over), its
-		/// check goes to a worker thread, where WorkshopLoader loads the Workshop only if a sign-in is remembered.
+		/// From the end of every OnGUI: once this visit's main menu is up (the start's or a game's long events over) and
+		/// still up a frame later, its check goes to a worker thread, where WorkshopLoader loads the Workshop only if a
+		/// sign-in is remembered. The menu's first frame can be its last: with -quicktest the entry UI's Init asks for the
+		/// play scene, which comes at the start of the next frame, and a check started in that frame ran through the quick
+		/// test's map generation.
 		/// </summary>
 		internal static void OnFrame()
 		{
 			if (!due || Current.ProgramState != ProgramState.Entry || LongEventHandler.AnyEventNowOrWaiting)
 			{
+				upSince = -1;
+				return;
+			}
+			int frame = Time.frameCount;
+			if (upSince < 0)
+			{
+				upSince = frame;
+			}
+			if (frame == upSince)
+			{
 				return;
 			}
 			due = false;
+			upSince = -1;
 			if (!on || !ready)
 			{
 				return;
