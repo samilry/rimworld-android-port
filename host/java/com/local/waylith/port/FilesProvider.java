@@ -370,7 +370,9 @@ public final class FilesProvider extends DocumentsProvider
         {
             return false;
         }
-        return documentId.startsWith(parentDocumentId + "/");
+        // A folder counts as inside itself, as the phone's own storage answers: DocumentsUI asks this before it copies or
+        // moves a folder, to refuse one put into itself, which it would otherwise copy into its copy again and again.
+        return documentId.equals(parentDocumentId) || documentId.startsWith(parentDocumentId + "/");
     }
 
     @Override
