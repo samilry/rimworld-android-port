@@ -204,6 +204,12 @@ namespace PortMobile
 			if (!Enabled || !playing || Touch.FingerCount > 1)
 			{
 				// Put away under the finger, or a second finger came: the touch is a pinch (Touch), not meant for the button.
+				// A button it was dragging stays where the finger left it, and is kept there (it came back to its old place
+				// at the next start).
+				if (dragged)
+				{
+					Settings.Set(PlaceKeys[touching], KeyWheel.PlaceText(places[touching]));
+				}
 				touching = NoTouch;
 				return;
 			}
