@@ -393,7 +393,8 @@ public final class FilesProvider extends DocumentsProvider
     public ParcelFileDescriptor openDocument(String documentId, String mode, CancellationSignal signal) throws FileNotFoundException
     {
         File file = fileOf(documentId);
-        if (file.isDirectory())
+        // A place is a folder even before the game has made it: a write there would make the data folder or the Mods a file.
+        if (documentId.indexOf('/') < 0 || file.isDirectory())
         {
             throw new FileNotFoundException(documentId + " is a folder");
         }
