@@ -354,18 +354,20 @@ namespace PortMobile
 			{
 				return;
 			}
-			bool onField = TapAssist.FieldAt(at) || TypingBar.At(at);
-			if (!onField)
-			{
-				// No reason to bring back a keyboard the system put away (TouchBegan): the touch is to take the focus away,
-				// or it is on the key wheel. One that leaves another field with the focus (the field of a window it opened)
-				// asks for it once it is over (LetGoAfterTouch).
-				askKeyboardAgain = false;
-			}
-			if (onField || KeyWheel.At(at))
+			if (TapAssist.FieldAt(at) || TypingBar.At(at))
 			{
 				// What an earlier touch away from the field was to take stays: the finger is back with the field.
 				letGoFocus = 0;
+				return;
+			}
+			// No reason to bring back a keyboard the system put away (TouchBegan): the touch is to take the focus away, or it
+			// is on the key wheel. One that leaves another field with the focus (the field of a window it opened) asks for
+			// it once it is over (LetGoAfterTouch).
+			askKeyboardAgain = false;
+			if (KeyWheel.At(at))
+			{
+				// The wheel's keys are for the field, which keeps the focus while they are pressed. It is no tap on the field:
+				// what an earlier touch away from the field was to take still goes once this touch is over too.
 				return;
 			}
 			if (Touch.Verbose && focus != letGoFocus) Console.WriteLine("[mobile] a finger away from the text field: its focus goes when the touch is over (" + GUI.GetNameOfFocusedControl() + ")");
