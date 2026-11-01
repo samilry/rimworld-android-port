@@ -294,7 +294,9 @@ namespace PortWorkshop
 				cellId = callback.CellID;
 				State = SessionState.Online;
 				Message = "";
-				Log("signed in as " + Account + " (account " + client.SteamID.AccountID + ", cell " + cellId + ")");
+				// The account's number, not its name: the name is half of what signs in, and this log goes out with crash
+				// reports and the logs players export (the update check signs in once a day, without the window).
+				Log("signed in (account " + client.SteamID.AccountID + ", cell " + cellId + ")");
 				return;
 			}
 			Log("sign-in refused: " + callback.Result + " / " + callback.ExtendedResult);
