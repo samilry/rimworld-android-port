@@ -51,10 +51,12 @@ import java.util.UUID;
  *
  * What a client writes goes into a temporary file beside the target, which takes the target's place with one rename
  * only once the client has closed it without an error: a copy broken off, or an app that dies while writing, leaves the
- * file as it was, and the game never reads half of one. The provider runs in a process of its own (":files" in the
- * manifest): the game ending itself (the restart after a change of mods) or crashing neither loses a write that is
- * not in place yet nor ends the app that has a file of it open (the system ends a client with a stable connection to a
- * provider whose process dies, see DocumentReader).
+ * file as it was, and the game never reads half of one. (A file DocumentsUI copies in from elsewhere is made empty
+ * first, by createDocument, and written after: a copy broken off between the two leaves that one file empty, unless
+ * DocumentsUI is still there to remove it.) The provider runs in a process of its own (":files" in the manifest): the
+ * game ending itself (the restart after a change of mods) or crashing neither loses a write that is not in place yet
+ * nor ends the app that has a file of it open (the system ends a client with a stable connection to a provider whose
+ * process dies, see DocumentReader).
  */
 public final class FilesProvider extends DocumentsProvider
 {
