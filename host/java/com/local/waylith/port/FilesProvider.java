@@ -323,12 +323,15 @@ public final class FilesProvider extends DocumentsProvider
     {
         boolean place = documentId.indexOf('/') < 0;
         boolean folder = place || attributes.isDirectory();
-        // The places' folders themselves stay where they are, with their names.
+        // The places' folders themselves stay where they are, with their names. A folder is copied by DocumentsUI itself:
+        // it makes the new folder and copies what is in it one by one (a file within these places still by copyDocument),
+        // showing how far it is. One call for a whole mod of thousands of files could outlast the 20 seconds DocumentsUI
+        // waits on a provider before it reports the app as not responding, and the copy could be ended halfway.
         int flags = Document.FLAG_DIR_SUPPORTS_CREATE;
         if (!place)
         {
-            flags = Document.FLAG_SUPPORTS_DELETE | Document.FLAG_SUPPORTS_RENAME | Document.FLAG_SUPPORTS_COPY | Document.FLAG_SUPPORTS_MOVE
-                | (folder ? Document.FLAG_DIR_SUPPORTS_CREATE : Document.FLAG_SUPPORTS_WRITE);
+            flags = Document.FLAG_SUPPORTS_DELETE | Document.FLAG_SUPPORTS_RENAME | Document.FLAG_SUPPORTS_MOVE
+                | (folder ? Document.FLAG_DIR_SUPPORTS_CREATE : Document.FLAG_SUPPORTS_WRITE | Document.FLAG_SUPPORTS_COPY);
         }
         cursor.newRow()
             .add(Document.COLUMN_DOCUMENT_ID, documentId)
