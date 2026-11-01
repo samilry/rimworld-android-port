@@ -315,10 +315,13 @@ namespace PortMobile
 		{
 		}
 
-		/// <summary>Postfix of Harmony's PatchFunctions.UpdateWrapper (every patch, every unpatch).</summary>
-		public static void AfterUpdateWrapper(MethodBase original)
+		/// <summary>
+		/// Postfix of Harmony's PatchFunctions.UpdateWrapper (every patch, every unpatch). Where someone's prefix skipped
+		/// it, no replacement came back and the method is as it was: its first real patch is still new to the watch.
+		/// </summary>
+		public static void AfterUpdateWrapper(MethodBase original, MethodInfo __result)
 		{
-			if (original == null || rebuilding > 0)
+			if (original == null || __result == null || rebuilding > 0)
 			{
 				return;
 			}

@@ -883,10 +883,14 @@ namespace PortHooks
 			}
 		}
 
-		/// <summary>Postfix of Harmony's PatchFunctions.UpdateWrapper, which only gets here once the new replacement is in.</summary>
-		public static void AfterUpdateWrapper(MethodBase original)
+		/// <summary>
+		/// Postfix of Harmony's PatchFunctions.UpdateWrapper: the replacement it returns is in. A patch that failed does
+		/// not get here; where someone's prefix skipped UpdateWrapper, none came back and the method is as it was (it may
+		/// still be copied into code compiled now, and is not taken as patched).
+		/// </summary>
+		public static void AfterUpdateWrapper(MethodBase original, MethodInfo __result)
 		{
-			if (original == null)
+			if (original == null || __result == null)
 			{
 				return;
 			}
