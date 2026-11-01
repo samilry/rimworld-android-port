@@ -236,25 +236,13 @@ namespace PortWorkshop
 			{
 				logOnElsewhere = false;
 				State = SessionState.Connecting;
-				Task.Delay(1000).ContinueWith(_ =>
-				{
-					if ((wanted || checking) && !connected)
-					{
-						client.Connect();
-					}
-				});
+				Task.Delay(1000).ContinueWith(_ => ConnectAgain());
 			}
 			else if (wanted && !callback.UserInitiated)
 			{
 				State = SessionState.Connecting;
 				Message = Texts.Say("和 Steam 的连接断了，正在重连……", "The connection to Steam was lost, reconnecting...");
-				Task.Delay(3000).ContinueWith(_ =>
-				{
-					if (wanted && !connected)
-					{
-						client.Connect();
-					}
-				});
+				Task.Delay(3000).ContinueWith(_ => ConnectAgain());
 			}
 			else if (wanted && asked)
 			{
@@ -267,6 +255,34 @@ namespace PortWorkshop
 			else
 			{
 				State = SessionState.Off;
+			}
+		}
+
+		/// <summary>
+		/// The end of the wait before connecting again (to another server after TryAnotherCM, or after a lost connection):
+		/// connects if the window or the update check still wants the connection, else the session goes off. It was at
+		/// Connecting with no attempt under way, and Connect makes none while it is at Connecting: a window closed during
+		/// the wait and opened later stayed at "connecting" for good, and an update check waited out its patience for
+		/// nothing.
+		/// </summary>
+		private static void ConnectAgain()
+		{
+			// Under Connect's lock: a window or a check that starts meanwhile has either said it wants the connection before
+			// it is looked at here, or finds the session off and connects itself.
+			lock (starting)
+			{
+				if (connected)
+				{
+					return;
+				}
+				if (wanted || checking)
+				{
+					client.Connect();
+				}
+				else
+				{
+					State = SessionState.Off;
+				}
 			}
 		}
 
