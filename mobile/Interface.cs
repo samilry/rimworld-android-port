@@ -358,7 +358,8 @@ namespace PortMobile
 			if (!onField)
 			{
 				// No reason to bring back a keyboard the system put away (TouchBegan): the touch is to take the focus away,
-				// or it is on the key wheel.
+				// or it is on the key wheel. One that leaves another field with the focus (the field of a window it opened)
+				// asks for it once it is over (LetGoAfterTouch).
 				askKeyboardAgain = false;
 			}
 			if (onField || KeyWheel.At(at))
@@ -378,7 +379,8 @@ namespace PortMobile
 		/// the focus once nothing of that touch is on its way to the game any more and the game has handled the last of it
 		/// (a release goes out in the last frame something was on its way, and is handled in the next frame or the one after,
 		/// as HoldEnded counts). A focus that went elsewhere meanwhile stays where it went: to a field the touch pressed, to
-		/// the field of a window the touch opened (a field of another window is another, whatever its id).
+		/// the field of a window the touch opened (a field of another window is another, whatever its id), and the keyboard
+		/// is asked for again for it.
 		/// </summary>
 		private static void LetGoAfterTouch()
 		{
@@ -400,6 +402,14 @@ namespace PortMobile
 				if (Touch.Verbose) Console.WriteLine("[mobile] the touch away from the text field is over: its focus goes (" + GUI.GetNameOfFocusedControl() + ")");
 				PutAway();
 				GUI.FocusControl(null);
+			}
+			else if (GUIUtility.keyboardControl != 0)
+			{
+				// The touch left another field with the focus, as a window it opened gives its own: the keyboard is asked for
+				// again, as for a field a finger presses. The system may have put it away (Back) while the old field had the
+				// focus; the port still counts it as up then, and nothing else would bring it back (when the focus went as
+				// the finger landed, the new field brought it up).
+				askKeyboardAgain = true;
 			}
 			letGoFocus = 0;
 		}
