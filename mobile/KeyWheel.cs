@@ -242,9 +242,14 @@ namespace PortMobile
 			return Drawn && OnWheel(ui);
 		}
 
+		/// <summary>
+		/// The windows' squares, not the discs drawn in them: a window takes every press on it, in its corners too. Told by
+		/// circles, a press in a corner of the button's window spent a right click waiting for the next touch on nothing,
+		/// and one just beside the window was a left click while the right one went on waiting.
+		/// </summary>
 		private static bool OnWheel(Vector2 ui)
 		{
-			if ((ui - shownCenter).magnitude <= HubSize / 2f + 4f)
+			if (Square(shownCenter, HubSize).Contains(ui))
 			{
 				return true;
 			}
@@ -252,13 +257,18 @@ namespace PortMobile
 			{
 				foreach (Vector2 c in slotCenters)
 				{
-					if ((ui - c).magnitude <= SlotSize / 2f + 2f)
+					if (Square(c, SlotSize).Contains(ui))
 					{
 						return true;
 					}
 				}
 			}
 			return false;
+		}
+
+		private static Rect Square(Vector2 center, float size)
+		{
+			return new Rect(center.x - size / 2f, center.y - size / 2f, size, size);
 		}
 
 		private static LatchedKey Latched(WheelKey key)
