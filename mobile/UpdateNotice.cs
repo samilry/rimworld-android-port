@@ -112,6 +112,21 @@ namespace PortMobile
 		}
 
 		/// <summary>
+		/// From the mod page (ModImport), after it deleted or imported mods: the notice no longer names the ones gone or
+		/// installed anew, at once rather than at the next visit of the main menu. The folders are read on a worker thread,
+		/// and only while the notice names something (it names nothing before the Workshop is loaded).
+		/// </summary>
+		internal static void ModsChanged()
+		{
+			if (names.Length == 0)
+			{
+				return;
+			}
+			string mods = GenFilePaths.ModsFolderPath;
+			ThreadPool.QueueUserWorkItem(_ => WorkshopLoader.RefreshUpdates(mods));
+		}
+
+		/// <summary>
 		/// Where the notice goes, in the pane the main menu is drawn in: in the column of links (its place in the pane, and
 		/// how far down its links go), under the language button; the line of text as high as it needs, the button under it.
 		/// </summary>

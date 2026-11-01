@@ -400,6 +400,8 @@ namespace PortMobile
 							problems.Add(name + ": " + e.Message);
 						}
 					}
+					// The list does not change (it never had these), but the update notice may name one of them.
+					UpdateNotice.ModsChanged();
 					if (problems.Count > 0)
 					{
 						Find.WindowStack.Add(new Dialog_MessageBox(Say("没能删除：\n  ", "Not deleted:\n  ") + string.Join("\n  ", problems.ToArray())));
@@ -989,6 +991,9 @@ namespace PortMobile
 			{
 				return;
 			}
+			// The main menu's update notice no longer names a mod deleted here, or installed anew (its .workshop is another
+			// one, or there is none).
+			UpdateNotice.ModsChanged();
 			try
 			{
 				ModLister.RebuildModList();

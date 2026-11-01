@@ -48,6 +48,15 @@ namespace PortWorkshop
 			_ = Updates.Check(mods);
 		}
 
+		/// <summary>
+		/// On a worker thread, after the mod page deleted or imported mods (PortMobile.UpdateNotice, through WorkshopLoader):
+		/// the notice is told again which mods are still installed as the last check found them.
+		/// </summary>
+		public static void RefreshUpdates(string mods)
+		{
+			Updates.Refresh(mods);
+		}
+
 		/// <summary>The update notice's button: the mods it names go into the list, the ones with a newer version ticked.</summary>
 		public static void OpenUpdates()
 		{

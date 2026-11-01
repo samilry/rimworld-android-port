@@ -101,6 +101,31 @@ namespace PortMobile
 			}
 		}
 
+		/// <summary>
+		/// On a worker thread, after the mod page deleted or imported mods (UpdateNotice.ModsChanged): PortWorkshop tells the
+		/// notice again which of the mods its check found still have that newer version. Only if it is loaded already: it is
+		/// not loaded for this.
+		/// </summary>
+		public static void RefreshUpdates(string mods)
+		{
+			try
+			{
+				Type loaded;
+				lock (loading)
+				{
+					loaded = entry;
+				}
+				// A PortWorkshop.dll from before the notice (put on the phone by itself) has nothing to refresh.
+				MethodInfo refresh = loaded?.GetMethod("RefreshUpdates", BindingFlags.Public | BindingFlags.Static);
+				refresh?.Invoke(null, new object[] { mods });
+			}
+			catch (Exception e)
+			{
+				Exception inner = e is TargetInvocationException && e.InnerException != null ? e.InnerException : e;
+				Console.WriteLine("[mobile] workshop: the update notice was not refreshed: " + inner.Message);
+			}
+		}
+
 		/// <summary>The update notice's button: the window, with the mods the notice names ticked.</summary>
 		public static void OpenUpdates()
 		{
