@@ -121,7 +121,8 @@ namespace PortMobile
 		private static int drawnFrame = -100;
 
 		private static int touching = NoTouch;
-		private static Vector2 touchStart, grabOffset;
+		// Where the finger landed, the button's centre from there, and where the button was shown then.
+		private static Vector2 touchStart, grabOffset, pickedUpAt;
 		private static bool dragged;
 		// The GLFW keys held for the key the finger is on, in the order they went down.
 		private static readonly List<int> held = new List<int>();
@@ -264,6 +265,17 @@ namespace PortMobile
 				}
 			}
 			return false;
+		}
+
+		/// <summary>
+		/// Whether the wheel's button lies on this rect (interface units) where it rests: as it was last drawn, or, while a
+		/// finger drags it, where the finger picked it up. The mouse buttons' first places make room for it there (it is
+		/// drawn above them), and they do not follow the finger.
+		/// </summary>
+		internal static bool RestsOn(Rect rect, out Rect hub)
+		{
+			hub = Square(touching == HubTouch && dragged ? pickedUpAt : shownCenter, HubSize);
+			return Drawn && hub.Overlaps(rect);
 		}
 
 		private static Rect Square(Vector2 center, float size)
@@ -729,6 +741,7 @@ namespace PortMobile
 				touching = HubTouch;
 				touchStart = UI.MousePositionOnUIInverted;
 				grabOffset = shownCenter - touchStart;
+				pickedUpAt = shownCenter;
 				dragged = false;
 				Event.current.Use();
 			}

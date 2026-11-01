@@ -23,8 +23,9 @@ namespace PortMobile
 	/// Shift and Ctrl that the wheel holds down come with a right click too). A touch on these buttons or on the wheel is
 	/// always the left button, taken by the button's own window: it never reaches the game, and it does not spend a right
 	/// click waiting for the next touch.
-	/// Each button is moved by dragging it, as the wheel's button is (mobile.txt mouseLeftAt=X,Y and mouseRightAt=X,Y, the
-	/// centre in interface units), kept on the screen and off the camera's hole (Cutout); the wheel's keys go round them.
+	/// They are first put at the right of the screen (DefaultCenter). Each button is moved by dragging it, as the wheel's
+	/// button is (mobile.txt mouseLeftAt=X,Y and mouseRightAt=X,Y, the centre in interface units), kept on the screen and
+	/// off the camera's hole (Cutout); the wheel's keys go round them.
 	/// They look like the wheel's button and have its size. Left out while the game's own mouse handling is on
 	/// (InputMode: the mouse has buttons of its own; they come back once a finger touches the screen after the mouse has
 	/// gone), and outside a game (the user, of the menus: "使用触控可以完美控制"). Options → Interface "显示鼠标左右键"
@@ -39,8 +40,9 @@ namespace PortMobile
 		// Next to the key wheel's windows (73195801, and its keys from 73195810).
 		private const int WindowIdBase = 73195806;
 		private const float Size = KeyWheel.HubSize;
-		// Until it is moved, 左键's centre is this far from the left edge, and 右键 a button and the wheel's spacing further.
-		private const float DefaultX = 390f;
+		// Until they are moved, 左键's centre is this far from the right edge and 右键 a button and the wheel's spacing right
+		// of it, both at this part of the screen's height (DefaultCenter).
+		private const float DefaultFromRight = 447f, DefaultHeight = 0.33f;
 		private static readonly string[] PlaceKeys = { "mouseLeftAt", "mouseRightAt" };
 
 		private enum State
@@ -287,19 +289,34 @@ namespace PortMobile
 		}
 
 		/// <summary>
-		/// Where a button is until it is moved: in a row with the key wheel's button (at its height, 0.55 of the screen's),
-		/// 左键 first, beyond the reach of the wheel's ring when the wheel is where it is put first (with up to thirteen
-		/// keys: 355 units from the left edge at most, at 1.85 with its button moved off a camera hole there), so that
-		/// opening the wheel moves none of its keys. On the user's phone (2772 x 1272 pixels) at the interface scales 1.5
-		/// and 1.85 (1848 x 848 and 1498 x 688 units) that keeps clear of the architect's menu, its info box and a tool's
-		/// controls with their confirm buttons (at the left and above), the inspect pane and its tabs (230 high at the
-		/// bottom left), the colonist bar (at most 130 from the top), the main buttons, the time controls and a minimap at
-		/// the right, the camera's hole at either edge, and the ring of the user's own wheel (at 233,299). Only a grid of
-		/// commands four rows high (three at 1.85) reaches up to them.
+		/// Where a button is until it is moved: at the right, in the room the game's own windows leave there. The main tabs
+		/// (1010 wide), the inspect tabs (630 at most: health), the architect's menu and a tool's controls open from the
+		/// left edge; the colonist bar keeps to the top (130 at most); the time controls, letters and alerts keep to the
+		/// right edge (300), and a minimap is first put 350 from it (Dubs Mint Minimap: 右键 ends 8 units before it); the
+		/// game's menu tab (390 high) and the architect's grid of designators (rows of 89) come up from the bottom. So 左键
+		/// is 447 units from the right edge, 右键 62 right of it, both at 0.33 of the screen's height. On the user's
+		/// phone (2772 x 1272 pixels) at the interface scales 1.5 and 1.85 (1848 x 848 and 1498 x 688 units) that is
+		/// (1401, 280) and (1463, 280), and (1051, 227) and (1113, 227): clear of all of those (of a main tab by 14 units at
+		/// 1.85), of a grid of designators five rows high (four at 1.85: vanilla's furniture), of the camera's hole at either
+		/// edge, and of the key wheel and its ring at its first place and at the user's (233,299). Beside the wheel's button
+		/// they would lie on the inspect tabs (the gear tab's drop and info icons) and on every main tab, which a player
+		/// opens all the time.
+		/// A wheel's button the player has put on that row would hide them (it is drawn above them): the row goes above it
+		/// then, or below it where there is no room above.
 		/// </summary>
 		private static Vector2 DefaultCenter(int button)
 		{
-			return new Vector2(DefaultX + button * (Size + KeyWheel.Spacing), Mathf.Round(UI.screenHeight * 0.55f));
+			float x = UI.screenWidth - DefaultFromRight, y = Mathf.Round(UI.screenHeight * DefaultHeight);
+			var row = new Rect(x - Size / 2f, y - Size / 2f, 2f * Size + KeyWheel.Spacing, Size);
+			if (KeyWheel.RestsOn(row, out Rect hub))
+			{
+				y = hub.yMin - KeyWheel.Spacing - Size / 2f;
+				if (y < Size / 2f + 2f)
+				{
+					y = hub.yMax + KeyWheel.Spacing + Size / 2f;
+				}
+			}
+			return new Vector2(x + button * (Size + KeyWheel.Spacing), y);
 		}
 
 		private static Rect RectAt(Vector2 center)
