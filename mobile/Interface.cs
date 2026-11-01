@@ -66,8 +66,8 @@ namespace PortMobile
 			}
 			PutAway();
 			GUIUtility.keyboardControl = 0;
-			// A focus code gives the field back before the next look (LetGoOfGivenSearchFocus) is a change too: given back in
-			// the same frame (RimTalk's talk window does), it looked as if the field had kept it, and the keyboard stayed up.
+			// A focus that code gives the field back before the next look (LetGoOfGivenSearchFocus) is a change too: given back
+			// in the same frame (RimTalk's talk window does), it looked as if the field had kept it, and the keyboard stayed up.
 			lastFocus = 0;
 		}
 
@@ -96,7 +96,7 @@ namespace PortMobile
 		// last frame something of that touch was still on its way to the game (LetGoAfterTouch).
 		private static int letGoFocus, letGoWindow, letGoTouchFrame;
 		// The text field the player last put away (the keyboard's Done, a finger elsewhere; 0: none) and its window: a
-		// focus code gives it again is let go until a finger is on it (LetGoOfGivenSearchFocus).
+		// focus that code gives it again is let go until a finger is on it (LetGoOfGivenSearchFocus, AfterTextField).
 		private static int putAwayFocus, putAwayWindow;
 
 		// A finger that begins in a list with something to scroll presses nothing until it is known to be a tap (see
@@ -550,9 +550,9 @@ namespace PortMobile
 
 		/// <summary>
 		/// The name fields of save dialogs, which focus them when they open: the game's (Dialog_FileList.DoTypeInField), and
-		/// those mods made after it, RimHUD's for a layout preset (Dialog_SavePreset, again when its docked or floating box
-		/// is ticked) and UF Light Industries' for a configuration (Dialog_UFConfigList): the keyboard came up over them by
-		/// itself (the compatibility audit, 2026-10-30).
+		/// those that mods made after it, RimHUD's for a layout preset (Dialog_SavePreset, again when its docked or floating
+		/// box is ticked) and UF Light Industries' for a configuration (Dialog_UFConfigList): the keyboard came up over them
+		/// by itself (the compatibility audit, 2026-10-30).
 		/// </summary>
 		private static readonly HashSet<string> NameFields = new HashSet<string> { "MapNameField", "PresetName", "UFConfigNameField" };
 
