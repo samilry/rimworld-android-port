@@ -15,10 +15,11 @@ namespace PortHooks
 	/// The same patch has a postfix that counts the calls of Log.Warning, for the warnings of PortMobile's record
 	/// (logs/record.txt), as the record's own postfix did: every call that returns, also one a mod's prefix skipped or
 	/// the game's log did not write. This patch is the first of Log.Warning, put on as the game's assembly loads, before
-	/// any code that could hold a copy of it is compiled: no call passes it by, and InlineGuard, which goes by the order
-	/// in which the replacements were made, has none to make again for it. The record's own postfix, put on at the main
-	/// menu, had InlineGuard make again every replacement that may hold Log.Warning (a lock, 83 IL bytes): 271 with the
-	/// owner's 130 mods, about 200 of them for it alone.
+	/// any code that could hold a copy of it is compiled: no call passes it by, whatever InlineGuard does. The record's
+	/// own postfix, put on at the main menu, had InlineGuard make again every replacement that may hold Log.Warning (a
+	/// lock, 83 IL bytes; 271 with the owner's 130 mods), about 200 of them for it alone, until the guard went by the
+	/// order in which the replacements were made: all of them come after this patch, and the guard leaves them as they
+	/// are either way. The count spares those 200 only where it does not go by the order (mobile.txt inlineGuardOrder=0).
 	/// </summary>
 	public static class LoadRecovery
 	{

@@ -23,9 +23,10 @@ namespace PortMobile
 	/// through) is looked up among the methods patched before it. Those whose replacement may hold a copy of it get their
 	/// replacement made again (by Harmony itself, with their patches as they are): a patched method is not copied into
 	/// code compiled after it was patched. While the port puts its own patches in, this waits and is done once for all of
-	/// them at the end. For such a batch, and for the mods' patches made before the port, a replacement is made again
-	/// only where PortHooks tells that it was made before the first patch of the method it may hold, or cannot tell
-	/// (ReplacementCalls.MadeBefore): one made after it cannot hold a copy.
+	/// them at the end. Each time, a replacement is made again only where PortHooks tells that it was made before the
+	/// first patch of the method it may hold, or cannot tell (ReplacementCalls.MadeBefore): one made after it cannot hold
+	/// a copy. That leaves some out for the port's batch and for the mods' patches made before the port; a method first
+	/// patched while the game runs has every replacement made before its patch, and none is left out.
 	///
 	/// What a replacement may hold is what the stock JIT (.NET 10.0.12) copies into one, measured 2026-10-30 with its
 	/// inlining events: what the replacement's code calls (Harmony's final instruction list, kept by PortHooks: the
@@ -34,21 +35,31 @@ namespace PortMobile
 	/// (JitExtDefaultPolicyMaxIL), of up to 1024 (JitExtDefaultPolicyMaxILProf) where the replacement is one straight run
 	/// of code with few calls (a postfix on a getter), of any size where it asks for it (AggressiveInlining); never one
 	/// with a catch, a NoInlining or synchronized one, nor one called virtually that the JIT cannot resolve from the code
-	/// alone (where it knows the object's exact type it can; none such was found). A try/finally is copied in (a lock, a
-	/// using, a foreach; GUI.ProcessPendingWindows into ImguiDispatch.Dispatch, below), and so are fault and filter
-	/// blocks; a catch is not, even where the method asks for it ("has exception handling"). Until 2026-10-30 only the
-	/// original's own code was looked at, two levels and 100 bytes deep: a postfix's call of Rand.Value (Vanilla
-	/// Expanded), a transpiler's call, or Bombardment.TryDoExplosion -> FloatRange.RandomInRange -> Rand.Range ->
-	/// Rand.Value were missed. The framework's code is not followed (it does not call the game), and on the PC its
-	/// methods are copied into replacements as here. Measured on the PC's stock .NET 10.0.12 with the game, the 1049
-	/// methods the owner's 130 mods patch (each given an empty postfix, in their order) and then the port's own targets:
-	/// the old way left 22 copies of patched methods in 22 replacements, this one none (PortHooks' InlineWatch, overload
-	/// by overload), reading the code in 250-290 ms instead of 100. Started as on the phone (PortHooks' patch of
-	/// Log.Warning first), it made 835 replacements again, where the old way made 464, in 2.7-2.9 s; going by the order
-	/// of the replacements it makes 381 in 1.3-1.4 s (256 of 467 for the mods' patches before the port, 125 of 368 for
-	/// the port's own), still leaving none. Of the 368, about 200 were for the Recorder's count of Log.Warning, which
-	/// takes a lock and so may be in 271 replacements, all of them made after PortHooks' patch of it; the Recorder now
-	/// counts through that patch and puts none of its own on Log.Warning.
+	/// alone (where it knows the object's exact type it can: see below). A try/finally is copied in (a lock, a using, a
+	/// foreach; GUI.ProcessPendingWindows into ImguiDispatch.Dispatch, below), and so are fault and filter blocks; a
+	/// catch is not, even where the method asks for it ("has exception handling"). Until 2026-10-30 only the original's
+	/// own code was looked at, two levels and 100 bytes deep: a postfix's call of Rand.Value (Vanilla Expanded), a
+	/// transpiler's call, or Bombardment.TryDoExplosion -> FloatRange.RandomInRange -> Rand.Range -> Rand.Value were
+	/// missed. The framework's code is not followed (it does not call the game), and on the PC its methods are copied
+	/// into replacements as here. Measured on the PC's stock .NET 10.0.12 with the game, the 1049 methods the owner's 130
+	/// mods patch (each given an empty postfix, in their order) and then the port's own targets: the old way left 22
+	/// copies of patched methods in 22 replacements, this one none (PortHooks' InlineWatch, overload by overload),
+	/// reading the code in 250-290 ms instead of 100. Started as on the phone (PortHooks' patch of Log.Warning first),
+	/// making every replacement again made 835 (the old way 464) in 2.6-2.9 s; going by the order it makes 381, in
+	/// 1.3-1.5 s (256 of 467 for the mods' patches before the port, 125 of 169 for the port's own), still leaving none.
+	/// The Recorder's own count of Log.Warning, which takes a lock and so may be in 271 replacements, had put about 200
+	/// more in the port's batch: all made after PortHooks' patch of Log.Warning, its first, so that going by the order
+	/// leaves them as they are anyway; the Recorder now counts through that patch (with inlineGuardOrder=0, below, 636
+	/// are made again).
+	///
+	/// A copy the JIT makes through a virtual call it resolves itself, knowing the object's exact type (an object of a
+	/// sealed class, one made right there), is not looked for; none was found with the 130 mods' targets above, but their
+	/// empty postfixes have none of the mods' own code. Making every replacement again took such a copy away by chance,
+	/// wherever the replacement was made again for some method that is looked for; going by the order, a replacement made
+	/// after the first patch of each method it may hold is left with it (measured on the PC: a mod's postfix calls a
+	/// method another mod had patched before, and new Sealed().V(), which the JIT copies in; a third mod patches Sealed.V
+	/// later). mobile.txt inlineGuardOrder=0 makes every one again as before, to tell whether that is why a mod's patch
+	/// does nothing. Where such a method is first patched while the game runs, neither way takes the copy away.
 	///
 	/// The engine's own code is the other half. Its per-frame methods are compiled at full optimisation during the
 	/// loading screens, before the port is there, and they may hold a copy of a small engine method the port patches
@@ -75,8 +86,9 @@ namespace PortMobile
 		private static MethodInfo updateWrapper, getPatchInfo;
 		[ThreadStatic] private static int rebuilding;
 		private static int rebuiltInAll;
-		// Whether PortHooks tells the order in which the replacements were made (ReplacementCalls.MadeBefore); without it
-		// (an older PortHooks) every replacement that may hold a newly patched method is made again.
+		// Whether the order in which the replacements were made is gone by (ReplacementCalls.MadeBefore); where PortHooks
+		// does not tell it (an older one) or mobile.txt inlineGuardOrder=0, every replacement that may hold a newly patched
+		// method is made again.
 		private static bool ordered;
 
 		// The copy limits of the stock JIT (see the class notes): IL bytes into a replacement, and into one without jumps
@@ -106,7 +118,16 @@ namespace PortMobile
 					new Harmony("port17.test.mod").Patch(AccessTools.Method(typeof(UnityEngine.GUI), nameof(UnityEngine.GUI.ProcessPendingWindows)), postfix: new HarmonyMethod(typeof(InlineGuard), nameof(Nothing)));
 					Console.WriteLine("[mobile] inline guard: test: GUI.ProcessPendingWindows patched first, as a mod would");
 				}
-				ordered = KnowsOrder();
+				// mobile.txt inlineGuardOrder=0: every replacement that may hold a newly patched method is made again,
+				// whichever came first, as before 2026-10-30 (for a mod's patch that seems to do nothing; class notes).
+				if (Settings.Get("inlineGuardOrder", 1) == 1)
+				{
+					ordered = KnowsOrder();
+				}
+				else
+				{
+					Console.WriteLine("[mobile] inline guard: inlineGuardOrder=0: every replacement that may hold a newly patched method is made again, whichever came first");
+				}
 				int count = 0;
 				lock (sync)
 				{
