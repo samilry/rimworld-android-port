@@ -339,28 +339,20 @@ public final class FilesProvider extends DocumentsProvider
             .add(Document.COLUMN_SIZE, folder ? null : attributes.size());
     }
 
-    /** A file's type by its extension. The game's own files are XML: saves, scenarios, mod lists, ideoligions, xenotypes... */
+    /**
+     * A file's type: the one the phone gives its extension, or none in particular, as the phone's own storage reports
+     * it. DocumentsUI makes a copy with the source's type, and the storage it goes to adds that type's extension to a
+     * name whose own extension the phone does not give that type (FileUtils.splitFileName). The game's saves, mod lists,
+     * scenarios, ideoligions and xenotypes are XML, but reported as XML a save would arrive in Download as
+     * "Colony.rws.xml", and Player.log reported as text as "Player.log.txt"; with no type of their own they keep their
+     * names, as Explorer keeps them on the PC.
+     */
     private static String typeOf(String name)
     {
         int dot = name.lastIndexOf('.');
         String extension = dot >= 0 ? name.substring(dot + 1).toLowerCase(Locale.ROOT) : "";
-        switch (extension)
-        {
-            case "rws":
-            case "rsc":
-            case "rml":
-            case "rid":
-            case "xtp":
-            case "xgm":
-            case "ccg":
-            case "rwh":
-                return "text/xml";
-            case "log":
-                return "text/plain";
-            default:
-                String type = extension.isEmpty() ? null : MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
-                return type != null ? type : "application/octet-stream";
-        }
+        String type = extension.isEmpty() ? null : MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+        return type != null ? type : "application/octet-stream";
     }
 
     @Override
