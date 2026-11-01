@@ -370,8 +370,8 @@ namespace PortMobile
 		{
 			bool check = enabled;
 			listing.CheckboxLabeled(Texts.Chinese ? "显示鼠标左右键" : "Show the mouse buttons", ref check, Texts.Chinese
-				? "游戏中屏幕上单独的两个圆钮“左键”和“右键”，拖动可以各自移动位置。点一下“右键”（变黄，写着“一次”）：接下来的一次触摸就是鼠标右键点击，手指抬起后自动回到左键；再点一下“右键”就取消。按住“右键”不动半秒（变红，写着“锁定”）：之后每次触摸都是右键，直到再点一下“左键”或“右键”。点“左键”随时回到左键。中键在按键盘里。接着鼠标时不显示。"
-				: "Two round buttons of their own on the screen in a game, \"LMB\" and \"RMB\"; drag either to move it. A tap on RMB (yellow, \"once\"): the next touch is a right click, and touches are left clicks again once that finger lifts; another tap on RMB takes it back. Hold RMB still for half a second (red, \"locked\"): every touch is a right click until LMB or RMB is tapped. A tap on LMB always goes back to left clicks. The middle button is on the key wheel. Not shown while a mouse is connected.", 30f, 0.6f);
+				? "游戏中屏幕上单独的两个圆钮“左键”和“右键”，拖动可以各自移动位置。点一下“右键”（变黄，写着“一次”）：接下来的一次触摸就是鼠标右键点击，手指抬起后自动回到左键；再点一下“右键”就取消。拖动也算这一次触摸（按着右键拖，地图不会跟着动），所以要先把地图拖到目标附近，再点“右键”。按住“右键”不动半秒（变红，写着“锁定”）：之后每次触摸都是右键，单指拖不动地图，直到再点一下“左键”或“右键”。点“左键”随时回到左键。中键在按键盘里。接着鼠标时不显示。"
+				: "Two round buttons of their own on the screen in a game, \"LMB\" and \"RMB\"; drag either to move it. A tap on RMB (yellow, \"once\"): the next touch is a right click, and touches are left clicks again once that finger lifts; another tap on RMB takes it back. A drag is that touch too (the right button held, the map does not follow): drag the map to the target first, then tap RMB. Hold RMB still for half a second (red, \"locked\"): every touch is a right click, and one finger does not move the map, until LMB or RMB is tapped. A tap on LMB always goes back to left clicks. The middle button is on the key wheel. Not shown while a mouse is connected.", 30f, 0.6f);
 			if (check != enabled)
 			{
 				enabled = check;
