@@ -86,11 +86,17 @@ if [ "$what" = game ] || [ "$what" = build ] || [ "$what" = all ]; then
     o="build/game/Data/$p/Languages/ChineseSimplified (简体中文).tar"
     [ -f "$t" ] && [ ! -f "$o" ] && mkdir -p "build/game/Data/$p/Languages" && cp "$t" "build/game/Data/$p/Languages/"
   done
-  # Type-forwarding facades for the Unity assembly names mods were compiled against (all types -> UnityStubs). Made
-  # once, when there are none, from the staged UnityStubs.dll for the names in host/forwarders.txt (the assembly names
-  # that Workshop mods referred to, counted with patch.dll --refs); the tester's phone makes its own (setup/Setup.cs).
-  if [ ! -d build/forwarders ]; then
+  # Type-forwarding facades for the Unity assembly names mods were compiled against (all types -> UnityStubs), from the
+  # staged UnityStubs.dll for the names in host/forwarders.txt (the assembly names that Workshop mods referred to,
+  # counted with patch.dll --refs); the tester's phone makes its own (setup/Setup.cs). Made again whenever
+  # UnityStubs.dll is another one than they were made from: a game update can add types (1.7.4995's KeyboardLayout,
+  # LinuxFontconfig and ModLoadingHooks were missing from facades made on an older 1.7). Every making gives them a new
+  # PE time stamp and MVID; they are not in the tester's APK.
+  stubs=$(sha256sum build/game/UnityStubs.dll | cut -c1-16)
+  if [ ! -d build/forwarders ] || [ "$(cat build/forwarders.stubs 2>/dev/null)" != "$stubs" ]; then
+    rm -rf build/forwarders
     dotnet build/patch/patch.dll --forwarders build/game/UnityStubs.dll build/forwarders $(grep -v '^#' host/forwarders.txt | tr -d '\r') > build/forwarders.log
+    echo "$stubs" > build/forwarders.stubs
     echo "forwarders: $(ls build/forwarders | wc -l) facades for UnityStubs"
   fi
   [ -d build/forwarders ] && cp build/forwarders/*.dll build/game/

@@ -111,6 +111,7 @@ host/build-all.sh
 - **安装包里的时间戳**：`assets/payload.txt` 记着打包时间，zip 条目带着文件时间。
 - **许可文本**：开发机的工作副本里有些许可文本是 CRLF 换行，克隆出来的是 LF。
 - **游戏版本不同时**：PortMobile 里记着构建时的游戏版本，类型转发门面按当时的 UnityStubs 生成。
+- **`build/forwarders` 里的类型转发门面**：只放进开发用脚本推到手机的 `build/game`，不进安装包（测试者的手机导入时自己生成）。每次生成，PE 时间戳和 MVID 都不同。
 
 ### 7. 环境变量
 
@@ -254,6 +255,7 @@ What differs:
 - **Time stamps in the APK**: `assets/payload.txt` holds the packing time, and the zip entries carry file times.
 - **License texts**: some of them have CRLF line ends in the development machine's working copy; a clone has LF.
 - **With another game version**: PortMobile records the game version it was built for, and the type-forwarding facades follow that version's UnityStubs.
+- **The type-forwarding facades in `build/forwarders`**: they go only into the `build/game` the development scripts push to a phone, not into the APK (a tester's phone makes its own at the import). Every making gives them a new PE time stamp and MVID.
 
 ### 7. Environment variables
 
