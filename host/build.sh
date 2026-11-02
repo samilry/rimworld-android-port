@@ -137,8 +137,10 @@ if [ "$PAYLOAD" = port ]; then
   (cd "$OUT/apk" && "$JDK/bin/jar.exe" u0f ../unsigned.apk assets)
 fi
 "$BT/zipalign.exe" -f -p 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
+# The signing key's password comes from the environment, never from this file.
+KS_PASS=${PORT17_KS_PASS:?set PORT17_KS_PASS to the signing keystore password}
 if [ ! -f port17.keystore ]; then
-  "$JDK/bin/keytool.exe" -genkeypair -keystore port17.keystore -alias port -keyalg RSA -keysize 2048 -validity 10000 -storepass ***REMOVED*** -keypass ***REMOVED*** -dname "CN=port17"
+  "$JDK/bin/keytool.exe" -genkeypair -keystore port17.keystore -alias port -keyalg RSA -keysize 2048 -validity 10000 -storepass "$KS_PASS" -keypass "$KS_PASS" -dname "CN=port17"
 fi
-"$BT/apksigner.bat" sign --ks port17.keystore --ks-pass pass:***REMOVED*** --key-pass pass:***REMOVED*** --out "$OUT/$APK_NAME" "$OUT/aligned.apk"
+"$BT/apksigner.bat" sign --ks port17.keystore --ks-pass env:PORT17_KS_PASS --key-pass env:PORT17_KS_PASS --out "$OUT/$APK_NAME" "$OUT/aligned.apk"
 ls -la "$OUT/$APK_NAME" | awk -v n="$APK_NAME" '{print n, $5, "bytes"}'

@@ -120,6 +120,11 @@ Apache License 2.0. Copyright 2011-2026 Arm Limited.
 https://github.com/ARM-software/astc-encoder
 → astc-encoder-LICENSE.txt
 
+● KTX-Software 4.4.0 (libKtx.so), with its Basis Universal transcoder, Zstandard and dfdutils
+Apache License 2.0 (Zstandard: BSD). Copyright The Khronos Group Inc. and the KTX-Software contributors; Basis Universal: Copyright Binomial LLC.
+https://github.com/KhronosGroup/KTX-Software
+→ Apache-2.0.txt, zstd-LICENSE.txt
+
 ● stb_image, stb_image_write (libstb.so) and stb_vorbis (inside libwaylithaudio.so)
 MIT License or public domain. Copyright (c) 2017 Sean Barrett.
 https://github.com/nothings/stb

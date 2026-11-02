@@ -50,6 +50,8 @@ if [ "$what" = game ] || [ "$what" = build ] || [ "$what" = all ]; then
   # The phone side of the game (mobile/build.sh; build it again after a new staging, it compiles against build/game).
   [ -f build/PortMobile.dll ] && cp build/PortMobile.dll build/game/
   # RimSort's community load-order rules for the mod page's auto-sort (mobile/ModSort.cs; node host/modrules/build.js refreshes the file).
+  # The load-order rules are converted from RimSort's community database, which is not part of this repository.
+  [ -f host/modrules/ModRules.txt ] || node host/modrules/build.js
   cp host/modrules/ModRules.txt build/game/
   # Google's Noto Emoji 3.002 (OFL, unmodified): outline emoji after the engine's fallback fonts on the phone
   # (hooks/AndroidFonts.cs), where the PC has them from Windows' Segoe UI Symbol and Emoji. It is fetched under another
