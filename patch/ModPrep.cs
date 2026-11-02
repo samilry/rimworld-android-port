@@ -2059,7 +2059,7 @@ internal static class ModPrep
 	// attribute against the defining assembly, System.Private.CoreLib and friends, not the facade the mod references.
 	private static readonly string[] FrameworkInternals = { "System.Private.CoreLib", "System.Private.Xml", "System.Private.Xml.Linq", "System.Private.Uri", "System.Collections", "System.Collections.Concurrent", "System.Linq", "System.Text.RegularExpressions" };
 
-	/// <summary>Adds [assembly: System.Runtime.CompilerServices.IgnoresAccessChecksTo("name")] for the game's assemblies and everything referenced (the attribute type is declared in the assembly itself, as the runtime expects).</summary>
+	/// <summary>Adds [assembly: System.Runtime.CompilerServices.IgnoresAccessChecksTo("name")] for the game's assemblies and everything referenced.</summary>
 	private static int AddAccessCheckExemptions(AssemblyDefinition assembly)
 	{
 		ModuleDefinition module = assembly.MainModule;
@@ -2071,6 +2071,20 @@ internal static class ModPrep
 				wanted.Add(r.Name);
 			}
 		}
+		return IgnoreAccessChecksTo(assembly, wanted);
+	}
+
+	/// <summary>
+	/// Adds [assembly: System.Runtime.CompilerServices.IgnoresAccessChecksTo("name")] for each of the names the assembly
+	/// does not have it for yet (the attribute type is declared in the assembly itself, as the runtime expects); returns
+	/// how many were added. The attribute derives from the running runtime's System.Attribute, or from the one given.
+	/// patch.dll gives the game's own assemblies theirs with it as well (Patch.ExemptFromAccessChecks), with the Attribute
+	/// of the assembly's own core library: the PC's patch.dll and the phone's PortSetup then write the same bytes.
+	/// </summary>
+	internal static int IgnoreAccessChecksTo(AssemblyDefinition assembly, IEnumerable<string> names, TypeReference attributeBase = null)
+	{
+		ModuleDefinition module = assembly.MainModule;
+		var wanted = new HashSet<string>(names);
 		foreach (CustomAttribute existing in assembly.CustomAttributes)
 		{
 			if (existing.AttributeType.Name == "IgnoresAccessChecksToAttribute" && existing.ConstructorArguments.Count == 1)
@@ -2086,14 +2100,16 @@ internal static class ModPrep
 		MethodDefinition ctor;
 		if (attribute == null)
 		{
-			TypeReference attributeBase = module.ImportReference(typeof(Attribute));
+			TypeReference baseType = attributeBase ?? module.ImportReference(typeof(Attribute));
 			TypeReference stringType = module.TypeSystem.String;
-			attribute = new TypeDefinition("System.Runtime.CompilerServices", "IgnoresAccessChecksToAttribute", TypeAttributes.NotPublic | TypeAttributes.Class | TypeAttributes.BeforeFieldInit, attributeBase);
+			attribute = new TypeDefinition("System.Runtime.CompilerServices", "IgnoresAccessChecksToAttribute", TypeAttributes.NotPublic | TypeAttributes.Class | TypeAttributes.BeforeFieldInit, baseType);
 			var field = new FieldDefinition("assemblyName", FieldAttributes.Private | FieldAttributes.InitOnly, stringType);
 			attribute.Fields.Add(field);
 			ctor = new MethodDefinition(".ctor", MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName, module.TypeSystem.Void);
 			ctor.Parameters.Add(new ParameterDefinition("assemblyName", ParameterAttributes.None, stringType));
-			MethodReference baseCtor = module.ImportReference(typeof(Attribute).GetConstructor(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance, null, Type.EmptyTypes, null));
+			MethodReference baseCtor = attributeBase == null
+				? module.ImportReference(typeof(Attribute).GetConstructor(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance, null, Type.EmptyTypes, null))
+				: new MethodReference(".ctor", module.TypeSystem.Void, attributeBase) { HasThis = true };
 			ILProcessor il = ctor.Body.GetILProcessor();
 			il.Emit(OpCodes.Ldarg_0);
 			il.Emit(OpCodes.Call, baseCtor);

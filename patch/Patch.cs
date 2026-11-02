@@ -324,6 +324,13 @@ internal static class Patch
 						changes++;
 					}
 				}
+				// Last, so that it sees the references as they are written.
+				string[] exempted = ExemptFromAccessChecks(assembly);
+				if (exempted.Length > 0)
+				{
+					Console.WriteLine($"{name}: access checks skipped for {string.Join(", ", exempted)}, as on the PC");
+					changes += exempted.Length;
+				}
 				if (changes > 0)
 				{
 					assembly.Write(file);
@@ -334,6 +341,126 @@ internal static class Patch
 		}
 		Console.WriteLine($"{filesChanged} assemblies changed");
 		return 0;
+	}
+
+	/// <summary>
+	/// Ludeon's runtime fork skips access checks altogether (WaylithClr.SkipAccessChecks in the game's runtimeconfig); the
+	/// stock runtime checks, and refuses a game assembly that names what another assembly keeps to itself. Since
+	/// 1.7.4995 RimWorldWaylith.PrepatcherCompat reads assemblies with the Mono.Cecil that Harmony carries inside
+	/// 0Harmony.dll, where all of Cecil is internal, and its PatchModuleSet implements Cecil's IAssemblyResolver: that type
+	/// did not load ("is attempting to implement an inaccessible interface"), so GetTypes() on the whole assembly threw,
+	/// which mods that look through every loaded assembly call (Melee Animation lost its final patches at every start).
+	/// As mods get from ModPrep, a game assembly gets [IgnoresAccessChecksTo] here for each assembly whose non-public types
+	/// or members it names: it loads with the access it has on the PC, and its references still go where they go there
+	/// (Harmony's Cecil, not the public Mono.Cecil.dll the port puts in the game folder). The friends of an assembly (its
+	/// [InternalsVisibleTo]) need nothing for its internal ones, and a protected member is taken to be named by a
+	/// subclass, as the compiler allows. Up to 1.7.4990 no game assembly named anything of the kind. Returns the names of
+	/// the assemblies it was added for (none when the attributes are there already).
+	/// </summary>
+	private static string[] ExemptFromAccessChecks(AssemblyDefinition assembly)
+	{
+		string self = assembly.Name.Name;
+		var friends = new Dictionary<string, bool>(StringComparer.Ordinal);
+		var targets = new SortedSet<string>(StringComparer.Ordinal);
+		void Check(IMemberDefinition named, TypeDefinition type)
+		{
+			AssemblyDefinition target = type?.Module?.Assembly;
+			if (target == null || target.Name.Name == self)
+			{
+				return;
+			}
+			if (!friends.TryGetValue(target.Name.Name, out bool friend))
+			{
+				friends[target.Name.Name] = friend = target.CustomAttributes.Any(a => a.AttributeType.FullName == "System.Runtime.CompilerServices.InternalsVisibleToAttribute"
+					&& a.ConstructorArguments.Count == 1 && a.ConstructorArguments[0].Value is string friendName && friendName.Split(',')[0].Trim() == self);
+			}
+			if (!(named is TypeDefinition ? MayName(type, friend) : MayUse(named, friend)))
+			{
+				targets.Add(target.Name.Name);
+			}
+		}
+		ModuleDefinition module = assembly.MainModule;
+		try
+		{
+			foreach (TypeReference reference in module.GetTypeReferences())
+			{
+				TypeDefinition type = TryResolve(reference.Resolve);
+				Check(type, type);
+			}
+			foreach (MemberReference reference in module.GetMemberReferences())
+			{
+				// Get, Set and the constructor of a multi-dimensional array have no definition to look at.
+				if (reference.DeclaringType is ArrayType)
+				{
+					continue;
+				}
+				IMemberDefinition member = reference is MethodReference method ? TryResolve(method.Resolve) : reference is FieldReference field ? TryResolve(field.Resolve) : null;
+				Check(member, member?.DeclaringType);
+			}
+		}
+		catch (Exception e)
+		{
+			// The phone's setup runs this too, over the player's own copy: an assembly whose references cannot be looked
+			// through stays as it was, rather than the whole game unprepared.
+			Console.WriteLine($"{self}: references not looked through for access ({e.GetType().Name}: {e.Message})");
+			return Array.Empty<string>();
+		}
+		foreach (CustomAttribute existing in assembly.CustomAttributes)
+		{
+			if (existing.AttributeType.Name == "IgnoresAccessChecksToAttribute" && existing.ConstructorArguments.Count == 1 && existing.ConstructorArguments[0].Value is string done)
+			{
+				targets.Remove(done);
+			}
+		}
+		if (targets.Count == 0)
+		{
+			return Array.Empty<string>();
+		}
+		ModPrep.IgnoreAccessChecksTo(assembly, targets, new TypeReference("System", "Attribute", module, module.TypeSystem.CoreLibrary));
+		return targets.ToArray();
+	}
+
+	/// <summary>Whether another assembly may name the type: public all the way out, internal where it is a friend; protected nested types are taken to be named by subclasses.</summary>
+	private static bool MayName(TypeDefinition type, bool friend)
+	{
+		for (TypeDefinition t = type; t != null; t = t.DeclaringType)
+		{
+			bool visible = t.DeclaringType == null
+				? t.IsPublic || friend
+				: t.IsNestedPublic || t.IsNestedFamily || t.IsNestedFamilyOrAssembly || (friend && (t.IsNestedAssembly || t.IsNestedFamilyAndAssembly));
+			if (!visible)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/// <summary>Whether another assembly may use the method or field, its type aside: public or protected, or internal where it is a friend.</summary>
+	private static bool MayUse(IMemberDefinition member, bool friend)
+	{
+		if (member is MethodDefinition method)
+		{
+			return method.IsPublic || method.IsFamily || method.IsFamilyOrAssembly || (friend && (method.IsAssembly || method.IsFamilyAndAssembly));
+		}
+		if (member is FieldDefinition field)
+		{
+			return field.IsPublic || field.IsFamily || field.IsFamilyOrAssembly || (friend && (field.IsAssembly || field.IsFamilyAndAssembly));
+		}
+		return true;
+	}
+
+	/// <summary>The definition, or null where it cannot be found (its assembly is not there to look into: nothing can be said about it).</summary>
+	private static T TryResolve<T>(Func<T> resolve) where T : class
+	{
+		try
+		{
+			return resolve();
+		}
+		catch (Exception)
+		{
+			return null;
+		}
 	}
 
 	/// <summary>
