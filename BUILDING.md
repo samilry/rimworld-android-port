@@ -25,7 +25,7 @@
 
 - **磁盘**：`DEPS_DIR` 构建完约 13 GB，其中 2.3 GB 是下载的压缩包（`DEPS_DIR/archives`，可以删）、约 4 GB 是 Slang 的构建目录；构建输出约 1.5 GB（`build/game` 是游戏的一份拷贝）。`DEPS_DIR` 用短路径，不要带空格（Slang 的源码树很深）。
 - **网络**：下载约 2.5 GB。构建时还会联网两次：`host/stage.sh` 下载 RimSort 社区排序规则库（`host/modrules/build.js`），Slang 的 CMake 下载几个 Windows 上测试用的预编译包（不进安装包）。
-- **时间**：开发机上（24 个逻辑处理器，下载约 50 MB/s），取依赖约 5 分钟，构建约 9 分钟，大部分是 Slang；处理器少的电脑上 Slang 要半小时以上。以后再构建只要几分钟（Slang 和 ImGui 的扫描结果会留着）。
+- **时间**：开发机上（24 个逻辑处理器，下载约 50 MB/s），取依赖约 6 分钟，构建约 9 分钟，大部分是 Slang；处理器少的电脑上 Slang 要半小时以上。以后再构建只要几分钟（Slang 和 ImGui 的扫描结果会留着）。
 
 ### 2. 自己提供的两样东西
 
@@ -168,7 +168,7 @@ Android Studio and Unity are not needed.
 
 - **Disk**: `DEPS_DIR` holds about 13 GB after the build: 2.3 GB of downloaded archives (`DEPS_DIR/archives`, which may be deleted) and about 4 GB of Slang's build folders among them; the build output is about 1.5 GB (`build/game` is a copy of the game). Give `DEPS_DIR` a short path without spaces (Slang's source tree is deep).
 - **Network**: about 2.5 GB of downloads. The build itself goes online twice: `host/stage.sh` downloads RimSort's community load-order rules (`host/modrules/build.js`), and Slang's CMake downloads a few prebuilt packages for its Windows tests (none of them goes into the APK).
-- **Time**: on the development machine (24 logical processors, downloads at about 50 MB/s) about 5 minutes to fetch and about 9 minutes to build, most of it Slang; with fewer processors Slang alone takes half an hour or more. Later builds take a few minutes (Slang's build and the ImGui scan are kept).
+- **Time**: on the development machine (24 logical processors, downloads at about 50 MB/s) about 6 minutes to fetch and about 9 minutes to build, most of it Slang; with fewer processors Slang alone takes half an hour or more. Later builds take a few minutes (Slang's build and the ImGui scan are kept).
 
 ### 2. The two things you bring
 
