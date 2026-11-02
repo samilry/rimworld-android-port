@@ -15,9 +15,9 @@
 | | 说明 |
 |---|---|
 | Windows 10 或 11（x64） | 脚本都在 Git Bash 里运行。 |
-| [Git for Windows](https://git-scm.com/download/win) | 带 Git Bash、curl、unzip、tar、patch、sha256sum、cygpath。仓库的 `.gitattributes` 规定了换行符，`core.autocrlf` 不用改。 |
+| [Git for Windows](https://git-scm.com/download/win) | 带 Git Bash、curl、unzip、tar、patch、sha256sum、cygpath。仓库的 `.gitattributes` 规定了换行符，`core.autocrlf` 不用改（测试用的是 2.55）。 |
 | [Node.js](https://nodejs.org/) 18 或更新 | 几个小工具脚本（测试用的是 24.21）。 |
-| [.NET 8 运行时](https://dotnet.microsoft.com/download/dotnet/8.0)（x64） | `dotnet` 要在 PATH 上；装 .NET 8 SDK 也可以。C# 编译器、patch.dll、ILSpy 都在它上面运行，patch.dll 编译时引用它的程序集（任何 8.0.x 都一样；测试用的是 8.0.19）。 |
+| [.NET 8 运行时](https://dotnet.microsoft.com/download/dotnet/8.0)（x64） | `dotnet` 要在 PATH 上；装 .NET 8 SDK 也可以。C# 编译器、patch.dll、ILSpy 都在它上面运行，patch.dll 编译时引用它的程序集（引用只记程序集名和版本 8.0.0.0，所以别的 8.0.x 应当得到同样的文件；测试过的是 8.0.19）。 |
 | [Visual Studio 2022](https://visualstudio.microsoft.com/vs/)（Community、Professional、Enterprise 或 Build Tools） | 只用来编 Slang 的代码生成器。要装“使用 C++ 的桌面开发”工作负载里的 MSVC v143、Windows 10/11 SDK 和“适用于 Windows 的 C++ CMake 工具”（CMake 和 Ninja）。装在别处时用 `VS_DIR` 指过去。测试用的是 17.14（MSVC 19.44，CMake 3.31）。 |
 | [Python 3](https://www.python.org/downloads/windows/) | 只有 Slang 的构建要：它带的 SPIRV-Tools 用 Python 生成语法表（CMake 自己找，测试用的是 3.14）。用 python.org 的安装包，不要用 Microsoft Store 的占位程序。 |
 
@@ -158,9 +158,9 @@ Every tool and third-party source the build uses is fixed at the version the por
 | | |
 |---|---|
 | Windows 10 or 11 (x64) | All scripts run in Git Bash. |
-| [Git for Windows](https://git-scm.com/download/win) | Brings Git Bash, curl, unzip, tar, patch, sha256sum and cygpath. The repository's `.gitattributes` fixes the line endings; leave `core.autocrlf` as it is. |
+| [Git for Windows](https://git-scm.com/download/win) | Brings Git Bash, curl, unzip, tar, patch, sha256sum and cygpath. The repository's `.gitattributes` fixes the line endings; leave `core.autocrlf` as it is (tested with 2.55). |
 | [Node.js](https://nodejs.org/) 18 or later | A few small tool scripts (tested with 24.21). |
-| [.NET 8 runtime](https://dotnet.microsoft.com/download/dotnet/8.0) (x64) | `dotnet` on the PATH; the .NET 8 SDK works as well. The C# compiler, patch.dll and ILSpy run on it, and patch.dll is compiled against its assemblies (any 8.0.x gives the same result; tested with 8.0.19). |
+| [.NET 8 runtime](https://dotnet.microsoft.com/download/dotnet/8.0) (x64) | `dotnet` on the PATH; the .NET 8 SDK works as well. The C# compiler, patch.dll and ILSpy run on it, and patch.dll is compiled against its assemblies (the references record only the assembly names and version 8.0.0.0, so another 8.0.x should give the same files; tested with 8.0.19). |
 | [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) (Community, Professional, Enterprise or Build Tools) | Only for Slang's code generators. From the "Desktop development with C++" workload: MSVC v143, a Windows 10/11 SDK and "C++ CMake tools for Windows" (CMake and Ninja). Point `VS_DIR` at it when it is installed elsewhere. Tested with 17.14 (MSVC 19.44, CMake 3.31). |
 | [Python 3](https://www.python.org/downloads/windows/) | Only for Slang's build: the SPIRV-Tools it bundles generates its grammar tables with Python (CMake finds it; tested with 3.14). Use the python.org installer, not the Microsoft Store stub. |
 
