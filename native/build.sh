@@ -110,6 +110,25 @@ fi
 
 if want imgui; then
   echo "== imgui"
+  # The generator's three inputs, made once (build/scan and ref/ keep them): clang's AST of ImGui's headers as
+  # downloaded, the names the PC game's imgui.dll exports (those Brutal.ImGui binds), and Brutal.ImGui decompiled with
+  # ILSpy (the parameter counts and struct sizes the managed side assumes). The last two come from the player's game.
+  if [ ! -f build/scan/imgui-ast.json ]; then
+    mkdir -p build/scan
+    printf '#include "imgui.h"\n#include "imgui_internal.h"\n' > build/scan/imgui-all.cpp
+    "$CXX" $TARGET -std=c++17 -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DIMGUI_USE_WCHAR32 -I "$SRC/imgui-1.92.2-docking" -fsyntax-only -Xclang -ast-dump=json build/scan/imgui-all.cpp > build/scan/imgui-ast.json
+  fi
+  if [ ! -f build/scan/imgui-plain.txt ]; then
+    need "$RIMWORLD_DIR/imgui.dll" "the PC game's imgui.dll" "set RIMWORLD_DIR to the game's folder"
+    mkdir -p build/scan
+    node native/imgui/pe-exports.js "$RIMWORLD_DIR/imgui.dll" > build/scan/imgui-exports.txt
+    # Without the C++ names (MSVC's decorated ones start with "?").
+    grep -v '^?' build/scan/imgui-exports.txt > build/scan/imgui-plain.txt
+  fi
+  if [ ! -f ref/tmp_Brutal.ImGui/Brutal.ImGui.decompiled.cs ]; then
+    need "$ILSPY_DIR/tools/net8.0/any/ilspycmd.dll" "ILSpy's command line, ilspycmd 9.1.0.7988" "host/fetch-deps.sh fetches it, or set ILSPY_DIR"
+    dotnet "$ILSPY_DIR/tools/net8.0/any/ilspycmd.dll" --disable-updatecheck -o ref/tmp_Brutal.ImGui "$RIMWORLD_DIR/Brutal.ImGui.dll"
+  fi
   node native/imgui/gen-imgui-c.js build/scan/imgui-ast.json ref/tmp_Brutal.ImGui/Brutal.ImGui.decompiled.cs build/scan/imgui-plain.txt "$OUT/imgui_c.cpp"
   # imgui_draw.cpp loads font files through PortFontFileLoad (native/imgui/port_fonts.cpp: mapped, not read into the heap).
   "$CXX" $TARGET $CXXFLAGS $IMGUI_DEFS -DImFileLoadToMemory=PortFontFileLoad -I "$IMGUI" -c -o "$OBJ/imgui_draw.o" "$IMGUI/imgui_draw.cpp"

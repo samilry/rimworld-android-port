@@ -33,6 +33,8 @@ fi
 
 if [ "$what" = game ] || [ "$what" = build ] || [ "$what" = all ]; then
   need "$GAME/Version.txt" "RimWorld 1.7, the player's own copy" "set RIMWORLD_DIR to the game's folder"
+  need build/patch/patch.dll "patch.dll" "run patch/build.sh first"
+  need build/PortHooks.dll "PortHooks, which the rewritten assemblies call" "run hooks/build.sh first"
   rm -rf build/game
   mkdir -p build/game
   ls "$RT"/*.dll | xargs -n1 basename | sort > build/framework-names.txt
@@ -84,7 +86,13 @@ if [ "$what" = game ] || [ "$what" = build ] || [ "$what" = all ]; then
     o="build/game/Data/$p/Languages/ChineseSimplified (简体中文).tar"
     [ -f "$t" ] && [ ! -f "$o" ] && mkdir -p "build/game/Data/$p/Languages" && cp "$t" "build/game/Data/$p/Languages/"
   done
-  # Type-forwarding facades for the Unity assembly names mods were compiled against (all types -> UnityStubs).
+  # Type-forwarding facades for the Unity assembly names mods were compiled against (all types -> UnityStubs). Made
+  # once, when there are none, from the staged UnityStubs.dll for the names in host/forwarders.txt (the assembly names
+  # that Workshop mods referred to, counted with patch.dll --refs); the tester's phone makes its own (setup/Setup.cs).
+  if [ ! -d build/forwarders ]; then
+    dotnet build/patch/patch.dll --forwarders build/game/UnityStubs.dll build/forwarders $(grep -v '^#' host/forwarders.txt | tr -d '\r') > build/forwarders.log
+    echo "forwarders: $(ls build/forwarders | wc -l) facades for UnityStubs"
+  fi
   [ -d build/forwarders ] && cp build/forwarders/*.dll build/game/
   printf -- "-Headless\n-NoCrashDialog\n-Verbose\n" > build/game/args.txt
   echo "game staging: $(ls build/game/*.dll | wc -l) assemblies, $(du -sh build/game | cut -f1)"

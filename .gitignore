@@ -18,3 +18,6 @@ Vulkan-Headers-1.3.296/
 dotnet-android-coreclr/
 savedata/
 vulkan-headers.zip
+# RimSort's community load-order rules, downloaded and converted at build time (host/modrules/build.js).
+host/modrules/communityRules.json
+host/modrules/ModRules.txt

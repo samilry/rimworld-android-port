@@ -9,6 +9,7 @@ cd "$(dirname "$0")/.."
 . host/env.sh
 CG=$CROSSGEN2_DIR/tools/crossgen2.exe
 [ -x "$CG" ] || { echo "crossgen2 missing: $CG (host/fetch-deps.sh fetches it, or set CROSSGEN2_DIR)"; exit 1; }
+need build/patch/patch.dll "patch.dll" "run patch/build.sh first"
 v1=$(sed -n 1p "$DOTNET_RUNTIME_PACK/Microsoft.NETCore.App.versions.txt")
 v2=$(sed -n 1p "$CROSSGEN2_DIR/Microsoft.NETCore.App.Crossgen2.versions.txt")
 [ "$v1" = "$v2" ] || { echo "crossgen2 ($v2) is not from the runtime pack's build ($v1)"; exit 1; }

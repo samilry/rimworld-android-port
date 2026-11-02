@@ -7,6 +7,12 @@ cd "$(dirname "$0")/.."
 need "$CSC" "the C# compiler, Microsoft.Net.Compilers.Toolset 4.11.0" "host/fetch-deps.sh fetches it, or set ROSLYN_DIR"
 need "$RT/System.Runtime.dll" "the .NET runtime pack for android-arm64, 10.0.12" "host/fetch-deps.sh fetches it, or set DOTNET_RUNTIME_PACK"
 need "$HARMONY_DLL" "Harmony's 1.7 0Harmony.dll" "subscribe to the Harmony mod in the Workshop, or set HARMONY_DLL"
+# The engine's assemblies as staged (host/stage.sh), or on a first build, before anything is staged, the game's own: the
+# same assemblies before patch.dll's rewrites, which leave their names and public types alone. Staging needs PortHooks.dll
+# (patch.dll points the rewritten calls at it), so it cannot come first.
+GAME_REFS=build/game
+[ -f build/game/Waylith.dll ] || GAME_REFS=$RIMWORLD_DIR
+need "$GAME_REFS/Waylith.dll" "RimWorld 1.7, the player's own copy" "set RIMWORLD_DIR to the game's folder"
 mkdir -p build
 {
   echo "-nologo -target:library -optimize+ -nullable:disable -langversion:latest -nostdlib+ -noconfig -deterministic+"
@@ -17,11 +23,12 @@ mkdir -p build
   echo "-r:\"$(cygpath -w "$HARMONY_DLL")\""
   # The engine's texture service and Vulkan types, for hooks/Textures.cs and hooks/Astc.cs, and the hash Astc.cs keys its
   # cache with (System.IO.Hashing, which the game brings); the game's own copies at run time.
-  for f in Waylith Brutal.Vulkan Brutal.Core.Common System.IO.Hashing; do echo "-r:\"$(cygpath -w "build/game/$f.dll")\""; done
+  for f in Waylith Brutal.Vulkan Brutal.Core.Common System.IO.Hashing; do echo "-r:\"$(cygpath -w "$GAME_REFS/$f.dll")\""; done
   echo "hooks/StartupHook.cs hooks/PortDiag.cs hooks/WaylithClr.cs hooks/ModPrepHost.cs hooks/HarmonyCompat.cs hooks/Textures.cs hooks/Astc.cs hooks/JitProfile.cs hooks/InlineWatch.cs hooks/UiDescriptors.cs hooks/PortLog.cs hooks/ModFolders.cs hooks/MonoModArch.cs hooks/EngineTypes.cs hooks/AndroidFonts.cs hooks/Watch.cs hooks/WindowsLibraries.cs hooks/MissingAssemblies.cs hooks/LoadRecovery.cs hooks/SelfContained.cs hooks/ShaderSessions.cs hooks/HardwareInfo.cs hooks/SystemProxy.cs patch/ModPrep.cs"
 } > build/hooks.rsp
 dotnet "$CSC" @build/hooks.rsp
 # Into the game folder too, as mobile/build.sh does: the APKs take it from there (the tester APKs of 2026-10-20
 # 14:45 to 16:45 carried the 12:13 build, without mod rules v11, because only build/PortHooks.dll was made).
-cp build/PortHooks.dll build/game/
+# (Before the first staging there is none; host/stage.sh copies it in.)
+if [ -d build/game ]; then cp build/PortHooks.dll build/game/; fi
 ls -la build/PortHooks.dll | awk '{print "PortHooks.dll", $5, "bytes"}'

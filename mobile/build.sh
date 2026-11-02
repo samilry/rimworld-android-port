@@ -6,6 +6,9 @@ cd "$(dirname "$0")/.."
 . host/env.sh
 need "$CSC" "the C# compiler, Microsoft.Net.Compilers.Toolset 4.11.0" "host/fetch-deps.sh fetches it, or set ROSLYN_DIR"
 need "$RT/System.Runtime.dll" "the .NET runtime pack for android-arm64, 10.0.12" "host/fetch-deps.sh fetches it, or set DOTNET_RUNTIME_PACK"
+# It compiles against the staged game as patch.dll rewrote it and against PortHooks.
+need build/game/Assembly-CSharp.dll "the staged game" "run host/stage.sh build first"
+need build/PortHooks.dll "PortHooks" "run hooks/build.sh first"
 mkdir -p build
 # The game version this build is made for (the staged game's), for the reminder at the main menu (mobile/VersionNotice.cs).
 # BUILT_FOR=1.7.xxxx mobile/build.sh pretends another, to see the reminder.
