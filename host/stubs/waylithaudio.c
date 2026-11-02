@@ -8,6 +8,8 @@ static uint64_t next_handle = 1;
 static uint64_t handle(void) { return __atomic_fetch_add(&next_handle, 1, __ATOMIC_RELAXED); }
 
 EXPORT uint32_t wa_channels(void) {  return 2; }
+EXPORT int wa_device_lost(void) {  return 0; }
+EXPORT int wa_device_recoveries(void) {  return 0; }
 EXPORT uint64_t wa_group_create(uint64_t parent) { (void)parent; return handle(); }
 EXPORT void wa_group_release(uint64_t group) { (void)group;  }
 EXPORT void wa_group_set_mute(uint64_t group, int mute) { (void)group; (void)mute;  }

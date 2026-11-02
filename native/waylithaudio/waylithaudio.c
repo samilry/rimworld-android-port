@@ -9,6 +9,8 @@
 //            recently played ones are dropped again); a long one is decoded as it plays, like a stream.
 //   voices   one ma_sound each, with optional low-pass, high-pass and echo nodes between it and its group
 //   groups   ma_sound_group; handle 0 is the engine's endpoint
+//   device   the library's own, handed to the engine, so that wa_update can start a device that stopped by itself or
+//            make it again, as the PC's library does since 1.7.4995 (wa_device_recoveries, wa_device_lost)
 // Handles are indices with a generation, so that a voice the engine still refers to after its automatic release
 // is harmless. Reverb is a Freeverb node of our own (the engine passes Freeverb-style parameters), and so is the mix
 // matrix (the engine's panning of mono clips and the panning of 3D voices, as the PC's library does them).
@@ -129,8 +131,14 @@ typedef struct Group
 #define MAX_GROUPS 64
 
 static ma_engine g_engine;
-static ma_context g_nullContext;
-static int g_initialized, g_nullBackend;
+// The playback device is the library's own and is handed to the engine, as in the PC's library since 1.7.4995, so
+// that a device that stops or is lost can be started or made again (wa_update) under the same engine.
+static ma_device g_device;
+static ma_device_config g_deviceConfig;
+static ma_context_config g_contextConfig;
+static int g_initialized, g_nullBackend, g_deviceInit;
+static int g_masterPaused, g_downUpdates, g_recoveries;
+static uint32_t g_periodFrames;
 static ma_result g_lastError;
 static uint32_t g_rate = 48000, g_channels = 2;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1345,6 +1353,29 @@ EXPORT void wa_group_set_paused(uint64_t group, int paused) { WITH_GROUP({ if (p
 EXPORT void wa_group_set_pitch(uint64_t group, float pitch) { WITH_GROUP({ ma_sound_group_set_pitch(&g->group, pitch > 0.001f ? pitch : 0.001f); }); }
 
 // ---- the engine ----
+// The device's data callback: the engine's mix, as miniaudio's own callback for a device the engine makes (the PC's
+// library reads its global engine the same way).
+static void device_data(ma_device* device, void* output, const void* input, ma_uint32 frames)
+{
+    (void)device;
+    (void)input;
+    ma_engine_read_pcm_frames(&g_engine, output, frames, NULL);
+}
+
+// Makes the playback device (at wa_init, and again in the watchdog) with a context of its own, through
+// ma_device_init_ex as ma_engine_init did before: AAudio, and OpenSL ES when an AAudio stream does not open, then the
+// null backend; or the null backend alone. (A context opened first and the device on it, as the PC's library does,
+// would not try OpenSL ES when AAudio's context opens and its stream does not, and wa_init would fail the start.)
+static ma_result device_make(void)
+{
+    ma_backend nullOnly[] = { ma_backend_null };
+    ma_result r = ma_device_init_ex(g_nullBackend ? nullOnly : NULL, g_nullBackend ? 1 : 0, &g_contextConfig, &g_deviceConfig, &g_device);
+    if (r != MA_SUCCESS) return r;
+    g_deviceInit = 1;
+    g_periodFrames = g_device.playback.internalPeriodSizeInFrames;
+    return MA_SUCCESS;
+}
+
 EXPORT void wa_set_allocator(void* alloc, void* realloc_, void* free_)
 {
     g_alloc = (void* (*)(size_t))alloc;
@@ -1368,31 +1399,45 @@ EXPORT int wa_init(uint32_t sampleRate, uint32_t channels, int nullBackend)
     g_allocCallbacks.onMalloc = host_malloc;
     g_allocCallbacks.onRealloc = host_realloc;
     g_allocCallbacks.onFree = host_free;
+    // The playback device is made the way ma_engine_init made its own (f32, no pre-silenced buffer, no clipping), at
+    // 48 kHz if no rate is given and in stereo if the channels are not 1 to 8, as the PC's library does (the engine
+    // passes 48000 and 2). Unlike the PC's library, which since 1.7.4995 opens one context and then the device on it,
+    // the device keeps ma_device_init_ex's turn through the backends (see device_make).
+    g_nullBackend = nullBackend != 0;
+    g_contextConfig = ma_context_config_init();
+    g_contextConfig.allocationCallbacks = g_allocCallbacks;
+    g_deviceConfig = ma_device_config_init(ma_device_type_playback);
+    g_deviceConfig.playback.format = ma_format_f32;
+    g_deviceConfig.playback.channels = channels - 1 < 8 ? channels : 2;
+    g_deviceConfig.sampleRate = sampleRate ? sampleRate : 48000;
+    g_deviceConfig.dataCallback = device_data;
+    g_deviceConfig.noPreSilencedOutputBuffer = MA_TRUE;
+    g_deviceConfig.noClip = MA_TRUE;
+    ma_result r = device_make();
+    if (r != MA_SUCCESS)
+    {
+        g_lastError = r;
+        LOGW("audio: device init failed: %s", ma_result_description(r));
+        return (int)r;
+    }
     ma_engine_config cfg = ma_engine_config_init();
-    cfg.sampleRate = sampleRate;
-    cfg.channels = channels;
+    cfg.pDevice = &g_device;
     cfg.listenerCount = 1;
     cfg.allocationCallbacks = g_allocCallbacks;
-    if (nullBackend)
-    {
-        ma_backend backends[] = { ma_backend_null };
-        ma_context_config ccfg = ma_context_config_init();
-        ccfg.allocationCallbacks = g_allocCallbacks;
-        ma_result cr = ma_context_init(backends, 1, &ccfg, &g_nullContext);
-        if (cr != MA_SUCCESS) { g_lastError = cr; return (int)cr; }
-        cfg.pContext = &g_nullContext;
-        g_nullBackend = 1;
-    }
-    ma_result r = ma_engine_init(&cfg, &g_engine);
+    r = ma_engine_init(&cfg, &g_engine);
     if (r != MA_SUCCESS)
     {
         g_lastError = r;
         LOGW("audio: engine init failed: %s", ma_result_description(r));
-        if (g_nullBackend) { ma_context_uninit(&g_nullContext); g_nullBackend = 0; }
+        ma_device_uninit(&g_device);
+        g_deviceInit = 0;
         return (int)r;
     }
     g_rate = ma_engine_get_sample_rate(&g_engine);
     g_channels = ma_engine_get_channels(&g_engine);
+    g_masterPaused = 0;
+    g_downUpdates = 0;
+    g_recoveries = 0;
     g_initialized = 1;
     ma_device* device = ma_engine_get_device(&g_engine);
     LOGI("audio: miniaudio %s on %s, %u Hz, %u channels, period %u frames", ma_version_string(), device ? ma_get_backend_name(device->pContext->backend) : "no device", g_rate, g_channels, device ? device->playback.internalPeriodSizeInFrames : 0);
@@ -1405,8 +1450,9 @@ EXPORT void wa_shutdown(void)
     pthread_mutex_lock(&g_lock);
     for (int i = 0; i < MAX_VOICES; i++) voice_release_locked(&g_voices[i]);
     for (int i = 0; i < MAX_GROUPS; i++) if (g_groups[i].used) { ma_sound_group_uninit(&g_groups[i].group); g_groups[i].used = 0; g_groups[i].gen++; }
-    ma_engine_uninit(&g_engine);
-    if (g_nullBackend) { ma_context_uninit(&g_nullContext); g_nullBackend = 0; }
+    ma_engine_uninit(&g_engine); // stops the device, which is not the engine's to uninitialise
+    // The device's own context goes with it.
+    if (g_deviceInit) { if (ma_device_get_state(&g_device) != ma_device_state_uninitialized) ma_device_uninit(&g_device); g_deviceInit = 0; }
     g_initialized = 0;
     pthread_mutex_unlock(&g_lock);
 }
@@ -1414,15 +1460,29 @@ EXPORT void wa_shutdown(void)
 EXPORT int wa_last_error(void) { return (int)g_lastError; }
 EXPORT uint32_t wa_sample_rate(void) { return g_rate; }
 EXPORT uint32_t wa_channels(void) { return g_channels; }
+// The period of the device as it was made (at wa_init or again in wa_update), as the PC's library keeps it since
+// 1.7.4995: it stays readable while the device is lost.
 EXPORT uint32_t wa_period_frames(void)
 {
-    if (!g_initialized) return 0;
-    ma_device* device = ma_engine_get_device(&g_engine);
-    return device ? device->playback.internalPeriodSizeInFrames : 0;
+    pthread_mutex_lock(&g_lock);
+    uint32_t frames = g_initialized ? g_periodFrames : 0;
+    pthread_mutex_unlock(&g_lock);
+    return frames;
 }
 EXPORT uint64_t wa_time_frames(void) { return g_initialized ? ma_engine_get_time_in_pcm_frames(&g_engine) : 0; }
 EXPORT void wa_set_master_volume(float volume) { if (g_initialized) ma_engine_set_volume(&g_engine, volume); }
-EXPORT void wa_set_master_paused(int paused) { if (g_initialized) { if (paused) ma_engine_stop(&g_engine); else ma_engine_start(&g_engine); } }
+// The engine pauses the output while the window has no focus. As in the PC's library, only a change acts, and the
+// device watchdog in wa_update leaves a paused device alone.
+EXPORT void wa_set_master_paused(int paused)
+{
+    pthread_mutex_lock(&g_lock);
+    if (g_initialized && (paused != 0) != g_masterPaused)
+    {
+        g_masterPaused = paused != 0;
+        if (paused) ma_engine_stop(&g_engine); else ma_engine_start(&g_engine);
+    }
+    pthread_mutex_unlock(&g_lock);
+}
 EXPORT void wa_set_listener(float px, float py, float pz, float fx, float fy, float fz, float ux, float uy, float uz)
 {
     if (!g_initialized) return;
@@ -1443,11 +1503,76 @@ EXPORT int wa_playing_count(void)
     return n;
 }
 
-// Once per frame: voices that have stopped or ended on their own are released.
+// The device watchdog of the PC's library (1.7.4995), g_lock held: a device that has stopped without the engine
+// pausing the output, or that could not be made again, is acted on at the 60th update it has been down (about a
+// second): started again, and when that fails uninitialised and made again with the same configuration at the same
+// address (the engine keeps its pointer). Every time it plays again counts as a recovery (wa_device_recoveries).
+// On AAudio, miniaudio itself reopens a disconnected stream (a route change); when that fails it stops the device
+// with its stream closed, which only making the device again brings back.
+static void device_watchdog_locked(void)
+{
+    static int failuresLogged;
+    if (g_masterPaused || (g_deviceInit && ma_device_get_state(&g_device) != ma_device_state_stopped))
+    {
+        g_downUpdates = 0;
+        return;
+    }
+    if (++g_downUpdates <= 59) return;
+    g_downUpdates = 0;
+    if (g_deviceInit)
+    {
+        ma_result started = ma_device_start(&g_device);
+        if (started == MA_SUCCESS)
+        {
+            g_recoveries++;
+            failuresLogged = 0;
+            LOGI("audio: output device started again (%d)", g_recoveries);
+            return;
+        }
+        if (failuresLogged++ < 3) LOGW("audio: output device does not start (%s), making it again", ma_result_description(started));
+        if (ma_device_get_state(&g_device) != ma_device_state_uninitialized) ma_device_uninit(&g_device);
+        g_deviceInit = 0;
+    }
+    ma_result r = device_make();
+    if (r != MA_SUCCESS)
+    {
+        g_lastError = r;
+        // Tried again every second while it lasts: only the first few are logged.
+        if (failuresLogged++ < 3) LOGW("audio: output device lost, cannot make it again: %s", ma_result_description(r));
+        return;
+    }
+    if (ma_device_start(&g_device) == MA_SUCCESS)
+    {
+        g_recoveries++;
+        failuresLogged = 0;
+        LOGI("audio: output device made again on %s, period %u frames (%d)", ma_get_backend_name(g_device.pContext->backend), g_periodFrames, g_recoveries);
+    }
+}
+
+// How many times the watchdog brought the output back, and whether it is lost (no device could be made); the engine's
+// MiniAudioBackend.Update reads both after wa_update every frame since 1.7.4995 (and logs "Audio output device
+// restarted." and "Audio output device lost.").
+EXPORT int wa_device_recoveries(void)
+{
+    pthread_mutex_lock(&g_lock);
+    int n = g_recoveries;
+    pthread_mutex_unlock(&g_lock);
+    return n;
+}
+EXPORT int wa_device_lost(void)
+{
+    pthread_mutex_lock(&g_lock);
+    int lost = g_initialized && !g_deviceInit;
+    pthread_mutex_unlock(&g_lock);
+    return lost;
+}
+
+// Once per frame: the device watchdog, then voices that have stopped or ended on their own are released.
 EXPORT void wa_update(void)
 {
     if (!g_initialized) return;
     pthread_mutex_lock(&g_lock);
+    device_watchdog_locked();
     int playing = 0, used = 0;
     for (int i = 0; i < MAX_VOICES; i++)
     {
