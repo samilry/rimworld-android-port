@@ -1411,7 +1411,8 @@ namespace PortMobile
 		/// <summary>
 		/// Test: what the phone's CoreLib has from Ludeon's (patch/Patch.cs AddLudeonMembers), called the way mods and the
 		/// engine call them, and the engine's frame profiler switched on ("profiler": true; false switches it off again),
-		/// which needs X86Base.ReadTimeStampCounter to exist.
+		/// which needs X86Base.ReadTimeStampCounter to exist and, from 1.7.4995 on, reads ArmBase.Arm64's counter through
+		/// ProfilerClock (a 20 ms sleep has to measure about 20 ms by it).
 		/// </summary>
 		private static string TestCompat(JsonElement args)
 		{
@@ -1440,6 +1441,18 @@ namespace PortMobile
 				return builder.GetType().Name + ", " + module.GetType().Name;
 			});
 			Try("X86Base.ReadTimeStampCounter exists", () => typeof(System.Runtime.Intrinsics.X86.X86Base).GetMethod("ReadTimeStampCounter") != null);
+			// The clock takes one of the two by the CPU's features (the second with FEAT_ECV): both are called here.
+			foreach (string counter in new[] { "ReadVirtualCounter", "ReadVirtualCounterSelfSynchronized" })
+			{
+				Try("ArmBase.Arm64." + counter + "()", () => typeof(System.Runtime.Intrinsics.Arm.ArmBase.Arm64).GetMethod(counter)?.Invoke(null, null) ?? "missing");
+			}
+			Try("ProfilerClock", () =>
+			{
+				long start = Waylith.Profiling.ProfilerClock.GetTimestamp();
+				System.Threading.Thread.Sleep(20);
+				double ms = (Waylith.Profiling.ProfilerClock.GetTimestamp() - start) * 1000.0 / Waylith.Profiling.ProfilerClock.Frequency;
+				return "counter " + Waylith.Profiling.ProfilerClock.UsesTimeStampCounter + ", frequency " + Waylith.Profiling.ProfilerClock.Frequency + ", a 20 ms sleep measured " + ms.ToString("F1") + " ms";
+			});
 			if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("profiler", out JsonElement on))
 			{
 				Try("FrameProfiler.SetEnabled(" + on.GetBoolean() + ")", () =>

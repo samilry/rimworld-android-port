@@ -623,6 +623,13 @@ internal static class Patch
 	///     it, opening the frame profiler (Dubs Performance Analyzer, the game's dev window) threw MissingMethodException
 	///     every frame and the game ended (a tester's HONOR). Here it throws PlatformNotSupportedException, as every
 	///     X86Base method does on arm64; it is never reached (ProfilerClock uses it only when X86Base.IsSupported).
+	///   - ArmBase.Arm64.ReadVirtualCounter() and ReadVirtualCounterSelfSynchronized() (in Ludeon's since 1.7.4990 at
+	///     the latest), which the profiler clock reads on every arm64 CPU from 1.7.4995 on (the second where the CPU has
+	///     FEAT_ECV), inlined into FrameProfiler.BeginFrame like the one above: without them the frame profiler would
+	///     throw MissingMethodException again, when switched on and then every frame. Unlike that one these are reached,
+	///     so they work: Ludeon's JIT reads the counter register CNTVCT_EL0 there; here both return
+	///     Stopwatch.GetTimestamp(), a monotonic clock in units of its own (nanoseconds), which is right because
+	///     ProfilerClock measures the counter's Frequency against Stopwatch.
 	///   - AppDomain.DefineDynamicAssembly(name, access[, attributes]) and AssemblyBuilder.DefineDynamicModule(name,
 	///     fileName), the .NET Framework calls old mods and libraries make, as Ludeon's: the access made Run, or
 	///     RunAndCollect when it asks for collection.
@@ -645,6 +652,20 @@ internal static class Patch
 		tsc.Body.GetILProcessor().Emit(OpCodes.Newobj, notSupportedCtor);
 		tsc.Body.GetILProcessor().Emit(OpCodes.Throw);
 		x86.Methods.Add(tsc);
+
+		// ArmBase.Arm64.ReadVirtualCounter() and ReadVirtualCounterSelfSynchronized(): ulong => (ulong)Stopwatch.GetTimestamp().
+		// The JIT knows neither name, so it compiles (and inlines) this body as for any method, as it does its own managed
+		// helpers among the intrinsics.
+		TypeDefinition arm64 = module.GetType("System.Runtime.Intrinsics.Arm.ArmBase/Arm64");
+		MethodReference stopwatchTimestamp = module.GetType("System.Diagnostics.Stopwatch").Methods.Single(m => m.Name == "GetTimestamp" && m.IsStatic && m.Parameters.Count == 0);
+		foreach (string name in new[] { "ReadVirtualCounter", "ReadVirtualCounterSelfSynchronized" })
+		{
+			var counter = new MethodDefinition(name, MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig, ts.UInt64);
+			ILProcessor vc = counter.Body.GetILProcessor();
+			vc.Emit(OpCodes.Call, stopwatchTimestamp);
+			vc.Emit(OpCodes.Ret);
+			arm64.Methods.Add(counter);
+		}
 
 		// AppDomain.DefineDynamicAssembly
 		TypeDefinition appDomain = module.GetType("System.AppDomain");
@@ -774,7 +795,7 @@ internal static class Patch
 			c.Emit(OpCodes.Ret);
 			jitHelpers.Methods.Add(cast);
 		}
-		Console.WriteLine("Ludeon's additions: X86Base.ReadTimeStampCounter, AppDomain.DefineDynamicAssembly (2), AssemblyBuilder.DefineDynamicModule(name, fileName), JitHelpers.UnsafeEnumCast / UnsafeEnumCastLong");
+		Console.WriteLine("Ludeon's additions: X86Base.ReadTimeStampCounter, ArmBase.Arm64.ReadVirtualCounter / ReadVirtualCounterSelfSynchronized, AppDomain.DefineDynamicAssembly (2), AssemblyBuilder.DefineDynamicModule(name, fileName), JitHelpers.UnsafeEnumCast / UnsafeEnumCastLong");
 	}
 
 	/// <summary>
