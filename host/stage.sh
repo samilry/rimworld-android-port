@@ -8,14 +8,14 @@
 #           the user's mods (Mods/), the phone settings (mobile.txt), the Workshop downloader (workshop/) and the launch
 #           arguments (args.txt, not overwritten). Files the new build no longer has are listed, not removed.
 # RW_PACKAGE=<package> puts it into another install, e.g. the side-by-side test APK (com.local.waylith.porttest).
+# The game comes from RIMWORLD_DIR, Harmony from HARMONY_DLL (host/env.sh).
 set -e
 cd "$(dirname "$0")/.."
-ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. host/env.sh
 export MSYS_NO_PATHCONV=1
 PKG=${RW_PACKAGE:-com.local.waylith.port}
 D=/sdcard/Android/data/$PKG/files
-GAME="/d/SteamLibrary/steamapps/common/RimWorld"
-RT=dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0
+GAME=$RIMWORLD_DIR
 what=${1:-all}
 
 if [ "$what" = runtime ] || [ "$what" = all ]; then
@@ -32,6 +32,7 @@ if [ "$what" = runtime ] || [ "$what" = all ]; then
 fi
 
 if [ "$what" = game ] || [ "$what" = build ] || [ "$what" = all ]; then
+  need "$GAME/Version.txt" "RimWorld 1.7, the player's own copy" "set RIMWORLD_DIR to the game's folder"
   rm -rf build/game
   mkdir -p build/game
   ls "$RT"/*.dll | xargs -n1 basename | sort > build/framework-names.txt
@@ -57,9 +58,9 @@ if [ "$what" = game ] || [ "$what" = build ] || [ "$what" = all ]; then
   # (hooks/AndroidFonts.cs), where the PC has them from Windows' Segoe UI Symbol and Emoji. It is fetched under another
   # name and kept only when it is that commit's file: whether it is there decides whether it is fetched again, so an
   # error page or a broken transfer must never stand in for it.
-  EMOJI="downloads/notoemoji/NotoEmoji[wght].ttf"
+  EMOJI="$DEPS_DIR/notoemoji/NotoEmoji[wght].ttf"
   if [ ! -f "$EMOJI" ]; then
-    mkdir -p downloads/notoemoji
+    mkdir -p "$DEPS_DIR/notoemoji"
     curl -sfL --retry 3 -o "$EMOJI.part" "https://raw.githubusercontent.com/google/fonts/b979dba422e445492b0eb9951ac52ee0b4d648c3/ofl/notoemoji/NotoEmoji%5Bwght%5D.ttf"
     if [ "$(sha1sum < "$EMOJI.part" | cut -d' ' -f1)" != 0b698c3b0d6d4d42bf6c2b7212122afc7ba1f7cc ]; then
       rm -f "$EMOJI.part"
@@ -70,15 +71,15 @@ if [ "$what" = game ] || [ "$what" = build ] || [ "$what" = all ]; then
   fi
   cp "$EMOJI" build/game/NotoEmoji.ttf
   # Mono.Cecil: the hook prepares mod assemblies on the phone with it (hooks/ModPrepHost.cs).
-  cp /d/Harness/rimworld/tools/patcher/cecilpkg/lib/netstandard2.0/Mono.Cecil.dll build/game/
+  cp "$CECIL/Mono.Cecil.dll" build/game/
   # Harmony's 1.7 build of 0Harmony.dll lives in the game folder (the loader hook skips the mods' own copies); patch.dll
   # applies the port's rewrites to it and to the game's assemblies (hook calls, MonoMod on bionic, font paths).
-  HARMONY="/d/SteamLibrary/steamapps/workshop/content/294100/2009463077/1.7/Assemblies/0Harmony.dll"
+  HARMONY=$HARMONY_DLL
   [ -f "$HARMONY" ] && cp "$HARMONY" build/game/
   dotnet build/patch/patch.dll build/game "$RT"
   # The 1.6 Chinese language packs, for a build that ships English only (most 1.6 strings still apply).
   for p in Core Royalty Ideology Biotech Anomaly Odyssey; do
-    t="/d/Harness/rimworld/Builds/AndroidData/Data/$p/Languages/ChineseSimplified (简体中文).tar"
+    t="$LANG16_DIR/$p/Languages/ChineseSimplified (简体中文).tar"
     # Only where the game has none of its own (the official 1.7 packs come with the game since 2026-10-13).
     o="build/game/Data/$p/Languages/ChineseSimplified (简体中文).tar"
     [ -f "$t" ] && [ ! -f "$o" ] && mkdir -p "build/game/Data/$p/Languages" && cp "$t" "build/game/Data/$p/Languages/"

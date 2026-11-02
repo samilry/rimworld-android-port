@@ -8,9 +8,8 @@
 # usage: host/compat-check.sh build/game-4982 build/game-4984 ...   (exit status 1 when a copy lacks something)
 set -e
 cd "$(dirname "$0")/.."
-NET8=$(ls -d "/c/Program Files/dotnet/shared/Microsoft.NETCore.App/8.0."* | tail -1)
-CECIL=/d/Harness/rimworld/tools/patcher/cecilpkg/lib/netstandard2.0
-RT=dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0
+# NET8, CECIL, RT and the compiler: host/env.sh.
+. host/env.sh
 OUT=build/compat
 mkdir -p "$OUT/port"
 for tool in RefCheck NameCheck; do
@@ -20,7 +19,7 @@ for tool in RefCheck NameCheck; do
     echo "-r:\"$(cygpath -w "$CECIL/Mono.Cecil.dll")\""
     echo "\"$(cygpath -w host/compat/$tool.cs)\""
   } > "$OUT/$tool.rsp"
-  dotnet /d/Harness/rimworld/tools/roslyn/pkg/tasks/netcore/bincore/csc.dll -noconfig @"$OUT/$tool.rsp"
+  dotnet "$CSC" -noconfig @"$OUT/$tool.rsp"
   echo '{ "runtimeOptions": { "tfm": "net8.0", "framework": { "name": "Microsoft.NETCore.App", "version": "8.0.0" } } }' > "$OUT/$tool.runtimeconfig.json"
 done
 cp "$CECIL/Mono.Cecil.dll" "$OUT/"

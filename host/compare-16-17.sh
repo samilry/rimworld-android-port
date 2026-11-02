@@ -11,7 +11,7 @@
 #   17: uses host/perf-start.sh and host/sched-exp.sh; lines go to logs/sched-exp.txt
 # After the triple speed state the whole process is counted for 10 s (all threads: cycles and processor time), and the
 # threads that used the most processor time are listed: both to logs/compare-16-17.txt.
-ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. "$(dirname "$0")/env.sh"  # ADB
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
 WHICH=$1; LABEL=$2

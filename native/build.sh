@@ -1,5 +1,6 @@
 #!/bin/bash
-# Builds the engine's native libraries for arm64 Android from upstream sources (downloads/src, see README):
+# Builds the engine's native libraries for arm64 Android from upstream sources (DEPS_DIR/src, by default downloads/src;
+# host/fetch-deps.sh fetches them, host/env.sh says where they are):
 #   libvma.so            Vulkan Memory Allocator 3.3.0 (native/vma)
 #   libstb.so            stb_image + stb_image_write (native/stb)
 #   libgli.so            the gli C API (native/gli, gli + glm)
@@ -12,16 +13,19 @@
 #   libwaylithaudio.so   the engine's audio library on miniaudio 0.11.22 + stb_vorbis (native/waylithaudio)
 #   libmm_exhelper.so    MonoMod's native exception helper rebuilt with a static libunwind (native/exhelper)
 #   libportastc.so       ASTC 4x4 encoding with ARM's astcenc 5.7.0 (native/astc), for GPUs without BC textures
-# usage: native/build.sh [all|vma|stb|gli|imgui|freetype|slang|monomodc|waylithaudio|exhelper|astc]   (output: build/native/lib/*.so)
+#   libKtx.so            Khronos' libktx 4.4.0, read and transcode only (native/ktx)
+# usage: native/build.sh [all|vma|stb|gli|imgui|freetype|slang|monomodc|waylithaudio|exhelper|astc|ktx]   (output: build/native/lib/*.so)
 set -e
 cd "$(dirname "$0")/.."
-NDK="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/NDK"
+. host/env.sh
+check_ndk
+NDK=$ANDROID_NDK
 BIN="$NDK/toolchains/llvm/prebuilt/windows-x86_64/bin"
 CC="$BIN/clang.exe"
 CXX="$BIN/clang++.exe"
 AR="$BIN/llvm-ar.exe"
 TARGET="--target=aarch64-linux-android26"
-SRC=downloads/src
+SRC=$DEPS_DIR/src
 IMGUI=$SRC/imgui-1.92.2-docking
 FREETYPE=$SRC/freetype-VER-2-13-3
 OUT=build/native
@@ -87,8 +91,16 @@ if want slang; then
   # native/slang/build-official.cmd builds it from downloads/src/slang-2026.19 (Windows generators, then NDK r27c).
   # The engine compiles the shaders mods bring as source with it, exactly as on the PC; its shader caches are keyed by
   # Slang's build tag, which is the PC's ("2026.19"), so the game's precompiled shaders keep matching.
-  SLANGLIB=downloads/src/slang-2026.19/build-android-arm64-v8a/Release/lib
-  [ -f "$SLANGLIB/libslang-compiler.so" ] || cmd //c "native\\slang\\build-official.cmd"
+  SLANGSRC=$SRC/slang-2026.19
+  SLANGLIB=$SLANGSRC/build-android-arm64-v8a/Release/lib
+  if [ ! -f "$SLANGLIB/libslang-compiler.so" ]; then
+    # The script finds the source and NDK r27c in downloads\ by itself; anywhere else it is told, in Windows' form.
+    (
+      [ "$SLANGSRC" = downloads/src/slang-2026.19 ] || export PORT17_SLANG_SRC="$(cygpath -aw "$SLANGSRC")"
+      [ "$SLANG_NDK" = downloads/android-ndk-r27c ] || export PORT17_SLANG_NDK="$(cygpath -aw "$SLANG_NDK")"
+      cmd //c "native\\slang\\build-official.cmd"
+    )
+  fi
   # The GLSL module and Slang's glslang/SPIRV-Tools part carry the version in their names; Slang loads them by them.
   for f in libslang-compiler.so libslang-glslang-2026.19.so libslang-glsl-module-2026.19.so; do
     "$BIN/llvm-strip.exe" --strip-unneeded -o "$LIB/$f" "$SLANGLIB/$f"
@@ -126,7 +138,7 @@ if want ktx; then
   # textures through it (Brutal.TextureApi.Ktx.Loader); without it a mod's KTX texture failed on the phone only.
   # Bound as "Ktx": libKtx.so. The encoding entry points Brutal.Ktx also declares are not there (looked up on first
   # use, and the engine's loader uses none).
-  KTX=downloads/ktx/KTX-Software-4.4.0
+  KTX=$DEPS_DIR/ktx/KTX-Software-4.4.0
   KDEFS="-DLIBKTX -DKTX_FEATURE_KTX1 -DKTX_FEATURE_KTX2 -DKTX_OMIT_VULKAN=1 -DSUPPORT_SOFTWARE_ETC_UNPACK=1 -DBASISD_SUPPORT_FXT1=0"
   KINC="-I $KTX/include -I $KTX/lib -I $KTX/utils -I $KTX/other_include -I $KTX/external -I $KTX/external/basisu/transcoder -I $KTX/external/basisu/zstd -I $KTX/external/dfdutils"
   KOBJ="$OBJ/ktx"

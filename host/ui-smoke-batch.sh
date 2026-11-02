@@ -4,7 +4,8 @@
 #   host/ui-smoke-batch.sh NAME packageId...       (a driver serving on RW_DRIVER_PORT=47198 for the test package)
 # Back up the test package's Config/ModsConfig.xml first and put it back afterwards; nothing is saved.
 cd "$(dirname "$0")/.."
-A="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. host/env.sh
+A=$ADB
 M=/data/media/0/Android/data/com.local.waylith.porttest/files
 D="$M/home/unity3d/Ludeon Studios/RimWorld by Ludeon Studios"
 name=$1; shift

@@ -8,7 +8,7 @@
 # with a baseline: the phone's own game service moves the clock limits around, and so does the temperature.
 # usage: host/sched-exp.sh <label> <seconds> [setting=value ...]     e.g. host/sched-exp.sh pin 30 pin=1 clear=1
 #        RELOAD=0 keeps the scene running; WARM=<seconds>: how old the freshly loaded scene is when the measurement starts (20)
-ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. "$(dirname "$0")/env.sh"  # ADB
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
 PKG=com.local.waylith.port

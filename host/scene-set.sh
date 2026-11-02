@@ -7,7 +7,7 @@
 #   menu-mods         the user's 106 mods, no scene
 #   play              the user's 106 mods, no test saves in Saves, no switch files
 # In the measuring states game/memwatch.txt (5) is there too: the runtime's and the engine's own accounts every 5 s.
-ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. "$(dirname "$0")/env.sh"  # ADB
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
 PKG=com.local.waylith.port

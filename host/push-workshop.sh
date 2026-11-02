@@ -2,7 +2,7 @@
 # Puts build/workshop (PortWorkshop.dll and the libraries it loads) into game/workshop on the phone.
 # A file in use by the running game is replaced by a rename: the game keeps the old one until it starts again.
 # usage: host/push-workshop.sh [file.dll ...]      (default: all of build/workshop/*.dll)
-ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. "$(dirname "$0")/env.sh"  # ADB
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
 PKG=com.local.waylith.port

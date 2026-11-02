@@ -1,7 +1,7 @@
 #!/bin/bash
 # Puts a local file into the game folder on the phone under a name, or removes that name there.
 # usage: host/game-file.sh put <local file> <name in game/>      host/game-file.sh rm <name in game/> ...
-ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. "$(dirname "$0")/env.sh"  # ADB
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
 PKG=com.local.waylith.port

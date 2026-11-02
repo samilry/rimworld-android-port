@@ -8,7 +8,7 @@
 #        e.g. host/perf-profile.sh paused 10 MainThread "ThrottleToTargetFrameRate" "callers:^\[vdso\]!"
 #        The render thread and the job workers have no names of their own ("Thread-24"): see top -H for them.
 # Output: logs/prof-<label>/ (chains.txt, perf.map, maps.txt) and the report of host/perf-profile.js on it.
-ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. "$(dirname "$0")/env.sh"  # ADB
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
 PKG=${RW_PACKAGE:-com.local.waylith.port}

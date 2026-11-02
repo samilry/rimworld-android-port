@@ -3,7 +3,7 @@
 # screen, then starts the activity once so that its data folders exist. usage: host/install.sh
 set -e
 cd "$(dirname "$0")/.."
-ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. "$(dirname "$0")/env.sh"  # ADB
 export MSYS_NO_PATHCONV=1
 PKG=com.local.waylith.port
 "$ADB" push build/port17.apk /data/local/tmp/port17.apk | tail -1 | cut -c1-80

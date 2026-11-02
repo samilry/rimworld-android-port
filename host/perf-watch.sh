@@ -3,7 +3,7 @@
 # each CPU cluster's clock and the limit the phone holds it to, the GPU's load and clock, and the temperatures of the
 # processor, the GPU and the shell. Then the game's own report lines from the same period ("[mobile] perf: ...").
 # usage: host/perf-watch.sh <seconds> [label]        output also in logs/perf-watch-<label>.txt
-ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. "$(dirname "$0")/env.sh"  # ADB
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
 SECS=${1:-30}

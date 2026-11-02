@@ -3,7 +3,7 @@
 # N s after the process started"). Starts the game with the given launcher arguments and runtime environment.
 # usage: host/start-time.sh "<launcher arguments>" [NAME=value ...]      e.g. host/start-time.sh "-NoCrashDialog -Verbose"
 # game/perftest.txt is set aside for the start (it would load a scene) and put back.
-ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. "$(dirname "$0")/env.sh"  # ADB
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
 PKG=com.local.waylith.port

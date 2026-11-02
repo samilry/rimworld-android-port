@@ -8,7 +8,7 @@
 #        host/heap-debug.sh dump <label>  the running game writes its heap; fetched to logs/heap/<label>.txt and summed
 #                                         by host/heap-dump.js (libraries; pass its options after the label)
 #        host/heap-debug.sh off           back to normal starts (do not leave it on: the game is slower under it)
-ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. "$(dirname "$0")/env.sh"  # ADB
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
 PKG=com.local.waylith.port

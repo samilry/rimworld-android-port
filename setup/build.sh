@@ -4,8 +4,10 @@
 # Output: build/setup/ (PortSetup.dll, Mono.Cecil.dll), which goes to setup/ in the APK's payload.
 set -e
 cd "$(dirname "$0")/.."
-RT=dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0
-CECIL=/d/Harness/rimworld/tools/patcher/cecilpkg/lib/netstandard2.0
+. host/env.sh
+need "$CSC" "the C# compiler, Microsoft.Net.Compilers.Toolset 4.11.0" "host/fetch-deps.sh fetches it, or set ROSLYN_DIR"
+need "$RT/System.Runtime.dll" "the .NET runtime pack for android-arm64, 10.0.12" "host/fetch-deps.sh fetches it, or set DOTNET_RUNTIME_PACK"
+need "$CECIL/Mono.Cecil.dll" "Mono.Cecil 0.11.6" "host/fetch-deps.sh fetches it, or set CECIL_DIR"
 mkdir -p build/setup
 {
   echo "-nologo -target:exe -main:PortSetup.Setup -optimize+ -nullable:disable -langversion:latest -nostdlib+ -noconfig -deterministic+"
@@ -17,6 +19,6 @@ mkdir -p build/setup
   echo "-r:\"$(cygpath -w "$CECIL/Mono.Cecil.Rocks.dll")\""
   echo "setup/Setup.cs patch/Patch.cs patch/ModPrep.cs"
 } > build/setup.rsp
-dotnet /d/Harness/rimworld/tools/roslyn/pkg/tasks/netcore/bincore/csc.dll @build/setup.rsp
+dotnet "$CSC" @build/setup.rsp
 cp "$CECIL/Mono.Cecil.dll" "$CECIL/Mono.Cecil.Rocks.dll" build/setup/
 ls -la build/setup/PortSetup.dll | awk '{print "PortSetup.dll", $5, "bytes"}'

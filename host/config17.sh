@@ -4,7 +4,7 @@
 #   host/config17.sh diff <label>       what differs now from that backup
 #   host/config17.sh restore <label>    puts the backup's files back (files the game added since stay)
 # The game is not stopped or started here; stop it before a restore, or it writes its own state back on exit.
-ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. "$(dirname "$0")/env.sh"  # ADB
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
 PKG=com.local.waylith.port

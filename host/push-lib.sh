@@ -4,7 +4,7 @@
 # Android 15 installs keep lib/arm64 read-only (cp says "Invalid argument"; a new file there is refused): then build and
 # install the APK instead, and never delete the installed library first (the app is left without it).
 # usage: host/push-lib.sh libwaylithaudio.so [...]     (files are taken from build/native/lib/)
-ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. "$(dirname "$0")/env.sh"  # ADB
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
 PKG=com.local.waylith.port

@@ -5,7 +5,8 @@
 # Output: build/workshop/PortWorkshop.dll; the whole of build/workshop goes to game/workshop on the phone.
 set -e
 cd "$(dirname "$0")/.."
-RT=dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0
+. host/env.sh
+need "$CSC" "the C# compiler, Microsoft.Net.Compilers.Toolset 4.11.0" "host/fetch-deps.sh fetches it, or set ROSLYN_DIR"
 {
   echo "-nologo -target:library -optimize+ -nullable:disable -langversion:latest -nostdlib+ -noconfig -deterministic+"
   echo "-out:build/workshop/PortWorkshop.dll"
@@ -15,5 +16,5 @@ RT=dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0
   for f in SteamKit2 protobuf-net protobuf-net.Core QRCoder; do echo "-r:\"$(cygpath -w "build/workshop/$f.dll")\""; done
   ls workshop/*.cs | tr '\n' ' '
 } > build/workshop.rsp
-dotnet /d/Harness/rimworld/tools/roslyn/pkg/tasks/netcore/bincore/csc.dll @build/workshop.rsp
+dotnet "$CSC" @build/workshop.rsp
 ls -la build/workshop/PortWorkshop.dll | awk '{print "PortWorkshop.dll", $5, "bytes"}'

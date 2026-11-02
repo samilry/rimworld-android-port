@@ -2,13 +2,21 @@
 rem Builds Slang 2026.19, the shader compiler of the PC's game (its slang-compiler.dll says 2026.19), for Android
 rem arm64: first the build-time generators for Windows (Visual Studio's C++ tools and the Windows SDK), then the
 rem libraries with NDK r27c (Slang needs C++20; Unity's NDK r23 is older). Sources: downloads\src\slang-2026.19
-rem (git clone --branch v2026.19 --recurse-submodules), NDK: downloads\android-ndk-r27c.
+rem (git clone --branch v2026.19 --recurse-submodules), NDK: downloads\android-ndk-r27c; elsewhere when native/build.sh
+rem says so (PORT17_SLANG_SRC, PORT17_SLANG_NDK: host/env.sh's DEPS_DIR and SLANG_NDK, as Windows paths).
 rem usage: native\slang\build-official.cmd       (output: downloads\src\slang-2026.19\build-android-arm64-v8a\Release\lib)
 setlocal
 set ROOT=%~dp0..\..
 set SRC=%ROOT%\downloads\src\slang-2026.19
+if defined PORT17_SLANG_SRC set "SRC=%PORT17_SLANG_SRC%"
 set NDK=%ROOT%\downloads\android-ndk-r27c
-set VS=C:\Program Files\Microsoft Visual Studio\2022\Community
+if defined PORT17_SLANG_NDK set "NDK=%PORT17_SLANG_NDK%"
+rem Visual Studio 2022 with its C++ tools, CMake and Ninja: VS_DIR, else the Community edition where it installs, else
+rem the newest installation with the C++ tools that vswhere finds (Professional, Enterprise, the Build Tools).
+set "VS=%VS_DIR%"
+if not defined VS if exist "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" set "VS=C:\Program Files\Microsoft Visual Studio\2022\Community"
+if not defined VS for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS=%%i"
+if not defined VS echo Visual Studio 2022 with the C++ tools not found: set VS_DIR to its folder & exit 1
 call "%VS%\VC\Auxiliary\Build\vcvars64.bat" >nul
 if errorlevel 1 exit 1
 set PATH=%VS%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;%VS%\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;%PATH%

@@ -13,15 +13,22 @@
 #                                  installed game (its own data folder and files provider; uninstalling it touches
 #                                  nothing else);
 #                                  TEST_LABEL=Port17 keeps the normal label (screenshots for the tester guide)
+# The key is port17.keystore in the repository's root, made by the first build; its password is PORT17_KS_PASS. An
+# update installs over an installed APK only when it is signed with the same key.
 set -e
 cd "$(dirname "$0")/.."
-ANDROID="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer"
-NDK="$ANDROID/NDK"
-SDK="$ANDROID/SDK"
-JDK="$ANDROID/OpenJDK"
+# The NDK, SDK and JDK (Unity 2022.3's, or host/fetch-deps.sh's identical copies): host/env.sh.
+. host/env.sh
+NDK=$ANDROID_NDK
+SDK=$ANDROID_SDK
 BT="$SDK/build-tools/34.0.0"
-export JAVA_HOME="C:/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/OpenJDK"
-export PATH="$JDK/bin:$PATH"
+check_ndk
+need "$BT/aapt2.exe" "Android SDK build-tools 34.0.0" "host/fetch-deps.sh fetches it, or set ANDROID_SDK"
+need "$SDK/platforms/android-34/android.jar" "Android SDK platform android-34" "host/fetch-deps.sh fetches it, or set ANDROID_SDK"
+need "$JDK/bin/javac.exe" "the JDK, Temurin 11.0.14.1+1" "host/fetch-deps.sh fetches it, or set JDK"
+need "$DOTNET_RUNTIME_PACK/runtimes/android-arm64/native/libcoreclr.so" "the .NET runtime pack for android-arm64, 10.0.12" "host/fetch-deps.sh fetches it, or set DOTNET_RUNTIME_PACK"
+export JAVA_HOME="$(cygpath -am "$JDK")"
+export PATH="$(cygpath -au "$JDK")/bin:$PATH"
 CLANG="$NDK/toolchains/llvm/prebuilt/windows-x86_64/bin/clang.exe"
 TARGET="--target=aarch64-linux-android26"
 OUT=build
@@ -44,13 +51,13 @@ cp "$LIB/libsteam_api64.so" "$LIB/libsteam_api.so"
 # The Android GLFW (window, input, Vulkan surface), bound by the engine as libglfw.so.
 "$CLANG" $TARGET -shared -fPIC -O2 -Wall -Wno-unused-function -I host -o "$LIB/libglfw.so" host/glfw/glfw_android.c -landroid -llog -ldl
 # The Vulkan interposer (identity surface transform, swapchain and present logging), found before the system loader.
-"$CLANG" $TARGET -shared -fPIC -O2 -Wall -I downloads/src/Vulkan-Headers-1.3.296/include -o "$LIB/libvulkan.so" host/vulkan/vulkan_interpose.c -llog -ldl
+"$CLANG" $TARGET -shared -fPIC -O2 -Wall -I "$DEPS_DIR/src/Vulkan-Headers-1.3.296/include" -o "$LIB/libvulkan.so" host/vulkan/vulkan_interpose.c -llog -ldl
 # The engine's native libraries built from upstream sources (native/build.sh).
 for f in build/native/lib/*.so; do cp "$f" "$LIB/"; done
 # The Khronos validation layer only when asked (VVL=1 host/build.sh); the engine enables it with -EnableVulkanValidation.
 if [ "$VVL" = 1 ]; then cp build/native/vvl/libVkLayer_khronos_validation.so "$LIB/"; fi
 for f in libcoreclr.so libclrjit.so libSystem.Native.so libSystem.Globalization.Native.so libSystem.IO.Compression.Native.so libSystem.Security.Cryptography.Native.Android.so; do
-  cp "dotnet-android-coreclr/runtimes/android-arm64/native/$f" "$LIB/"
+  cp "$DOTNET_RUNTIME_PACK/runtimes/android-arm64/native/$f" "$LIB/"
 done
 # A refused sched_setaffinity must not fail the runtime's threads (HyperOS: 0x8007054F at coreclr_initialize), and
 # reflection writes static readonly fields as on the PC.
@@ -62,7 +69,7 @@ rm -rf "$OUT/classes" "$OUT/dex"
 mkdir -p "$OUT/classes" "$OUT/dex"
 "$JDK/bin/javac.exe" -encoding UTF-8 -source 8 -target 8 -nowarn -bootclasspath "$SDK/platforms/android-34/android.jar" -d "$OUT/classes" host/java/com/local/waylith/port/Boot.java host/java/com/local/waylith/port/MainActivity.java host/java/com/local/waylith/port/TextInputView.java host/java/com/local/waylith/port/ZipNames.java host/java/com/local/waylith/port/Payload.java host/java/com/local/waylith/port/SetupService.java host/java/com/local/waylith/port/ImportService.java host/java/com/local/waylith/port/GameService.java host/java/com/local/waylith/port/DocumentReader.java host/java/com/local/waylith/port/Diagnostics.java host/java/com/local/waylith/port/ReportSummary.java host/java/com/local/waylith/port/ExportLogsActivity.java host/java/com/local/waylith/port/ReimportActivity.java host/java/com/local/waylith/port/FilesProvider.java
 # (d8.bat breaks on the space in the JDK path; the jar is run directly.)
-"$JDK/bin/java.exe" -cp "$BT/lib/d8.jar" com.android.tools.r8.D8 --release --min-api 26 --lib "$SDK/platforms/android-34/android.jar" --output "$OUT/dex" "$OUT"/classes/com/local/waylith/port/*.class dotnet-android-coreclr/runtimes/android-arm64/native/libSystem.Security.Cryptography.Native.Android.dex
+"$JDK/bin/java.exe" -cp "$BT/lib/d8.jar" com.android.tools.r8.D8 --release --min-api 26 --lib "$SDK/platforms/android-34/android.jar" --output "$OUT/dex" "$OUT"/classes/com/local/waylith/port/*.class "$DOTNET_RUNTIME_PACK/runtimes/android-arm64/native/libSystem.Security.Cryptography.Native.Android.dex"
 cp "$OUT/dex/classes.dex" "$OUT/apk/classes.dex"
 
 MANIFEST=host/AndroidManifest.xml
@@ -84,11 +91,13 @@ cp host/licenses/* "$OUT/apk/assets/licenses/"
 # BinaryFormatter as on the PC: the game ships the NuGet package System.Runtime.Serialization.Formatters 10.0.0, Microsoft's
 # compatibility package with the implementation (MIT; byte for byte the PC game's file), where the runtime pack's copy
 # throws PlatformNotSupportedException. It replaces the pack's copy in the runtime folder (here and in host/stage.sh).
+# The package is fetched here when host/fetch-deps.sh has not put it in DEPS_DIR/nuget already.
 FORMATTERS=build/runtime/System.Runtime.Serialization.Formatters.dll
 if [ ! -f "$FORMATTERS" ]; then
-  mkdir -p build/runtime downloads/nuget
-  curl -sL -o downloads/nuget/system.runtime.serialization.formatters.10.0.0.nupkg https://api.nuget.org/v3-flatcontainer/system.runtime.serialization.formatters/10.0.0/system.runtime.serialization.formatters.10.0.0.nupkg
-  unzip -p downloads/nuget/system.runtime.serialization.formatters.10.0.0.nupkg lib/net8.0/System.Runtime.Serialization.Formatters.dll > "$FORMATTERS"
+  NUPKG=$DEPS_DIR/nuget/system.runtime.serialization.formatters.10.0.0.nupkg
+  mkdir -p build/runtime "$DEPS_DIR/nuget"
+  [ -f "$NUPKG" ] || curl -sL -o "$NUPKG" https://api.nuget.org/v3-flatcontainer/system.runtime.serialization.formatters/10.0.0/system.runtime.serialization.formatters.10.0.0.nupkg
+  unzip -p "$NUPKG" lib/net8.0/System.Runtime.Serialization.Formatters.dll > "$FORMATTERS"
 fi
 
 if [ "$PAYLOAD" = 1 ]; then
@@ -96,7 +105,7 @@ if [ "$PAYLOAD" = 1 ]; then
   P=$OUT/payload
   rm -rf "$P"
   mkdir -p "$P/runtime" "$P/game/Mods" "$P/game/workshop" "$OUT/apk/assets"
-  cp dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0/* "$P/runtime/"
+  cp "$RT"/* "$P/runtime/"
   [ -f build/runtime/System.Private.CoreLib.dll ] && cp build/runtime/System.Private.CoreLib.dll "$P/runtime/"
   cp "$FORMATTERS" "$P/runtime/"
   cp -r build/game/. "$P/game/"
@@ -117,7 +126,7 @@ if [ "$PAYLOAD" = port ]; then
   P=$OUT/payload
   rm -rf "$P"
   mkdir -p "$P/runtime" "$P/game/Mods" "$P/game/workshop" "$P/setup" "$OUT/apk/assets"
-  cp dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0/* "$P/runtime/"
+  cp "$RT"/* "$P/runtime/"
   [ -f build/runtime/System.Private.CoreLib.dll ] && cp build/runtime/System.Private.CoreLib.dll "$P/runtime/"
   cp "$FORMATTERS" "$P/runtime/"
   for f in PortHooks.dll PortMobile.dll 0Harmony.dll Mono.Cecil.dll ModRules.txt NotoEmoji.ttf; do cp "build/game/$f" "$P/game/"; done

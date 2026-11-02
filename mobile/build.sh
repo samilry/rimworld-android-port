@@ -3,7 +3,9 @@
 # pack. usage: mobile/build.sh   (output: build/PortMobile.dll, also copied to build/game)
 set -e
 cd "$(dirname "$0")/.."
-RT=dotnet-android-coreclr/runtimes/android-arm64/lib/net10.0
+. host/env.sh
+need "$CSC" "the C# compiler, Microsoft.Net.Compilers.Toolset 4.11.0" "host/fetch-deps.sh fetches it, or set ROSLYN_DIR"
+need "$RT/System.Runtime.dll" "the .NET runtime pack for android-arm64, 10.0.12" "host/fetch-deps.sh fetches it, or set DOTNET_RUNTIME_PACK"
 mkdir -p build
 # The game version this build is made for (the staged game's), for the reminder at the main menu (mobile/VersionNotice.cs).
 # BUILT_FOR=1.7.xxxx mobile/build.sh pretends another, to see the reminder.
@@ -18,6 +20,6 @@ echo "namespace PortMobile { internal static class BuiltFor { public const strin
   ls mobile/*.cs | tr '\n' ' '
   echo "build/BuiltFor.cs"
 } > build/mobile.rsp
-dotnet /d/Harness/rimworld/tools/roslyn/pkg/tasks/netcore/bincore/csc.dll @build/mobile.rsp
+dotnet "$CSC" @build/mobile.rsp
 cp build/PortMobile.dll build/game/
 ls -la build/PortMobile.dll | awk '{print "PortMobile.dll", $5, "bytes"}'

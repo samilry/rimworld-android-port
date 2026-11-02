@@ -9,7 +9,9 @@
 # Reports from before 2026-10-27 have no build ids: a library is then matched to the one cached file of its name.
 set -e
 cd "$(dirname "$0")/.."
-NDK="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/NDK/toolchains/llvm/prebuilt/windows-x86_64/bin"
+# The NDK's LLVM tools (host/env.sh).
+. host/env.sh
+NDK="$ANDROID_NDK/toolchains/llvm/prebuilt/windows-x86_64/bin"
 INPUT="$1"
 FETCH=0
 [ "$2" = "--fetch" ] && FETCH=1

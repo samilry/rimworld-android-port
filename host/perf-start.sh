@@ -3,7 +3,7 @@
 # (written to game/runtime.env; none given: the file is removed), and waits until the scene is set.
 # usage: host/perf-start.sh [NAME=value ...]      e.g. host/perf-start.sh DOTNET_GCgen0size=0x1000000
 #        A name with an empty value ("DOTNET_GCgen0size=") takes the variable out of the environment.
-ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. "$(dirname "$0")/env.sh"  # ADB
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
 PKG=com.local.waylith.port

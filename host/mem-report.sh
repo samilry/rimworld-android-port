@@ -5,7 +5,7 @@
 # summary (dumpsys meminfo) and, when game/memwatch.txt is there, the last lines of the runtime's and the engine's
 # own accounts. Everything is kept in logs/mem-<label>/, and the summary is printed and written to summary.txt.
 # usage: host/mem-report.sh <label> [package]       (package: com.local.waylith.port, or the 1.6 port's)
-ADB="/c/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
+. "$(dirname "$0")/env.sh"  # ADB
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
 LABEL=$1; PKG=${2:-com.local.waylith.port}

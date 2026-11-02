@@ -13,9 +13,10 @@
 const { execFileSync } = require('child_process');
 const fs = require('fs'), path = require('path'), crypto = require('crypto');
 const { mvidOf } = require('./mvid.js');
-const ADB = 'C:/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe';
-const STEAMAPPS = 'D:/SteamLibrary/steamapps';
-const WORKSHOP = STEAMAPPS + '/workshop/content/294100';
+// adb and the Workshop folder: ADB and WORKSHOP_DIR as host/env.sh has them, else the development machine's.
+const ADB = process.env.ADB || 'C:/Program Files/Unity/Hub/Editor/2022.3.62f3/Editor/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe';
+const WORKSHOP = process.env.WORKSHOP_DIR || 'D:/SteamLibrary/steamapps/workshop/content/294100';
+const STEAMAPPS = path.resolve(WORKSHOP, '../../..');
 const PKG = 'com.local.waylith.port';
 const MODS = `/data/media/0/Android/data/${PKG}/files/game/Mods`;
 const PUSH = `/sdcard/Android/data/${PKG}/files/game/Mods`;
