@@ -1,3 +1,8 @@
-# Run on the phone (Android sh): LF only, whatever autocrlf does on checkout.
-host/vinput/hidctl.sh text eol=lf
+# Text files are checked out with LF line ends whatever core.autocrlf says (Git for Windows sets it to true), so that a
+# clone builds the same files as the development tree: C# verbatim strings keep the line ends of the source (a CRLF
+# checkout built another PortMobile.dll), and the phone's sh needs LF (host/vinput/hidctl.sh).
+* text=auto eol=lf
+# cmd.exe finds its labels reliably only in CRLF files.
+*.cmd text eol=crlf
+*.bat text eol=crlf
 *.patch -text
