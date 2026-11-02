@@ -156,7 +156,7 @@ Game 1.7.4985 · [Commits](https://github.com/samilry/rimworld-android-port/comp
 - Dev-mode map tools and one-tap placement tools in mods (Universal Blueprints) get confirm and cancel buttons.
 - Import errors are explained for files that are still downloading or in the trash.
 
-## 2026-10-25: list momentum, render resolution, save import
+## 2026-10-25: list momentum, render resolution
 
 Game 1.7.4985 · [Commits](https://github.com/samilry/rimworld-android-port/compare/v2026.10.24...v2026.10.25) · [Code](https://github.com/samilry/rimworld-android-port/tree/v2026.10.25)
 

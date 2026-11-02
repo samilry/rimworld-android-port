@@ -104,7 +104,7 @@
 - PurePatcher（1.7 的 Prepatcher）需要游戏文件夹里有系统程序集，第一次打开时复制一份过去（约 60 MB）。它要求重启时，游戏会自动重启。
 - “避开摄像头挖孔”也作用于主菜单。
 
-## 2026-10-28：字体线程闪退、线程栈、缺失程序集替身
+## 2026-10-28：字体线程闪退，线程栈，缺失程序集替身
 
 游戏版本 1.7.4990 · [当天的提交](https://github.com/samilry/rimworld-android-port/compare/v2026.10.27...v2026.10.28) · [当天结束时的代码](https://github.com/samilry/rimworld-android-port/tree/v2026.10.28)
 
@@ -178,7 +178,7 @@
 - 开发者模式的地图工具（生成、杀死、爆炸等），以及“通用蓝图”这类点一下就放东西的 mod 工具，加了“确认 / 取消”按钮。
 - 导入 mod 或存档时，选中的文件没下载完或已经在回收站，会用中文说明原因和办法。
 
-## 2026-10-25：列表惯性，分辨率选项，导入存档
+## 2026-10-25：列表惯性，分辨率选项
 
 游戏版本 1.7.4985 · [当天的提交](https://github.com/samilry/rimworld-android-port/compare/v2026.10.24...v2026.10.25) · [当天结束时的代码](https://github.com/samilry/rimworld-android-port/tree/v2026.10.25)
 
