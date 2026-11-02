@@ -1366,10 +1366,15 @@ static void device_data(ma_device* device, void* output, const void* input, ma_u
 // ma_device_init_ex as ma_engine_init did before: AAudio, and OpenSL ES when an AAudio stream does not open, then the
 // null backend; or the null backend alone. (A context opened first and the device on it, as the PC's library does,
 // would not try OpenSL ES when AAudio's context opens and its stream does not, and wa_init would fail the start.)
-static ma_result device_make(void)
+// Made again by the watchdog, it leaves the null backend out: the PC's library makes it again on its real context
+// only, so a device that cannot be made stays lost and is tried again every second instead of playing nothing.
+static ma_result device_make(int again)
 {
     ma_backend nullOnly[] = { ma_backend_null };
-    ma_result r = ma_device_init_ex(g_nullBackend ? nullOnly : NULL, g_nullBackend ? 1 : 0, &g_contextConfig, &g_deviceConfig, &g_device);
+    ma_backend real[] = { ma_backend_aaudio, ma_backend_opensl };
+    const ma_backend* backends = g_nullBackend ? nullOnly : again ? real : NULL;
+    ma_uint32 count = g_nullBackend ? 1 : again ? 2 : 0;
+    ma_result r = ma_device_init_ex(backends, count, &g_contextConfig, &g_deviceConfig, &g_device);
     if (r != MA_SUCCESS) return r;
     g_deviceInit = 1;
     g_periodFrames = g_device.playback.internalPeriodSizeInFrames;
@@ -1413,7 +1418,7 @@ EXPORT int wa_init(uint32_t sampleRate, uint32_t channels, int nullBackend)
     g_deviceConfig.dataCallback = device_data;
     g_deviceConfig.noPreSilencedOutputBuffer = MA_TRUE;
     g_deviceConfig.noClip = MA_TRUE;
-    ma_result r = device_make();
+    ma_result r = device_make(0);
     if (r != MA_SUCCESS)
     {
         g_lastError = r;
@@ -1533,7 +1538,7 @@ static void device_watchdog_locked(void)
         if (ma_device_get_state(&g_device) != ma_device_state_uninitialized) ma_device_uninit(&g_device);
         g_deviceInit = 0;
     }
-    ma_result r = device_make();
+    ma_result r = device_make(1);
     if (r != MA_SUCCESS)
     {
         g_lastError = r;
