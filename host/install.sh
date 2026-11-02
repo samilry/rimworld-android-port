@@ -3,7 +3,7 @@
 # screen, then starts the activity once so that its data folders exist. usage: host/install.sh
 set -e
 cd "$(dirname "$0")/.."
-. "$(dirname "$0")/env.sh"  # ADB
+. host/env.sh  # ADB
 export MSYS_NO_PATHCONV=1
 PKG=com.local.waylith.port
 "$ADB" push build/port17.apk /data/local/tmp/port17.apk | tail -1 | cut -c1-80

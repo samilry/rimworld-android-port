@@ -5,7 +5,7 @@
 # usage: host/run.sh [seconds] [launcher arguments...]      e.g. host/run.sh 90 -NoCrashDialog -Verbose
 set -e
 cd "$(dirname "$0")/.."
-. "$(dirname "$0")/env.sh"  # ADB
+. host/env.sh  # ADB
 export MSYS_NO_PATHCONV=1
 PKG=com.local.waylith.port
 SECONDS_LIMIT=${1:-90}

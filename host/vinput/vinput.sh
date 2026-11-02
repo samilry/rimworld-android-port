@@ -10,7 +10,7 @@
 #   host/vinput/vinput.sh key CODES [MOD] HID usage codes, comma separated (4 a .. 29 z, 40 Enter, 41 Esc, 44 Space)
 #   host/vinput/vinput.sh stop            both devices gone, the files removed
 cd "$(dirname "$0")"
-. "$(dirname "$0")/../env.sh"  # ADB
+. ../env.sh  # ADB
 run() { timeout 60 env MSYS_NO_PATHCONV=1 "$ADB" shell "$1"; }
 case "$1" in
 start)
