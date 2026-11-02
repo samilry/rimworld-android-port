@@ -48,7 +48,7 @@ PC harnesses on the stock runtime and on the PC's own runtime files (run without
 
 | | |
 |---|---|
-| Scale | 438 commits, 2026-10-13 to 11-02; about 36k lines of C#, 7.5k C/C++, 6.4k Java |
+| Scale | 450+ commits, 2026-10-13 to 11-02 (300+ of them in this repository's history, the rest only updated the private development log; daily changes in [CHANGELOG.en.md](../CHANGELOG.en.md)); about 36k lines of C#, 7.5k C/C++, 6.4k Java |
 | Start-up | vanilla 16.7 s to the main menu; 130+ mods about 46–48 s |
 | 3× speed | vanilla 100 colonists 57 FPS / 359 TPS (60 FPS cap); a modded mid-game colony 357–360 TPS, 110–119 FPS (120 cap) |
 | vs. the 1.6 port | 31–36 → 57 FPS; main-thread cycles per tick halved |
