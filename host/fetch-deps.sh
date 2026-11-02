@@ -22,12 +22,13 @@ NUGET=https://api.nuget.org/v3-flatcontainer
 GITHUB=https://github.com
 RAW=https://raw.githubusercontent.com
 
-# fetch <url> <sha256> <file>: downloads unless the file is there with that checksum, and checks the download.
+# fetch <url> <sha256> <file>: downloads unless the file is there with that checksum, and checks the download. A transfer
+# that stalls (under 1 KB/s for a minute) counts as failed and is tried again, as an error is.
 fetch() {
   if [ -f "$3" ] && [ "$(sha256sum < "$3" | cut -d' ' -f1)" = "$2" ]; then return; fi
   echo "fetching $1"
   mkdir -p "$(dirname "$3")"
-  curl -fsSL --retry 3 --retry-delay 2 -o "$3.part" "$1"
+  curl -fsSL --retry 3 --retry-delay 2 --speed-limit 1024 --speed-time 60 -o "$3.part" "$1"
   local got
   got=$(sha256sum < "$3.part" | cut -d' ' -f1)
   if [ "$got" != "$2" ]; then
