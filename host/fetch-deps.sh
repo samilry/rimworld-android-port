@@ -225,4 +225,5 @@ if want emoji; then
   echo "  emoji ready"
 fi
 
-echo "dependencies in $DEPS_DIR: $(du -sh "$DEPS_DIR" | cut -f1)"
+# (Not du: over the NDKs' hundred thousand files it takes minutes.)
+echo "dependencies in $DEPS_DIR"
