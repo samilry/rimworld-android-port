@@ -26,6 +26,10 @@ CXX="$BIN/clang++.exe"
 AR="$BIN/llvm-ar.exe"
 TARGET="--target=aarch64-linux-android26"
 SRC=$DEPS_DIR/src
+# The libraries keep the source paths of their asserts (__FILE__), as downloads/src/...: sources fetched elsewhere get
+# the same names, so that the libraries are the same files wherever DEPS_DIR is (a folder without spaces).
+MAP=
+[ "$DEPS_DIR" = downloads ] || MAP="-fmacro-prefix-map=$DEPS_DIR=downloads"
 IMGUI=$SRC/imgui-1.92.2-docking
 FREETYPE=$SRC/freetype-VER-2-13-3
 OUT=build/native
@@ -58,17 +62,17 @@ fi
 
 if want vma; then
   echo "== vma"
-  "$CXX" $TARGET $CXXFLAGS -shared -I "$SRC/Vulkan-Headers-1.3.296/include" -I "$SRC/VulkanMemoryAllocator-3.3.0/include" -Wno-nullability-completeness -o "$LIB/libvma.so" native/vma/vma.cpp -ldl -llog
+  "$CXX" $TARGET $MAP $CXXFLAGS -shared -I "$SRC/Vulkan-Headers-1.3.296/include" -I "$SRC/VulkanMemoryAllocator-3.3.0/include" -Wno-nullability-completeness -o "$LIB/libvma.so" native/vma/vma.cpp -ldl -llog
 fi
 
 if want stb; then
   echo "== stb"
-  "$CC" $TARGET -O2 -fPIC -shared -I "$SRC" -o "$LIB/libstb.so" native/stb/stb.c -lm
+  "$CC" $TARGET $MAP -O2 -fPIC -shared -I "$SRC" -o "$LIB/libstb.so" native/stb/stb.c -lm
 fi
 
 if want gli; then
   echo "== gli"
-  "$CXX" $TARGET $CXXFLAGS -shared -I "$SRC/gli-master" -I "$SRC/glm-1.0.1" -DGLM_ENABLE_EXPERIMENTAL -DGLM_FORCE_SILENT_WARNINGS -o "$LIB/libgli.so" native/gli/gli_c.cpp
+  "$CXX" $TARGET $MAP $CXXFLAGS -shared -I "$SRC/gli-master" -I "$SRC/glm-1.0.1" -DGLM_ENABLE_EXPERIMENTAL -DGLM_FORCE_SILENT_WARNINGS -o "$LIB/libgli.so" native/gli/gli_c.cpp
 fi
 
 if want monomodc; then
@@ -83,7 +87,7 @@ fi
 
 if want waylithaudio; then
   echo "== waylithaudio (miniaudio + stb_vorbis)"
-  "$CC" $TARGET -O2 -fPIC -shared -fvisibility=hidden -Wall -Wno-unused-function -Wno-unused-variable -I "$SRC/miniaudio" -o "$LIB/libwaylithaudio.so" native/waylithaudio/waylithaudio.c -llog -ldl -lm
+  "$CC" $TARGET $MAP -O2 -fPIC -shared -fvisibility=hidden -Wall -Wno-unused-function -Wno-unused-variable -I "$SRC/miniaudio" -o "$LIB/libwaylithaudio.so" native/waylithaudio/waylithaudio.c -llog -ldl -lm
 fi
 
 if want slang; then
@@ -142,11 +146,11 @@ if want freetype; then
   rm -f "$OBJ"/ft_*.o
   for f in $FT_SOURCES; do
     o="$OBJ/ft_$(basename "$f" .c).o"
-    "$CC" $TARGET -O2 -fPIC -DFT2_BUILD_LIBRARY -I "$FREETYPE/include" -w -c "$FREETYPE/src/$f" -o "$o"
+    "$CC" $TARGET $MAP -O2 -fPIC -DFT2_BUILD_LIBRARY -I "$FREETYPE/include" -w -c "$FREETYPE/src/$f" -o "$o"
   done
   rm -f "$OBJ/libfreetype.a"
   "$AR" rcs "$OBJ/libfreetype.a" "$OBJ"/ft_*.o
-  "$CXX" $TARGET $CXXFLAGS $IMGUI_DEFS -shared -I "$IMGUI" -I "$FREETYPE/include" -o "$LIB/libimgui_freetype.so" \
+  "$CXX" $TARGET $MAP $CXXFLAGS $IMGUI_DEFS -shared -I "$IMGUI" -I "$FREETYPE/include" -o "$LIB/libimgui_freetype.so" \
     "$IMGUI/misc/freetype/imgui_freetype.cpp" native/imgui_freetype/imgui_freetype_c.cpp "$OBJ/libfreetype.a" -L "$LIB" -limgui -lm
 fi
 
@@ -165,13 +169,13 @@ if want ktx; then
   mkdir -p "$KOBJ"
   for f in lib/checkheader.c lib/filestream.c lib/hashlist.c lib/info.c lib/memstream.c lib/strings.c lib/swap.c lib/texture.c lib/texture1.c lib/texture2.c lib/vkformat_check.c lib/vkformat_check_variant.c lib/vkformat_str.c lib/vkformat_typesize.c \
            external/dfdutils/createdfd.c external/dfdutils/colourspaces.c external/dfdutils/interpretdfd.c external/dfdutils/printdfd.c external/dfdutils/queries.c external/dfdutils/vk2dfd.c external/basisu/zstd/zstd.c; do
-    "$CC" $TARGET -std=c11 -O2 -fPIC -w $KDEFS $KINC -c "$KTX/$f" -o "$KOBJ/$(echo "$f" | tr '/' '_').o"
+    "$CC" $TARGET $MAP -std=c11 -O2 -fPIC -w $KDEFS $KINC -c "$KTX/$f" -o "$KOBJ/$(echo "$f" | tr '/' '_').o"
   done
   for f in lib/basis_transcode.cpp lib/miniz_wrapper.cpp external/basisu/transcoder/basisu_transcoder.cpp lib/etcunpack.cxx external/etcdec/etcdec.cxx; do
-    "$CXX" $TARGET -std=c++17 -O2 -fPIC -w $KDEFS $KINC -c "$KTX/$f" -o "$KOBJ/$(echo "$f" | tr '/' '_').o"
+    "$CXX" $TARGET $MAP -std=c++17 -O2 -fPIC -w $KDEFS $KINC -c "$KTX/$f" -o "$KOBJ/$(echo "$f" | tr '/' '_').o"
   done
   # The engine binds the entry points of Brutal's Ktx.dll ("<function>1"), not libktx's own: native/ktx/ktx_c.c.
-  "$CC" $TARGET -std=c11 -O2 -fPIC -w $KDEFS $KINC -c native/ktx/ktx_c.c -o "$KOBJ/ktx_c.o"
+  "$CC" $TARGET $MAP -std=c11 -O2 -fPIC -w $KDEFS $KINC -c native/ktx/ktx_c.c -o "$KOBJ/ktx_c.o"
   "$CXX" $TARGET -shared -fPIC -static-libstdc++ -Wl,--no-undefined -o "$LIB/libKtx.so" "$KOBJ"/*.o -lm -llog
 fi
 
@@ -179,7 +183,7 @@ if want astc; then
   echo "== astc"
   # ARM's astcenc 5.7.0 (Apache-2.0), NEON only (every arm64 core), for the GPUs without BC (hooks/Textures.cs).
   ASTC=$SRC/astc-encoder-5.7.0/Source
-  "$CXX" $TARGET -std=c++17 -O3 -fPIC -s -fvisibility=hidden -static-libstdc++ -DASTCENC_NEON=1 -DASTCENC_SSE=0 -DASTCENC_AVX=0 -DASTCENC_SVE=0 -DASTCENC_POPCNT=0 -DASTCENC_F16C=0 -DASTCENC_NO_INVARIANCE=1 -shared -I "$ASTC" -o "$LIB/libportastc.so" native/astc/astc_shim.cpp "$ASTC"/astcenc_*.cpp -lm
+  "$CXX" $TARGET $MAP -std=c++17 -O3 -fPIC -s -fvisibility=hidden -static-libstdc++ -DASTCENC_NEON=1 -DASTCENC_SSE=0 -DASTCENC_AVX=0 -DASTCENC_SVE=0 -DASTCENC_POPCNT=0 -DASTCENC_F16C=0 -DASTCENC_NO_INVARIANCE=1 -shared -I "$ASTC" -o "$LIB/libportastc.so" native/astc/astc_shim.cpp "$ASTC"/astcenc_*.cpp -lm
 fi
 
 ls -la "$LIB" | awk 'NR>3 {print $5"\t"$9}'
