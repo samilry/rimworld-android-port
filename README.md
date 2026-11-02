@@ -75,24 +75,14 @@ flowchart TB
 
 要求：64 位 ARM（arm64-v8a）、Android 8.0 及以上、支持 Vulkan 的 GPU（Adreno、Mali 都可以）、导入时约 3 GB 空闲空间。
 
-## 从源码构建（概要）
+## 从源码构建
 
-不是一键构建。脚本在 Windows 的 Git Bash 里运行，工具的路径写在各脚本开头，需要按自己的环境修改。
+完整步骤见 [BUILDING.md](BUILDING.md)。在 Windows 的 Git Bash 里：
 
-需要：
+1. `host/fetch-deps.sh` 按构建用的版本从官方来源下载并校验全部依赖：Android NDK r23b（Slang 用 r27c）、SDK build-tools 34 和 platform android-34、Temurin JDK 11、.NET 10.0.12 的安卓运行时包和 crossgen2、Roslyn、Mono.Cecil、ILSpy 命令行、工坊下载器的 NuGet 库、各原生库的上游源码和 Slang 2026.19。
+2. `host/build-all.sh` 依次编 patch.dll、PortHooks、准备 `build/game`、PortMobile、PortWorkshop、PortSetup、CoreLib、原生库，最后打出 `build/port17-tester.apk`（不含游戏文件）。
 
-- 自己的 RimWorld 1.7 安装：脚本对着游戏的程序集编译，并从中准备 `build/game`；另需 Harmony mod 1.7 版的 `0Harmony.dll`；
-- .NET 10 的安卓运行时包 `Microsoft.NETCore.App.Runtime.android-arm64` 10.0.12（NuGet），以及同一版本的 crossgen2；
-- 电脑上的 .NET 运行时、Roslyn 编译器（`csc.dll`）、Mono.Cecil 0.11；工坊下载器用的 NuGet 库（SteamKit2、protobuf-net、QRCoder、ZstdSharp）；
-- Android NDK（大部分库用 r23；Slang 要 C++20，用 r27c，并需要 Visual Studio 2022 先编它的代码生成器）、SDK build-tools 34、platform android-34、JDK、Node.js；
-- 上游源码放在 `downloads/src`（清单见 `native/build.sh` 开头）。
-
-步骤：
-
-1. `patch/build.sh` 编 patch.dll；`native/build.sh` 编原生库（Slang 用 `native/slang/build-official.cmd`）。
-2. `host/stage.sh build`：从自己的游戏准备 `build/game` 并改写程序集；用 `patch.dll --forwarders` 生成 Unity 程序集名的类型转发门面。
-3. `hooks/build.sh`、`mobile/build.sh`、`workshop/build.sh`、`setup/build.sh`；`host/corelib.sh` 生成带兼容开关的 CoreLib。
-4. `PAYLOAD=port host/build.sh` 生成 `build/port17-tester.apk`（不含游戏文件）。开发时也可以用 `host/build.sh` 打宿主 APK，再用 `host/stage.sh` 经 adb 把运行时和自己的游戏推到自己的手机上。
+另需自己的 RimWorld 1.7、创意工坊里 Harmony mod 的 `0Harmony.dll`，以及 Git for Windows、Node.js、.NET 8 运行时，编 Slang 用的 Visual Studio 2022 和 Python 3。用同一版本的游戏，构建出的程序集和原生库与开发机上的逐字节相同（Slang 的库例外：它们记着自己构建目录的路径）。开发时也可以用 `host/build.sh` 打宿主 APK，再用 `host/stage.sh` 经 adb 把运行时和自己的游戏推到自己的手机上。
 
 ## 第三方组件与许可
 
@@ -206,24 +196,14 @@ flowchart TB
 
 Requirements: 64-bit ARM (arm64-v8a), Android 8.0 or later, a Vulkan GPU (Adreno and Mali both work), about 3 GB of free storage for the import.
 
-## Building from source (outline)
+## Building from source
 
-This is not a one-command build. The scripts run in Git Bash on Windows; tool locations are set at the top of each script and need adjusting to your machine.
+The full procedure is in [BUILDING.md](BUILDING.md). In Git Bash on Windows:
 
-You need:
+1. `host/fetch-deps.sh` downloads every dependency at the version the build uses, from its original publisher, and checks it: the Android NDK r23b (r27c for Slang), SDK build-tools 34 and platform android-34, the Temurin JDK 11, the .NET 10.0.12 Android runtime pack and crossgen2, Roslyn, Mono.Cecil, ILSpy's command line, the Workshop downloader's NuGet libraries, the upstream sources of the native libraries and Slang 2026.19.
+2. `host/build-all.sh` builds patch.dll, PortHooks, the staged `build/game`, PortMobile, PortWorkshop, PortSetup, the CoreLib and the native libraries, and finally `build/port17-tester.apk` (no game files).
 
-- your own RimWorld 1.7 installation: the scripts compile against the game's assemblies and stage `build/game` from it; also the Harmony mod's 1.7 `0Harmony.dll`;
-- the .NET 10 Android runtime pack `Microsoft.NETCore.App.Runtime.android-arm64` 10.0.12 (NuGet) and crossgen2 of the same build;
-- a .NET runtime on the PC, the Roslyn compiler (`csc.dll`), Mono.Cecil 0.11, and the NuGet libraries of the Workshop downloader (SteamKit2, protobuf-net, QRCoder, ZstdSharp);
-- the Android NDK (r23 for most libraries; r27c for Slang, which needs C++20, plus Visual Studio 2022 for its code generators), SDK build-tools 34, platform android-34, a JDK, Node.js;
-- upstream sources in `downloads/src` (listed at the top of `native/build.sh`).
-
-Steps:
-
-1. `patch/build.sh` builds patch.dll; `native/build.sh` builds the native libraries (Slang through `native/slang/build-official.cmd`).
-2. `host/stage.sh build` stages `build/game` from your game and rewrites its assemblies; `patch.dll --forwarders` writes the type-forwarding facades for the Unity assembly names.
-3. `hooks/build.sh`, `mobile/build.sh`, `workshop/build.sh`, `setup/build.sh`; `host/corelib.sh` builds the CoreLib with the compatibility switches.
-4. `PAYLOAD=port host/build.sh` makes `build/port17-tester.apk` (no game files). For development, `host/build.sh` makes the host APK and `host/stage.sh` pushes the runtime and your own game to your own phone over adb.
+You also need your own RimWorld 1.7, the Harmony mod's `0Harmony.dll` from the Workshop, and Git for Windows, Node.js, the .NET 8 runtime, and for Slang's build Visual Studio 2022 and Python 3. With the same game version, the assemblies and native libraries come out byte for byte as on the development machine (except Slang's libraries, which record the path of their build folder). For development, `host/build.sh` makes the host APK and `host/stage.sh` pushes the runtime and your own game to your own phone over adb.
 
 ## Third-party components and licenses
 

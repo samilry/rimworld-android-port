@@ -5,11 +5,12 @@
 # Slang is a git clone of its tag with the submodules (the commit is checked); native/build.sh builds it with NDK r27c and
 # Visual Studio 2022 (native/slang/build-official.cmd). What is unpacked already is left alone (a mark in
 # DEPS_DIR/.fetched says it is complete), so an interrupted run can simply be started again.
-# usage: host/fetch-deps.sh             everything: about 2.5 GB of downloads, 7 GB unpacked (BUILDING.md)
+# usage: host/fetch-deps.sh             everything: about 2.5 GB of downloads, 9 GB in DEPS_DIR with the archives
 #        host/fetch-deps.sh NAME...     only these: ndk slang-ndk sdk jdk dotnet roslyn cecil ilspy nuget sources ktx
 #                                       slang emoji
-# The player brings the game (RIMWORLD_DIR) and Harmony (HARMONY_DLL); Git for Windows, Node.js, the .NET 8 runtime and
-# Visual Studio 2022 are installed (BUILDING.md). The archives stay in DEPS_DIR/archives and may be deleted afterwards.
+# The player brings the game (RIMWORLD_DIR) and Harmony (HARMONY_DLL); Git for Windows, Node.js, the .NET 8 runtime,
+# Visual Studio 2022 and Python 3 are installed (BUILDING.md). The archives stay in DEPS_DIR/archives and may be deleted
+# afterwards.
 set -e
 cd "$(dirname "$0")/.."
 . host/env.sh
