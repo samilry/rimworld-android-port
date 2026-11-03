@@ -36,7 +36,7 @@ The goal: play 1.7 on Android with **PC mods working unchanged**, added and remo
 
 **Performance.** Measured in CPU cycles, not FPS: vendor clock caps and a closed-loop 30-FPS hold let the same scene run at 28 or 42 FPS from one run to the next. Wins: the GC's gen0 budget (the runtime fell back to 256 KiB, 80 collections a second; pauses 9.7 % → 0.4 %), finer parallel batches (26 FPS / 310 TPS → 43 / 357 with 57 modded colonists at 3×), a nanosleep frame limiter (−13.5 % main-thread cycles at 60 FPS), and memory work (≈5.4 → 2.3 GB vanilla, ≈7.4 → 4.4 GB with 106 mods). Measured and dropped: core pinning, Android hint sessions, triple buffering, multi-core JIT, ReadyToRun for game code (it would defeat Harmony patches), and TieredPGO off (late-game ticks about 9 % slower).
 
-**No game in the APK.** The ≈55 MB tester APK carries the runtime and the port only. The player picks their game folder or zip; PortSetup prepares it in a separate process (about 8 s) and the game starts: 44 s from picking the zip to the main menu. Real imports on testers' phones and the development phone drove the hardening: foreground services, an 8-thread copy (13.5 min → 97 s for 17,498 files), GBK file names in zips, vendor file pickers, unreadable mod folders. Reports carry a run record, a start-up watchdog, decoded tombstones, the runtime's last words and an error summary.
+**No game in the APK.** The ≈55 MB tester APK carries the runtime and the port only. The player picks their game folder or zip; PortSetup prepares it in a separate process (about 8 s) and the game starts: 44 s from picking the zip to the main menu. Real imports on testers' phones and the development phone drove the hardening: foreground services, an 8-thread copy (13.5 min → 97 s for 17,498 files), GBK file names in zips, vendor file pickers, unreadable mod folders. Reports carry a run record (with the moments a tester marked and described), a start-up watchdog, decoded tombstones, the runtime's last words and an error summary.
 
 **Game updates.** Seven updates (1.7.4976 → 4995) were followed with one recipe: stage the new version beside the old, compare assemblies and the runtime, rebuild, check the build against kept older versions (`host/compat-check.sh`), verify on a side-by-side test package. Examples: 4990 moved engine texture types (bound by name for both versions); 4995 added runtime field injection (stand-ins behave as the PC with the feature off).
 
@@ -48,7 +48,7 @@ PC harnesses on the stock runtime and on the PC's own runtime files (run without
 
 | | |
 |---|---|
-| Scale | 450+ commits, 2026-10-13 to 11-02 (300+ of them in this repository's history, the rest only updated the private development log; daily changes in [CHANGELOG.en.md](../CHANGELOG.en.md)); about 36k lines of C#, 7.5k C/C++, 6.4k Java |
+| Scale | 460 commits, 2026-10-13 to 11-03 (300+ of them in this repository's history, the rest only updated the private development log and tester guides; daily changes in [CHANGELOG.en.md](../CHANGELOG.en.md)); about 36k lines of C#, 7.5k C/C++, 6.4k Java |
 | Start-up | vanilla 16.7 s to the main menu; 130+ mods about 46–48 s |
 | 3× speed | vanilla 100 colonists 57 FPS / 359 TPS (60 FPS cap); a modded mid-game colony 357–360 TPS, 110–119 FPS (120 cap) |
 | vs. the 1.6 port | 31–36 → 57 FPS; main-thread cycles per tick halved |

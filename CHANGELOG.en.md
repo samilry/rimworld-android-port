@@ -9,6 +9,21 @@ This file lists what changed in Port17 each day, newest first. It is a shorter E
 - **Game versions** are build numbers of RimWorld 1.7 on Steam's unstable branch, for example 1.7.4995.
 - There were no commits on 10-17, 10-18, 10-31 and 11-01.
 
+## 2026-11-03: mouse keys on the key wheel again, a description for "record a problem"
+
+Game 1.7.4995 (1.7.4990 also works) · [Commits](https://github.com/samilry/rimworld-android-port/compare/v2026.11.02...v2026.11.03) · [Code at the end of the day](https://github.com/samilry/rimworld-android-port/tree/v2026.11.03)
+
+**Added**
+- The key wheel can hold left and right mouse keys again. The two separate on-screen buttons stay.
+  - The keys are added in the wheel's setup, among the phone keys.
+  - They work like the separate buttons and share their state: a tap on "right" applies to the next touch only, a half-second hold locks it, and "left" goes back to left clicks.
+  - Once "right" is switched on from the wheel, the ring closes, so the whole map is free for the click.
+  - With the separate buttons switched off in the options, the wheel's keys work on their own.
+- "Record a problem" now asks for a description. After the screenshot and the game's state are saved, a text box opens at the top of the screen.
+  - The box is not in the screenshot. The game pauses while the tester writes, up to 1000 characters.
+  - "Save" or the back key keeps the words; "Skip" keeps only the screenshot and the data.
+  - The words are stored with that moment's screenshot and data. The summary of the exported logs starts with the recent marked moments and what was written about each.
+
 ## 2026-11-02: RimWorld 1.7.4995, public source, reproducible build
 
 Game 1.7.4995 (1.7.4990 also works) · [Commits](https://github.com/samilry/rimworld-android-port/compare/v2026.10.30...v2026.11.02) · [Code at the end of the day](https://github.com/samilry/rimworld-android-port/tree/v2026.11.02)
