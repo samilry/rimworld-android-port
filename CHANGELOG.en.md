@@ -9,7 +9,7 @@ This file lists what changed in Port17 each day, newest first. It is a shorter E
 - **Game versions** are build numbers of RimWorld 1.7 on Steam's unstable branch, for example 1.7.4995.
 - There were no commits on 10-17, 10-18, 10-31 and 11-01.
 
-## 2026-11-03: mouse keys on the key wheel again, a description for "record a problem"
+## 2026-11-03: mouse keys on the key wheel again, a description for "record a problem", mod asset bundles found by Workshop id
 
 Game 1.7.4995 (1.7.4990 also works) · [Commits](https://github.com/samilry/rimworld-android-port/compare/v2026.11.02...v2026.11.03) · [Code at the end of the day](https://github.com/samilry/rimworld-android-port/tree/v2026.11.03)
 
@@ -23,6 +23,16 @@ Game 1.7.4995 (1.7.4990 also works) · [Commits](https://github.com/samilry/rimw
   - The box is not in the screenshot. The game pauses while the tester writes, up to 1000 characters.
   - "Save" or the back key keeps the words; "Skip" keeps only the screenshot and the data.
   - The words are stored with that moment's screenshot and data. The summary of the exported logs starts with the recent marked moments and what was written about each.
+- Crash reports can name the method a crash happened in.
+  - Some crashes happen in code the runtime compiled while the game ran, and the report used to show only an address there.
+  - For three days after a native crash, the runtime lists the methods it compiles in every run. If the game crashes in such code again in those days, the report names the method, including methods made by mods' Harmony patches.
+  - Starting takes about 3 % longer on those days; otherwise nothing is listed.
+
+**Fixed**
+- Effects, textures and sounds in some mods' asset bundles were not found. Milira Imperium's shield, for example, was drawn as an opaque white disc with stripes, which a tester took for screen corruption.
+  - These mods' authors build their bundles with paths under the folder the Workshop gives the mod on the PC, named after its Workshop id, and the game looks things up under the mod's folder name (or its package id).
+  - On the phone a mod keeps the folder it was imported with, which need not be its id (many of one tester's mods were in "updated-<number>" folders), so nothing was found and the shader fell back to the engine's default.
+  - A name not found under the folder is now looked up under the mod's Workshop id as well, as on the PC, and so are folders of textures and sounds. Folders keep their names, and mod settings are not affected.
 
 ## 2026-11-02: RimWorld 1.7.4995, public source, reproducible build
 

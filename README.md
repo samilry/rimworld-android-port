@@ -23,7 +23,7 @@ Port17 让 RimWorld 1.7 在安卓手机上运行，电脑版的 mod 不用改就
 - **Mali GPU**：不能采样 BC 压缩贴图，先解码兜底，再在手机上转成 ASTC 4×4 并缓存（图集 821 MB，解成 RGBA 要约 3.3 GB）。
 - **安装包不含游戏**：测试者安装包约 55 MB；玩家导入自己的游戏后在手机上现场处理，开发机上从选中游戏压缩包到主菜单 44 秒。
 - **游戏内的创意工坊下载器**：用玩家自己的 Steam 登录，一个 146 个 mod 的合集（2.5 GB）约 17 分钟下载安装完，零失败。
-- **约三周、460 次提交**（2026-10-13 至 11-03），期间跟进了 7 次游戏更新（1.7.4976 → 4995）。本仓库的历史里是其中 300 多次，其余 140 多次只改了不公开的开发记录和测试指南。每天改了什么见[更新日志](CHANGELOG.md)。
+- **约三周、465 次提交**（2026-10-13 至 11-03），期间跟进了 7 次游戏更新（1.7.4976 → 4995）。本仓库的历史里是其中 300 多次，其余 140 多次只改了不公开的开发记录和测试指南。每天改了什么见[更新日志](CHANGELOG.md)。
 
 ## 架构
 
@@ -144,7 +144,7 @@ Technical write-up: [docs/TECHNICAL.md](docs/TECHNICAL.md) (Chinese) · summary 
 - **Mali GPUs** cannot sample BC textures: BC is decoded as a fallback, then re-encoded to ASTC 4×4 on the phone and cached (atlases 821 MB instead of ≈3.3 GB as RGBA).
 - **No game files in the APK**: the tester APK is ≈55 MB; players import their own copy, which is prepared on the phone: 44 s from picking the game's zip to the main menu on the development phone.
 - **In-game Steam Workshop downloader**: with the player's own Steam login, a 146-mod collection (2.5 GB) was downloaded and installed in about 17 minutes without a failure.
-- **About three weeks, 460 commits** (2026-10-13 to 11-03), following 7 game updates (1.7.4976 → 4995). 300+ of them are this repository's history; the other 140+ only updated the private development log and tester guides. What changed each day is in the [changelog](CHANGELOG.en.md).
+- **About three weeks, 465 commits** (2026-10-13 to 11-03), following 7 game updates (1.7.4976 → 4995). 300+ of them are this repository's history; the other 140+ only updated the private development log and tester guides. What changed each day is in the [changelog](CHANGELOG.en.md).
 
 ## Architecture
 
