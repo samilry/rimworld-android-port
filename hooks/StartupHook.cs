@@ -639,6 +639,8 @@ internal static class StartupHook
 		PortHooks.Textures.Start();
 		PortHooks.UiDescriptors.Start();
 		PortHooks.AndroidFonts.Start();
+		// Mods' asset bundles name their assets after the Workshop folder the PC has, which a mod's folder here may not be.
+		PortHooks.BundlePaths.Start(new HarmonyLib.Harmony("port17.bundlepaths"));
 		PortHooks.WindowsLibraries.Start();
 		// The phone's proxy for web requests, as the PC's runtime follows Windows' proxy settings.
 		PortHooks.SystemProxy.Start();
