@@ -1185,6 +1185,15 @@ public final class MainActivity extends NativeActivity
      * game is ready, false when the player chose to leave (the activity is finishing then).
      */
     /**
+     * Called by the host (host.c, on its runtime thread) before the runtime starts: whether the runtime writes its list of
+     * compiled methods this run (Diagnostics.methodMapWanted: for some days after a native crash).
+     */
+    public boolean methodMapWanted()
+    {
+        return Diagnostics.methodMapWanted(this);
+    }
+
+    /**
      * Called by the host (host.c, on its runtime thread) before every start of the tester's APK, once the game is ready:
      * a game newer than the one the port was made for (the second word of setup/version.txt) may not start at all (a
      * tester, 2026-10-27: the port of 10-25, built for 1.7.4985, on 1.7.4990, whose engine had moved a type the port

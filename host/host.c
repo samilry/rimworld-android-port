@@ -696,6 +696,20 @@ static void* run_runtime(void* arg)
     // (2026-10-28 040232; the main thread, 16 MB since 10-27, was waiting). 16 MB as the main thread: address space only.
     // The runtime's name is Thread_DefaultStackSize (DefaultStackSize alone is not read).
     setenv("DOTNET_Thread_DefaultStackSize", "0x1000000", 1);
+    // The runtime's list of the methods it compiles (perf-<pid>.map: address, size, name), for some days after a native
+    // crash (MainActivity.methodMapWanted). A crash in compiled managed code has only an address in its tombstone ("JIT
+    // code"); the next report names the method from the crashed run's list (Diagnostics.Tombstone). A tester's HONOR,
+    // 2026-11-03: twice a SIGTRAP at a brk the JIT put after a call it took for one that never returns, and no name.
+    // The list costs about 3 % of the start (1.7 s of 60 with 142 mods) and 10 MB or more a run, so it is off otherwise.
+    if (java_activity_bool(app, "methodMapWanted"))
+    {
+        static char maps[1100];
+        snprintf(maps, sizeof maps, "%s/perfmap", internal);
+        mkdir(maps, 0775);
+        setenv("DOTNET_PerfMapEnabled", "3", 1);
+        setenv("DOTNET_PerfMapJitDumpPath", maps, 1);
+        LOGI("method map: %s/perf-%d.map", maps, (int)getpid());
+    }
     {
         const char* lines[32];
         static char storage[4096];

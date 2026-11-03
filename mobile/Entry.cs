@@ -158,6 +158,46 @@ namespace PortMobile
 		}
 
 		/// <summary>
+		/// mobile.txt noReturnTest=1: the crash of a tester's HONOR (2026-11-03, a SIGTRAP in compiled code, twice). A method
+		/// compiled with optimisation calls one whose code only throws; the JIT takes that one for a call that never returns
+		/// and puts a breakpoint after it. A Harmony prefix then makes it return, and the breakpoint ends the process. For
+		/// the crash report: the runs after such a crash list the compiled methods (host.c), and the report of the next
+		/// one names the method (here Entry.CallsFail).
+		/// </summary>
+		private static void NoReturnTest()
+		{
+			if (Settings.Get("noReturnTest", 0) != 1)
+			{
+				return;
+			}
+			Console.WriteLine("[mobile] no-return test: " + CallsFail("", new[] { 1, 2 }, 1));
+			new Harmony("port17.test.noreturn").Patch(AccessTools.Method(typeof(Entry), nameof(Fail)), prefix: new HarmonyMethod(typeof(Entry), nameof(SkipFail)));
+			Console.WriteLine("[mobile] no-return test: Fail returns now; the next call ends the process at the breakpoint after it");
+			Console.Out.Flush();
+			Console.WriteLine("[mobile] no-return test: " + CallsFail("x", new[] { 1, 2 }, 1) + ", no breakpoint (the JIT did not take Fail for a call that never returns)");
+		}
+
+		private static void Fail(string why)
+		{
+			throw new InvalidOperationException(why);
+		}
+
+		[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining | System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+		private static int CallsFail(string why, int[] values, int index)
+		{
+			if (why.Length > 0)
+			{
+				Fail(why);
+			}
+			return values[index];
+		}
+
+		private static bool SkipFail()
+		{
+			return false;
+		}
+
+		/// <summary>
 		/// mobile.txt stackTest=1: on a thread started without a size, as LongEventHandler starts the loading thread, a
 		/// recursion 4 MB deep (1 KB a frame); the log says how deep it went. Bionic's 1 MB ended the process here before
 		/// host.c gave such threads 16 MB (DOTNET_Thread_DefaultStackSize). stackTest=2 recurses until the stack runs out,
@@ -380,6 +420,7 @@ namespace PortMobile
 				Temporaries.Test();
 				AccessViolationTest();
 				StackTest();
+				NoReturnTest();
 				CoreLibTest();
 				AndroidVideo.Test();
 				ParityTest();

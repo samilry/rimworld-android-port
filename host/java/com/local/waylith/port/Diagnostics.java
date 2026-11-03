@@ -531,6 +531,7 @@ final class Diagnostics
             text.append("\n==== 原生崩溃（tombstone）====\n");
             try
             {
+                Tombstone.methodMaps = methodMaps(context);
                 text.append(Tombstone.toText(trace));
             }
             catch (Throwable t)
@@ -952,6 +953,73 @@ final class Diagnostics
         zip.write(SECRETS.matcher(text).replaceAll("$1***").getBytes(Charset.forName("UTF-8")));
     }
 
+    // ---- the runtime's list of compiled methods, after a native crash ----
+
+    /** Where the runtime writes perf-<pid>.map while methodMapWanted says so (host.c). */
+    static File methodMaps(Context context)
+    {
+        return new File(context.getFilesDir(), "perfmap");
+    }
+
+    /**
+     * From the host (MainActivity.methodMapWanted) before the runtime starts: whether it writes its list of compiled
+     * methods this run. On for three days from a native crash not seen here before: a crash in compiled managed code has
+     * only an address in its tombstone, and the report of the next one names the method from that run's list
+     * (Tombstone.appendFrames). The list costs about 3 % of the start, so it is off otherwise. The newest list, the
+     * crashed run's that the report being made now reads (checkLastExit, on its own thread), is kept; older ones go.
+     */
+    static boolean methodMapWanted(Context context)
+    {
+        SharedPreferences prefs = context.getSharedPreferences("diagnostics", Context.MODE_PRIVATE);
+        long crash = prefs.getLong("methodMapCrash", 0), until = prefs.getLong("methodMapUntil", 0);
+        if (Build.VERSION.SDK_INT >= 30)
+        {
+            try
+            {
+                ActivityManager manager = context.getSystemService(ActivityManager.class);
+                for (ApplicationExitInfo exit : manager.getHistoricalProcessExitReasons(context.getPackageName(), 0, 8))
+                {
+                    if (context.getPackageName().equals(exit.getProcessName()) && exit.getReason() == ApplicationExitInfo.REASON_CRASH_NATIVE && exit.getTimestamp() > crash)
+                    {
+                        crash = exit.getTimestamp();
+                        until = Math.max(until, exit.getTimestamp() + 3L * 24 * 3600 * 1000);
+                    }
+                }
+            }
+            catch (Throwable t)
+            {
+                Log.e(TAG, "exit reasons for the method list", t);
+            }
+        }
+        prefs.edit().putLong("methodMapCrash", crash).putLong("methodMapUntil", until).apply();
+        boolean on = System.currentTimeMillis() < until;
+        File[] maps = methodMaps(context).listFiles(new java.io.FilenameFilter()
+        {
+            @Override
+            public boolean accept(File dir, String name)
+            {
+                return name.startsWith("perf-") && name.endsWith(".map");
+            }
+        });
+        if (maps != null)
+        {
+            Arrays.sort(maps, new java.util.Comparator<File>()
+            {
+                @Override
+                public int compare(File a, File b)
+                {
+                    return Long.compare(b.lastModified(), a.lastModified());
+                }
+            });
+            for (int i = 1; i < maps.length; i++)
+            {
+                maps[i].delete();
+            }
+        }
+        trail(context, on ? "the runtime lists its compiled methods this run (a native crash on " + new SimpleDateFormat("MM-dd HH:mm", Locale.US).format(new Date(crash)) + ")" : "no method list this run");
+        return on;
+    }
+
     // ---- the system's tombstone (protobuf, system/core/debuggerd/proto/tombstone.proto) to text ----
 
     static final class Tombstone
@@ -1043,11 +1111,146 @@ final class Diagnostics
             return parse(field.data, field.offset, field.length);
         }
 
+        /** Where the runtime's lists of compiled methods are (Diagnostics.methodMaps), set before toText. */
+        static File methodMaps;
+
+        /** The crashed run's list of compiled methods, if it wrote one: start, size and the place of each line in the file. */
+        private static final class MethodMap
+        {
+            File file;
+            int count;
+            long[] starts = new long[1 << 15];
+            int[] sizes = new int[1 << 15];
+            long[] lines = new long[1 << 15];
+
+            /** Lines "0x<start> <size in hex> <name>", in the order the runtime compiled the methods. */
+            static MethodMap read(File file) throws IOException
+            {
+                MethodMap map = new MethodMap();
+                map.file = file;
+                InputStream in = new java.io.BufferedInputStream(new FileInputStream(file), 1 << 16);
+                try
+                {
+                    long offset = 0, lineStart = 0, start = 0, size = 0;
+                    int field = 0, b;
+                    boolean hex = false;
+                    while ((b = in.read()) >= 0)
+                    {
+                        offset++;
+                        if (b == '\n')
+                        {
+                            if (field >= 2)
+                            {
+                                map.add(start, (int) size, lineStart);
+                            }
+                            lineStart = offset;
+                            start = size = 0;
+                            field = 0;
+                            hex = false;
+                            continue;
+                        }
+                        if (field >= 2)
+                        {
+                            continue;
+                        }
+                        if (b == ' ')
+                        {
+                            field++;
+                            hex = false;
+                            continue;
+                        }
+                        if (field == 0 && (b == 'x' || b == 'X'))
+                        {
+                            hex = true;
+                            start = 0;
+                            continue;
+                        }
+                        int digit = Character.digit(b, 16);
+                        if (digit < 0)
+                        {
+                            continue;
+                        }
+                        if (field == 0 && hex)
+                        {
+                            start = (start << 4) | digit;
+                        }
+                        else if (field == 1)
+                        {
+                            size = (size << 4) | digit;
+                        }
+                    }
+                }
+                finally
+                {
+                    in.close();
+                }
+                return map;
+            }
+
+            private void add(long start, int size, long line)
+            {
+                if (count == starts.length)
+                {
+                    starts = Arrays.copyOf(starts, count * 2);
+                    sizes = Arrays.copyOf(sizes, count * 2);
+                    lines = Arrays.copyOf(lines, count * 2);
+                }
+                starts[count] = start;
+                sizes[count] = size;
+                lines[count] = line;
+                count++;
+            }
+
+            /** The method whose code holds the address, the latest compiled where code was used again; null for none. */
+            String at(long pc)
+            {
+                int found = -1;
+                for (int i = 0; i < count; i++)
+                {
+                    if (pc >= starts[i] && pc < starts[i] + sizes[i])
+                    {
+                        found = i;
+                    }
+                }
+                if (found < 0)
+                {
+                    return null;
+                }
+                try
+                {
+                    java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file, "r");
+                    try
+                    {
+                        raf.seek(lines[found]);
+                        ByteArrayOutputStream line = new ByteArrayOutputStream();
+                        int b;
+                        while ((b = raf.read()) >= 0 && b != '\n')
+                        {
+                            line.write(b);
+                        }
+                        String text = new String(line.toByteArray(), Charset.forName("UTF-8"));
+                        int name = text.indexOf(' ', text.indexOf(' ') + 1);
+                        return text.substring(name + 1) + String.format(Locale.US, " +0x%x", pc - starts[found]);
+                    }
+                    finally
+                    {
+                        raf.close();
+                    }
+                }
+                catch (IOException e)
+                {
+                    return null;
+                }
+            }
+        }
+
+        private static MethodMap map;
+
         static String toText(byte[] tombstone)
         {
             StringBuilder text = new StringBuilder();
             List<Field> top = parse(tombstone, 0, tombstone.length);
-            long crashTid = -1, faultAddress = 0, abortAddress = 0;
+            long crashTid = -1, faultAddress = 0, abortAddress = 0, pid = -1;
             boolean hasFault = false;
             List<Field> threads = new ArrayList<Field>();
             List<Field> buffers = new ArrayList<Field>();
@@ -1059,6 +1262,7 @@ final class Diagnostics
                 {
                     case 2: text.append("build: ").append(f.text()).append('\n'); break;
                     case 4: text.append("time: ").append(f.text()).append('\n'); break;
+                    case 5: pid = f.value; break;
                     case 6: crashTid = f.value; break;
                     case 9: text.append("cmdline: ").append(f.text()).append('\n'); break;
                     case 10:
@@ -1120,7 +1324,26 @@ final class Diagnostics
             }
             // Its stack's size: a stack overflow (EEPolicy::HandleFatalStackOverflow) on a thread whose stack is smaller
             // than the PC's 1.5 MB is the port's (two of 2026-10-28: the loading thread with bionic's 1 MB).
-            text.append("crashing thread: ").append(crashTid).append(", its stack ").append(stackOf(crashTid)).append("\n\n");
+            text.append("crashing thread: ").append(crashTid).append(", its stack ").append(stackOf(crashTid)).append('\n');
+            // The runtime's list of the methods it compiled in the crashed run (host.c, for some days after a native crash).
+            map = null;
+            File list = methodMaps == null || pid < 0 ? null : new File(methodMaps, "perf-" + pid + ".map");
+            if (list != null && list.isFile())
+            {
+                try
+                {
+                    map = MethodMap.read(list);
+                    text.append("compiled methods: ").append(map.count).append(" listed by the runtime (").append(list.getName()).append(")\n\n");
+                }
+                catch (IOException e)
+                {
+                    text.append("compiled methods: ").append(list.getName()).append(" not read: ").append(e.getMessage()).append("\n\n");
+                }
+            }
+            else
+            {
+                text.append("compiled methods: not listed in this run (the runtime lists them for three days after a native crash, from the next start on)\n\n");
+            }
             // The crashing thread first, then the others (name and backtrace).
             for (int pass = 0; pass < 2; pass++)
             {
@@ -1298,11 +1521,12 @@ final class Diagnostics
                     text.append("  ... ").append(frames.size() - maxFrames).append(" more\n");
                     break;
                 }
-                long relPc = 0, offset = 0;
+                long relPc = 0, pc = 0, offset = 0;
                 String function = "", file = "", buildId = "";
                 for (Field f : sub(frame))
                 {
                     if (f.number == 1) relPc = f.value;
+                    else if (f.number == 2) pc = f.value;
                     else if (f.number == 4) function = f.text();
                     else if (f.number == 5) offset = f.value;
                     else if (f.number == 6) file = f.text();
@@ -1316,8 +1540,10 @@ final class Diagnostics
                 else if (file.isEmpty() || file.startsWith("<anonymous") || file.startsWith("[anon:") || file.contains("doublemapper"))
                 {
                     // The runtime's compiled code (CoreCLR maps it through memfd "doublemapper"): a managed method,
-                    // whose name the runtime's own report in stderr.txt has when it got to write one.
-                    text.append(" (JIT code, a managed method)");
+                    // named from the crashed run's list where there is one (a Harmony replacement is
+                    // "dynamicClass::Type.Method_PatchN"), else only in the runtime's own report in stderr.txt if any.
+                    String method = map != null && pc != 0 ? map.at(pc) : null;
+                    text.append(method != null ? " (JIT code: " + method + ")" : " (JIT code, a managed method)");
                 }
                 if (!buildId.isEmpty() && file.endsWith(".so"))
                 {
