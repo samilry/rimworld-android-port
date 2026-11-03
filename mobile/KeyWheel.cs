@@ -23,10 +23,12 @@ namespace PortMobile
 	/// the key held down meanwhile, so that taps on the screen and the other keys come with it), and the middle mouse
 	/// button (a finger on the screen is then the middle button, see MouseButtons and Touch; the wheel itself is always
 	/// tapped with the left). The left and the right button were switches of the wheel too until 2026-10-30; they are
-	/// buttons of their own now (MouseButtons), and the wheel's keys go round them. While the ring is closed the button
-	/// shows what is on, the right mouse button too. The last key opens the setup: keys added from the full list (with
-	/// Ctrl / Shift / Alt ticked: as combinations), taken out, moved; the defaults back; the button, and the mouse
-	/// buttons, back to their places. The button is moved by dragging it.
+	/// buttons of their own now (MouseButtons), and the wheel's keys go round them. Since 2026-11-03 the setup can put a
+	/// 左键 and a 右键 on the wheel again, as keys that do what those buttons do (a tap; a hold on 右键 locks it), on the
+	/// same state; the ring closes as its 右键 switches a right click on, so that the whole map is free for it. While the
+	/// ring is closed the button shows what is on, the right mouse button too. The last key opens the setup: keys added
+	/// from the full list (with Ctrl / Shift / Alt ticked: as combinations), taken out, moved; the defaults back; the
+	/// button, and the mouse buttons, back to their places. The button is moved by dragging it.
 	/// A key can be given a text of the player's own, shown on it instead of the key (the user, 2026-10-24: with many keys
 	/// one forgets what each is for): "改名" in the setup, kept in mobile.txt as keyWheelLabel.&lt;key's name&gt;=text.
 	/// Left out while a hardware keyboard is in use (InputMode).
@@ -45,11 +47,13 @@ namespace PortMobile
 
 		// The phone's own keys (their names in keyWheelKeys).
 		internal const string ShiftName = "@Shift", CtrlName = "@Ctrl", AltName = "@Alt", MouseMiddleName = "@MouseMiddle";
-		// The left and the right mouse button, keys of the wheel until keyWheelVersion 3: only taken out of the keys kept.
-		private const string MouseLeftName = "@MouseLeft", MouseRightName = "@MouseRight";
-		// Not a switch: a tap records the moment for a report (Recorder.Mark: a screenshot and the game's state).
+		// The left and the right mouse button: switches of the wheel until keyWheelVersion 3, which took them out of the keys
+		// kept; since 2026-11-03 keys again that do what MouseButtons' round buttons do, put on the wheel by the player only.
+		internal const string MouseLeftName = "@MouseLeft", MouseRightName = "@MouseRight";
+		// Not a switch: a tap records the moment for a report (Recorder.Mark: a screenshot and the game's state, then the
+		// player's words on it).
 		internal const string ReportName = "@Report";
-		internal static readonly string[] Specials = { CtrlName, ShiftName, AltName, MouseMiddleName, ReportName };
+		internal static readonly string[] Specials = { CtrlName, ShiftName, AltName, MouseLeftName, MouseRightName, MouseMiddleName, ReportName };
 		// A keyboard key in keyWheelKeys: "@K:" and the modifiers and the key's name joined by "+" (@K:Z, @K:Ctrl+Shift+S).
 		internal const string RawPrefix = "@K:";
 
@@ -124,6 +128,9 @@ namespace PortMobile
 		// Where the finger landed, the button's centre from there, and where the button was shown then.
 		private static Vector2 touchStart, grabOffset, pickedUpAt;
 		private static bool dragged;
+		// When the finger landed on a key, and whether it has rested on the wheel's 右键 long enough for the lock.
+		private static double touchTime;
+		private static bool restedLong;
 		// The GLFW keys held for the key the finger is on, in the order they went down.
 		private static readonly List<int> held = new List<int>();
 		private static int heldFrame;
@@ -237,6 +244,9 @@ namespace PortMobile
 		/// <summary>The wheel is on the screen: drawn in the last few frames (not in the screenshot mode, nor while the game loads).</summary>
 		internal static bool Drawn => Time.frameCount - drawnFrame <= 3;
 
+		/// <summary>Whether the wheel holds a 左键 or a 右键 of its own (MouseButtons keeps the right button on for them).</summary>
+		internal static bool HasMouseKeys => names.Contains(MouseLeftName) || names.Contains(MouseRightName);
+
 		/// <summary>Whether this point (interface units) is on the wheel as it was last drawn: its button, and its keys while it is open.</summary>
 		internal static bool Covers(Vector2 ui)
 		{
@@ -315,10 +325,10 @@ namespace PortMobile
 		{
 			if (key.Name == ReportName)
 			{
-				// The ring closes first: the screenshot is of the game.
+				// The ring closes first: the screenshot is of the game. Then the player may say what went wrong.
 				expanded = false;
 				SoundDefOf.Tick_High.PlayOneShotOnCamera();
-				Recorder.Mark();
+				Recorder.Mark(askForWords: true);
 				return;
 			}
 			bool on;
@@ -377,6 +387,8 @@ namespace PortMobile
 					case CtrlName: return "Ctrl";
 					case AltName: return "Alt";
 					case ReportName: return Texts.Chinese ? "记录\n问题" : "Report";
+					case MouseLeftName: return MouseButtons.Name(MouseButtons.Left);
+					case MouseRightName: return MouseButtons.Name(MouseButtons.Right);
 					default: return MouseButtons.Name(MouseButtons.Middle);
 				}
 			}
@@ -565,6 +577,12 @@ namespace PortMobile
 			}
 			if (down && Current.ProgramState == ProgramState.Playing)
 			{
+				if (!restedLong && IsMouseKey(touching, MouseRightName) && Time.realtimeSinceStartupAsDouble - touchTime >= Touch.HoldSeconds)
+				{
+					// As on the round 右键: the lock comes when the finger lifts, the sound now.
+					restedLong = true;
+					MouseButtons.HoldSound();
+				}
 				if (Touch.Verbose && held.Count > 0 && !traced && Time.frameCount > heldFrame + 2)
 				{
 					// What the engine sees of a key held from the wheel (touch-verbose.txt).
@@ -595,6 +613,33 @@ namespace PortMobile
 				expanded = false;
 				Find.WindowStack.Add(new Dialog_KeyWheel());
 			}
+			else if (IsMouseKey(was, MouseLeftName) && Current.ProgramState == ProgramState.Playing)
+			{
+				MouseButtons.TapLeft("a tap on the key wheel's 左键");
+			}
+			else if (IsMouseKey(was, MouseRightName) && Current.ProgramState == ProgramState.Playing)
+			{
+				bool on = true;
+				if (restedLong)
+				{
+					MouseButtons.LockRight("a hold on the key wheel's 右键");
+				}
+				else
+				{
+					on = MouseButtons.TapRight("a tap on the key wheel's 右键");
+				}
+				if (on)
+				{
+					// The right click is for the map: the ring closes (its button says "右键" meanwhile), as for 记录问题.
+					expanded = false;
+				}
+			}
+		}
+
+		/// <summary>Whether this key of the ring (an index of Keys) is the wheel's 左键 or 右键 (MouseLeftName, MouseRightName).</summary>
+		private static bool IsMouseKey(int index, string name)
+		{
+			return index >= 0 && index < Keys.Count && Keys[index].Name == name;
 		}
 
 		/// <summary>A round button's centre kept on the screen (two units from its edges).</summary>
@@ -768,11 +813,21 @@ namespace PortMobile
 			{
 				WheelKey key = Keys[index];
 				label = KeyText(key);
-				bool on = key.IsSwitch && key.Name != ReportName ? IsOn(key) : held;
+				string custom = CustomLabel(key);
+				// 左键 and 右键 are not switches of the wheel (MouseButtons holds what they switch): they light up as they are pressed.
+				bool on = key.IsSwitch && key.Name != ReportName && key.Name != MouseLeftName && key.Name != MouseRightName ? IsOn(key) : held;
 				fill = label.Length == 0 ? new Color(0.3f, 0.2f, 0.2f, 0.7f) : on ? new Color(0.85f, 0.65f, 0.2f, 1f) : new Color(0.18f, 0.2f, 0.22f, 0.88f);
 				if (label.Length == 0)
 				{
 					label = "—";
+				}
+				else if (key.Name == MouseRightName && MouseButtons.RightLook(held && restedLong, 1f, out Color rightFill, out string word))
+				{
+					// As the round 右键 shows it: for the next touch, or locked (a finger that has rested long enough shows the
+					// lock before it lifts); the player's text for it in place of its name.
+					fill = rightFill;
+					label = (custom.Length > 0 ? custom : label) + "\n" + word;
+					custom = "";
 				}
 				else if (key.IsRaw && key.RawMods != 0)
 				{
@@ -780,7 +835,6 @@ namespace PortMobile
 					string modifiers = ModifierText(key.RawMods);
 					label = modifiers.TrimEnd('+').Replace("+", "\n") + "\n" + key.RawShown.Substring(modifiers.Length);
 				}
-				string custom = CustomLabel(key);
 				if (custom.Length > 0)
 				{
 					// The player's text, and the key itself small and grey under it.
@@ -808,6 +862,12 @@ namespace PortMobile
 					{
 						HoldCombination(key.RawMods, key.RawKey);
 					}
+					else if (key.Name == MouseLeftName || key.Name == MouseRightName)
+					{
+						// As on the round buttons, what they do comes as the finger lifts (Update): a hold on 右键 locks it.
+						touchTime = Time.realtimeSinceStartupAsDouble;
+						restedLong = false;
+					}
 					else
 					{
 						Toggle(key);
@@ -823,8 +883,8 @@ namespace PortMobile
 		{
 			bool check = enabled;
 			listing.CheckboxLabeled(Texts.Chinese ? "显示自定义按键盘" : "Show the key wheel", ref check, Texts.Chinese
-				? "游戏中屏幕边上的圆形“按键”按钮：点一下展开一圈按键，每个按键上写着它对应的键盘按键或组合键（按住就是按住那个键），再点一下收起；拖动可以移动位置。Ctrl、Shift、Alt 和鼠标中键是开关，点一下打开、再点一下关闭：开着 Ctrl 时，点屏幕和按别的键都带着 Ctrl；开着中键时，在屏幕上点一下就是鼠标中键点击。鼠标左键、右键是屏幕上单独的两个圆钮（见下一项）。展开后最后一个按键“设置”可以从游戏快捷键和键盘全部按键里增删按键，勾选 Ctrl / Shift / Alt 可以添加组合键，点“改名”给按键起个名字（比如“征召”），显示在按键上。接着实体键盘时不显示。"
-				: "The round \"Keys\" button at the edge of the screen in a game: a tap opens a ring of keys, each showing the keyboard key or combination it stands for (holding it holds the key); another tap closes it; drag it to move it. Ctrl, Shift, Alt and the middle mouse button are switches, on with a tap and off with another: with Ctrl on, taps on the screen and the other keys come with Ctrl; with the middle button on, a tap on the screen is a middle click. The left and right mouse buttons are two round buttons of their own (the next option). The last key, \"Setup\", adds and removes keys from the game's key bindings and the whole keyboard; with Ctrl / Shift / Alt ticked it adds combinations. Not shown while a hardware keyboard is connected.", 30f, 0.6f);
+				? "游戏中屏幕边上的圆形“按键”按钮：点一下展开一圈按键，每个按键上写着它对应的键盘按键或组合键（按住就是按住那个键），再点一下收起；拖动可以移动位置。Ctrl、Shift、Alt 和鼠标中键是开关，点一下打开、再点一下关闭：开着 Ctrl 时，点屏幕和按别的键都带着 Ctrl；开着中键时，在屏幕上点一下就是鼠标中键点击。鼠标左键、右键是屏幕上单独的两个圆钮（见下一项），也可以在“设置”里加到按键盘上，用法一样（点按键盘上的“右键”后这一圈会收起，好点地图）。展开后最后一个按键“设置”可以从游戏快捷键和键盘全部按键里增删按键，勾选 Ctrl / Shift / Alt 可以添加组合键，点“改名”给按键起个名字（比如“征召”），显示在按键上。接着实体键盘时不显示。"
+				: "The round \"Keys\" button at the edge of the screen in a game: a tap opens a ring of keys, each showing the keyboard key or combination it stands for (holding it holds the key); another tap closes it; drag it to move it. Ctrl, Shift, Alt and the middle mouse button are switches, on with a tap and off with another: with Ctrl on, taps on the screen and the other keys come with Ctrl; with the middle button on, a tap on the screen is a middle click. The left and right mouse buttons are two round buttons of their own (the next option); the setup can put them on the wheel too, where they work the same (the ring closes after RMB, to leave the map free). The last key, \"Setup\", adds and removes keys from the game's key bindings and the whole keyboard; with Ctrl / Shift / Alt ticked it adds combinations. Not shown while a hardware keyboard is connected.", 30f, 0.6f);
 			SetEnabled(check);
 		}
 	}
@@ -1051,7 +1111,11 @@ namespace PortMobile
 					case KeyWheel.AltName:
 						return chinese ? "开关，开着时一直按住" : "switch: held while on";
 					case KeyWheel.ReportName:
-						return chinese ? "出问题时点一下：截图并保存当时的运行数据，随“导出日志”发出" : "a tap saves a screenshot and the game's state for the logs";
+						return chinese ? "出问题时点一下：截图并保存当时的运行数据，再写几句说明，随“导出日志”发出" : "a tap saves a screenshot and the game's state, then a few words on it, for the logs";
+					case KeyWheel.MouseLeftName:
+						return chinese ? "同“左键”圆钮：点一下回到左键" : "as the round LMB: back to left clicks";
+					case KeyWheel.MouseRightName:
+						return chinese ? "同“右键”圆钮：点一下用一次，按住半秒锁定" : "as the round RMB: a tap for one touch, a hold locks";
 					default:
 						return chinese ? "开关，点屏幕即为此键" : "switch: taps are this button";
 				}
@@ -1215,6 +1279,8 @@ namespace PortMobile
 					case KeyWheel.CtrlName: return "Ctrl";
 					case KeyWheel.AltName: return "Alt";
 					case KeyWheel.ReportName: return chinese ? "记录问题" : "Record a problem";
+					case KeyWheel.MouseLeftName: return chinese ? "鼠标左键" : "Left mouse button";
+					case KeyWheel.MouseRightName: return chinese ? "鼠标右键" : "Right mouse button";
 					default: return chinese ? "鼠标中键" : "Middle mouse button";
 				}
 			}

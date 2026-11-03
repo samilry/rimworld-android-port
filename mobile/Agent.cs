@@ -332,8 +332,8 @@ namespace PortMobile
 				case "mpctl": return MultiplayerPawnControl(args);
 				case "onscreen": return ThingsOnScreen();
 				case "mark":
-					// As the key wheel's "记录问题" does.
-					Recorder.Mark();
+					// As the key wheel's "记录问题" does; the box for the player's words only with {"ask":true}.
+					Recorder.Mark(args.ValueKind == JsonValueKind.Object && args.TryGetProperty("ask", out JsonElement ask) && ask.ValueKind == JsonValueKind.True);
 					return Answer(w => w.WriteString("mark", "in three frames"));
 				default: return Failure("unknown command '" + cmd + "' (state, screen, find, camera, select, speed, close, messages, cell, zones, incident, world, pawn, menu, research, spawn, makepawn, heal, kill, save, hash, relation, rituals, marry, tune, worldtarget, compat, mpctl, mark, ping)");
 			}

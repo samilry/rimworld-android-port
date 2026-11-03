@@ -49,6 +49,7 @@ final class ReportSummary
         text.append("报告摘要：先看这里，详细内容在同一压缩包的各个文件里。\n");
         try
         {
+            marks(text, new File(ext, "logs/marks"));
             portLog(text, new File(logs, "Port17.log"), "Port17.log（这次运行）");
             playerLog(text, new File(logs, "Player.log"), "Player.log（这次运行）");
             playerLog(text, new File(logs, "Player-prev.log"), "Player-prev.log（上次运行）");
@@ -248,7 +249,8 @@ final class ReportSummary
             return;
         }
         Map<String, List<String>> kinds = new LinkedHashMap<String, List<String>>();
-        for (String kind : new String[] { "conflict", "slow", "gap" })
+        // The moments the player marked and the words written on them first, in the order of the run.
+        for (String kind : new String[] { "mark", "note", "conflict", "slow", "gap" })
         {
             kinds.put(kind, new ArrayList<String>());
         }
@@ -310,6 +312,85 @@ final class ReportSummary
         for (String line : tail)
         {
             text.append(cut(line, 400)).append('\n');
+        }
+    }
+
+    /**
+     * The moments the player marked with "记录问题" that the phone keeps (the newest six; the zip has the newest three
+     * whole, under marks/ with their screenshots), newest first: when, and the words the player wrote on each, which
+     * PortMobile puts in the mark's text under "== 玩家的说明" (Recorder.Note). What the tester saw go wrong is what a
+     * report is read for.
+     */
+    private static void marks(StringBuilder text, File dir) throws IOException
+    {
+        text.append("\n== 记录问题（玩家标记的时刻和写的说明，新的在前）==\n");
+        List<File> marks = new ArrayList<File>();
+        File[] files = dir.listFiles();
+        if (files != null)
+        {
+            for (File file : files)
+            {
+                if (file.getName().startsWith("mark-") && file.getName().endsWith(".txt"))
+                {
+                    marks.add(file);
+                }
+            }
+        }
+        if (marks.isEmpty())
+        {
+            text.append("（无）\n");
+            return;
+        }
+        Collections.sort(marks, new Comparator<File>()
+        {
+            @Override
+            public int compare(File a, File b)
+            {
+                return b.getName().compareTo(a.getName());
+            }
+        });
+        for (int i = 0; i < marks.size(); i++)
+        {
+            File file = marks.get(i);
+            String head = null;
+            StringBuilder words = new StringBuilder();
+            boolean inWords = false;
+            BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(file), UTF8));
+            try
+            {
+                String line;
+                while ((line = in.readLine()) != null)
+                {
+                    if (head == null)
+                    {
+                        head = line;
+                    }
+                    else if (line.equals("== 玩家的说明"))
+                    {
+                        inWords = true;
+                    }
+                    else if (inWords && line.startsWith("== "))
+                    {
+                        break;
+                    }
+                    else if (inWords)
+                    {
+                        words.append("    ").append(line).append('\n');
+                    }
+                }
+            }
+            finally
+            {
+                in.close();
+            }
+            String name = file.getName().substring(0, file.getName().length() - 4);
+            text.append(name).append(i < 3 ? "（压缩包 marks/ 里有截图和当时的数据）" : "（只在手机上）").append('\n');
+            if (head != null)
+            {
+                text.append("  ").append(cut(head, 300)).append('\n');
+            }
+            String said = words.toString().trim();
+            text.append(said.isEmpty() ? "  （没写说明）\n" : "  说明：\n" + cut(words.toString().replaceAll("\\s+$", ""), 2000) + "\n");
         }
     }
 

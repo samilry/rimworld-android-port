@@ -17,6 +17,10 @@ namespace PortMobile
 	///                    the finger has rested long enough (with the sound of a switch, as the finger covers it), and
 	///                    holds once the finger lifts; a finger that drags the button instead locks nothing.
 	///   a tap on 左键    left clicks again, whatever was on: the right button, or the wheel's middle one.
+	/// The key wheel can hold a 左键 and a 右键 of its own as well (the user, 2026-11-03: "保持两个单独按键，并且按键盘里也
+	/// 可以添加鼠标左右键"; not among its first keys, added in its setup): they do what these do, a tap, a hold (TapLeft,
+	/// TapRight, LockRight), on the one state of both, and the wheel's ring closes as its 右键 switches a right click on,
+	/// so that the whole map is free for it. With these buttons switched off, the wheel's keys alone keep the right button.
 	/// The middle button stays a switch on the key wheel (KeyWheel); it is held here with the right one, one of the three
 	/// at a time as before, and the wheel's closed button still says when the right or the middle one is on. Everything
 	/// else about right clicks is Touch's as before (a hold on the map with a colonist selected, a hold on a letter, the
@@ -77,6 +81,9 @@ namespace PortMobile
 		/// <summary>The button a finger on the screen is now: Left, Right (for the next touch, or locked) or Middle (the key wheel's).</summary>
 		internal static int Active => state == State.Middle ? Middle : state == State.Left ? Left : Right;
 
+		/// <summary>A 右键 is there to switch the right button on and off: these buttons, or the key wheel's own 左键 or 右键.</summary>
+		private static bool RightKept => Enabled || KeyWheel.Enabled && KeyWheel.HasMouseKeys;
+
 		public static void Start()
 		{
 			enabled = Settings.Get("mouseButtons", true);
@@ -131,11 +138,66 @@ namespace PortMobile
 			return state == State.Middle;
 		}
 
+		/// <summary>A tap on a 左键 (this button or the key wheel's): left clicks again, whatever was on.</summary>
+		internal static void TapLeft(string why)
+		{
+			bool wasOn = state != State.Left;
+			SetState(State.Left, why);
+			(wasOn ? SoundDefOf.Checkbox_TurnedOff : SoundDefOf.Tick_Low).PlayOneShotOnCamera();
+		}
+
+		/// <summary>A tap on a 右键: the next touch a right click, or, while the right button is on already, left clicks again. Whether it is on now.</summary>
+		internal static bool TapRight(string why)
+		{
+			bool on = state == State.Left || state == State.Middle;
+			SetState(on ? State.RightOnce : State.Left, why);
+			(on ? SoundDefOf.Checkbox_TurnedOn : SoundDefOf.Checkbox_TurnedOff).PlayOneShotOnCamera();
+			return on;
+		}
+
+		/// <summary>A finger rested on a 右键 long enough and lifted: every touch a right click until a 左键 or a 右键 is tapped (the sound came as it rested, HoldSound).</summary>
+		internal static void LockRight(string why)
+		{
+			SetState(State.RightLocked, why);
+		}
+
+		/// <summary>A finger has rested on a 右键 long enough for the lock: told now, as the finger covers the button that will show it.</summary>
+		internal static void HoldSound()
+		{
+			SoundDefOf.Checkbox_TurnedOn.PlayOneShotOnCamera();
+		}
+
+		/// <summary>
+		/// How a 右键 looks while the right button is on (this one and the key wheel's): yellow for the next touch, red
+		/// locked, and red too while a finger that rests on it has rested long enough (the lock comes as it lifts). False
+		/// while it is off: then it looks like any other key.
+		/// </summary>
+		internal static bool RightLook(bool lockComing, float alpha, out Color fill, out string word)
+		{
+			State look = lockComing ? State.RightLocked : state;
+			if (look == State.RightOnce)
+			{
+				// The yellow of the wheel's button when something is on.
+				fill = new Color(0.85f, 0.65f, 0.2f, alpha);
+				word = Texts.Chinese ? "一次" : "once";
+				return true;
+			}
+			if (look == State.RightLocked)
+			{
+				fill = new Color(0.8f, 0.3f, 0.22f, alpha);
+				word = Texts.Chinese ? "锁定" : "locked";
+				return true;
+			}
+			fill = default(Color);
+			word = null;
+			return false;
+		}
+
 		/// <summary>
 		/// Which mouse button a finger that lands at this point of the screen (window pixels) is, for Touch: the right one
 		/// while it is on (a right click for the next touch is spent by this one), the middle one while the wheel's is on.
 		/// The left one on these buttons and on the wheel, and while what switched the other on is not on the screen (the
-		/// screenshot mode, a load).
+		/// screenshot mode, a load; for the right one these buttons or the wheel, which may hold a 右键 too).
 		/// </summary>
 		internal static int TapButton(Vector2 pixels)
 		{
@@ -145,7 +207,7 @@ namespace PortMobile
 			}
 			Vector2 ui = pixels / Prefs.UIScale;
 			bool middle = state == State.Middle;
-			if (!(middle ? KeyWheel.Drawn : Drawn) || Covers(ui) || KeyWheel.Covers(ui))
+			if (!(middle ? KeyWheel.Drawn : (Drawn || KeyWheel.Drawn)) || Covers(ui) || KeyWheel.Covers(ui))
 			{
 				return Left;
 			}
@@ -195,8 +257,9 @@ namespace PortMobile
 
 		/// <summary>
 		/// Once a frame (from Touch, before this frame's fingers): the left button again when what switched another on is
-		/// gone (the wheel for its middle button, these buttons for the right one: a mouse came, the game was left, they
-		/// were switched off); the finger on a button followed, and what it meant done when it lifts.
+		/// gone (the wheel for its middle button; for the right one these buttons and the wheel's 左键 and 右键: a mouse
+		/// came, the game was left, they were switched off or taken out of the wheel); the finger on a button followed, and
+		/// what it meant done when it lifts.
 		/// </summary>
 		public static void Update()
 		{
@@ -205,7 +268,7 @@ namespace PortMobile
 			{
 				SetState(State.Left, "the key wheel is put away");
 			}
-			else if ((state == State.RightOnce || state == State.RightLocked) && (!Enabled || !playing))
+			else if ((state == State.RightOnce || state == State.RightLocked) && (!RightKept || !playing))
 			{
 				SetState(State.Left, "the mouse buttons are put away");
 			}
@@ -239,10 +302,9 @@ namespace PortMobile
 				}
 				else if (touching == Right && !restedLong && Time.realtimeSinceStartupAsDouble - touchTime >= Touch.HoldSeconds)
 				{
-					// As long as a hold anywhere: the lock comes when the finger lifts. The sound tells it now, as the finger
-					// covers the button that shows it.
+					// As long as a hold anywhere: the lock comes when the finger lifts.
 					restedLong = true;
-					SoundDefOf.Checkbox_TurnedOn.PlayOneShotOnCamera();
+					HoldSound();
 				}
 				return;
 			}
@@ -256,19 +318,15 @@ namespace PortMobile
 			}
 			if (was == Left)
 			{
-				bool wasOn = state != State.Left;
-				SetState(State.Left, "a tap on 左键");
-				(wasOn ? SoundDefOf.Checkbox_TurnedOff : SoundDefOf.Tick_Low).PlayOneShotOnCamera();
+				TapLeft("a tap on 左键");
 			}
 			else if (restedLong)
 			{
-				SetState(State.RightLocked, "a hold on 右键");
+				LockRight("a hold on 右键");
 			}
 			else
 			{
-				bool on = state == State.Left || state == State.Middle;
-				SetState(on ? State.RightOnce : State.Left, "a tap on 右键");
-				(on ? SoundDefOf.Checkbox_TurnedOn : SoundDefOf.Checkbox_TurnedOff).PlayOneShotOnCamera();
+				TapRight("a tap on 右键");
 			}
 		}
 
@@ -341,15 +399,9 @@ namespace PortMobile
 			var rect = new Rect(0f, 0f, Size, Size);
 			bool held = touching == button;
 			// What 右键 is, or is about to be: a finger that has rested on it long enough shows the lock before it lifts.
-			State look = held && button == Right && restedLong && !dragged ? State.RightLocked : state;
-			if (button == Right && look == State.RightOnce)
+			if (button == Right && RightLook(held && restedLong && !dragged, held ? 1f : 0.95f, out Color fill, out string word))
 			{
-				// The yellow of the wheel's button when something is on.
-				KeyWheel.DrawRound(rect, new Color(0.85f, 0.65f, 0.2f, held ? 1f : 0.95f), Name(Right) + "\n" + (Texts.Chinese ? "一次" : "once"), GameFont.Tiny);
-			}
-			else if (button == Right && look == State.RightLocked)
-			{
-				KeyWheel.DrawRound(rect, new Color(0.8f, 0.3f, 0.22f, held ? 1f : 0.95f), Name(Right) + "\n" + (Texts.Chinese ? "锁定" : "locked"), GameFont.Tiny);
+				KeyWheel.DrawRound(rect, fill, Name(Right) + "\n" + word, GameFont.Tiny);
 			}
 			else
 			{
@@ -380,8 +432,8 @@ namespace PortMobile
 		{
 			bool check = enabled;
 			listing.CheckboxLabeled(Texts.Chinese ? "显示鼠标左右键" : "Show the mouse buttons", ref check, Texts.Chinese
-				? "游戏中屏幕上单独的两个圆钮“左键”和“右键”，拖动可以各自移动位置。点一下“右键”（变黄，写着“一次”）：接下来的一次触摸就是鼠标右键点击，手指抬起后自动回到左键；再点一下“右键”就取消。拖动也算这一次触摸（按着右键拖，地图不会跟着动），所以要先把地图拖到目标附近，再点“右键”。按住“右键”不动半秒（变红，写着“锁定”）：之后每次触摸都是右键，单指拖不动地图，直到再点一下“左键”或“右键”。点“左键”随时回到左键。中键在按键盘里。接着鼠标时不显示。"
-				: "Two round buttons of their own on the screen in a game, \"LMB\" and \"RMB\"; drag either to move it. A tap on RMB (yellow, \"once\"): the next touch is a right click, and touches are left clicks again once that finger lifts; another tap on RMB takes it back. A drag is that touch too (the right button held, the map does not follow): drag the map to the target first, then tap RMB. Hold RMB still for half a second (red, \"locked\"): every touch is a right click, and one finger does not move the map, until LMB or RMB is tapped. A tap on LMB always goes back to left clicks. The middle button is on the key wheel. Not shown while a mouse is connected.", 30f, 0.6f);
+				? "游戏中屏幕上单独的两个圆钮“左键”和“右键”，拖动可以各自移动位置。点一下“右键”（变黄，写着“一次”）：接下来的一次触摸就是鼠标右键点击，手指抬起后自动回到左键；再点一下“右键”就取消。拖动也算这一次触摸（按着右键拖，地图不会跟着动），所以要先把地图拖到目标附近，再点“右键”。按住“右键”不动半秒（变红，写着“锁定”）：之后每次触摸都是右键，单指拖不动地图，直到再点一下“左键”或“右键”。点“左键”随时回到左键。中键在按键盘里。按键盘的“设置”里也能添加“鼠标左键”“鼠标右键”，用法和这两个圆钮一样（关掉这一项，只用按键盘里的也可以）。接着鼠标时不显示。"
+				: "Two round buttons of their own on the screen in a game, \"LMB\" and \"RMB\"; drag either to move it. A tap on RMB (yellow, \"once\"): the next touch is a right click, and touches are left clicks again once that finger lifts; another tap on RMB takes it back. A drag is that touch too (the right button held, the map does not follow): drag the map to the target first, then tap RMB. Hold RMB still for half a second (red, \"locked\"): every touch is a right click, and one finger does not move the map, until LMB or RMB is tapped. A tap on LMB always goes back to left clicks. The middle button is on the key wheel. The key wheel's setup can add a left and a right mouse button too, which work as these do (with this option off, the wheel's alone will do). Not shown while a mouse is connected.", 30f, 0.6f);
 			if (check != enabled)
 			{
 				enabled = check;

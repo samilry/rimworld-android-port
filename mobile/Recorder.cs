@@ -33,7 +33,8 @@ namespace PortMobile
 	///     long, on which window, the zoom before and after);
 	///   - "记录问题" (KeyWheel.ReportName, a key of the key wheel): a screenshot, the snap of that moment, the selection,
 	///     the camera, the windows and the engine's full memory reports go to logs/marks/ (the last six kept), and the
-	///     moment is marked in the record.
+	///     moment is marked in the record; then a box asks for the player's words on it (Dialog_ProblemNote), which go
+	///     first into the mark's text and into the record (a "note" line).
 	/// Every line is written through at once (a crash loses nothing). A run's record stops at 8 MB.
 	/// </summary>
 	internal static class Recorder
@@ -89,8 +90,14 @@ namespace PortMobile
 		private static readonly List<string> clockPolicies = new List<string>();
 		private static string batteryTemp, gpuMapped;
 
-		// "记录问题": frames until the screenshot (the wheel has closed by then) and until the message to the player.
+		// "记录问题": frames until the screenshot (the wheel has closed by then) and until the message to the player, or the
+		// box for the player's words (asked for by the key wheel's key, not by the agent's "mark" unless told); the mark taken.
 		private static int markIn, messageIn;
+		private static bool askWords;
+		private static string lastMark;
+
+		/// <summary>The section of a mark's text that holds the player's words (ReportSummary.java looks for it).</summary>
+		internal const string WordsTitle = "== 玩家的说明";
 
 		public static void Start(Harmony harmony)
 		{
@@ -230,9 +237,15 @@ namespace PortMobile
 				}
 				if (messageIn > 0 && --messageIn == 0)
 				{
-					Messages.Message(Texts.Chinese
-						? "已记录问题（截图和运行数据）。之后长按桌面 Port17 图标选“导出日志”发给作者。"
-						: "Problem recorded: a screenshot and the game's state were saved. Long-press the Port17 icon, choose \"导出日志\" and send the logs with a few words on what went wrong.", MessageTypeDefOf.NeutralEvent, historical: false);
+					// The screenshot is long written: the box does not show in it.
+					if (askWords && lastMark != null && Find.WindowStack != null)
+					{
+						Find.WindowStack.Add(new Dialog_ProblemNote(lastMark));
+					}
+					else
+					{
+						Recorded(false);
+					}
 				}
 				if (!on)
 				{
@@ -984,16 +997,62 @@ namespace PortMobile
 
 		// ---- 记录问题 ----
 
-		/// <summary>From the key wheel's "记录问题": in a few frames (the wheel closes first) the screenshot and the reports.</summary>
-		internal static void Mark()
+		/// <summary>
+		/// From the key wheel's "记录问题" (and the agent's "mark"): in a few frames (the wheel closes first) the screenshot
+		/// and the reports; then, when asked for, the box for the player's words on it.
+		/// </summary>
+		internal static void Mark(bool askForWords)
 		{
 			markIn = 3;
+			askWords = askForWords;
+		}
+
+		/// <summary>The message once a mark is done: where it went, and how it reaches the author.</summary>
+		internal static void Recorded(bool withWords)
+		{
+			Messages.Message(Texts.Chinese
+				? (withWords ? "已记录问题（截图、运行数据和说明）。" : "已记录问题（截图和运行数据）。") + "之后长按桌面 Port17 图标选“导出日志”发给作者。"
+				: "Problem recorded: a screenshot and the game's state" + (withWords ? ", with your words," : "") + " were saved. Long-press the Port17 icon, choose \"导出日志\" and send the logs.", MessageTypeDefOf.NeutralEvent, historical: false);
+		}
+
+		private static string MarksDir => Path.Combine(dir ?? Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "logs")), "marks");
+
+		/// <summary>
+		/// The player's words on a mark (Dialog_ProblemNote): first in the mark's text, right under its first line, and a
+		/// "note" line in the record. The summary of the logs' zip lists every mark kept with them (ReportSummary.java).
+		/// </summary>
+		internal static void Note(string mark, string words)
+		{
+			words = (words ?? "").Replace("\r", "").Trim();
+			if (words.Length == 0)
+			{
+				return;
+			}
+			try
+			{
+				string file = Path.Combine(MarksDir, mark + ".txt");
+				// The mark may have gone meanwhile (six newer ones): the words then stand alone.
+				string text = File.Exists(file) ? File.ReadAllText(file) : "记录问题 " + mark + "\n";
+				int end = text.IndexOf('\n') + 1;
+				if (end == 0)
+				{
+					text += "\n";
+					end = text.Length;
+				}
+				File.WriteAllText(file, text.Substring(0, end) + "\n" + WordsTitle + "\n" + words + "\n" + text.Substring(end));
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine("[mobile] record: the words on " + mark + " not written: " + e.Message);
+			}
+			Console.WriteLine("[mobile] record: the player's words on " + mark + ", " + words.Length + " characters");
+			Event("note", mark + ": " + words.Replace("\n", " / "));
 		}
 
 		private static void TakeMark()
 		{
 			string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-			string marks = Path.Combine(dir ?? Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "logs")), "marks");
+			string marks = MarksDir;
 			Directory.CreateDirectory(marks);
 			string name = "mark-" + stamp;
 			string shot = "";
@@ -1030,6 +1089,7 @@ namespace PortMobile
 			{
 				Write("mark     记录问题 " + name + " (logs/marks: " + shot + ", " + name + ".txt), " + Context());
 			}
+			lastMark = name;
 			messageIn = 30;
 		}
 
