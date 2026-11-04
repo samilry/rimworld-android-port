@@ -7,10 +7,11 @@ using System.Reflection;
 /// profiler: live method-body replacement for instrumentation, and allocation/pause events; and, since 1.7.4995, for
 /// field injection, through which the game's Prepatcher layer (Waylith.Injection and RimWorldWaylith.PrepatcherCompat,
 /// set up by the launcher at every start) gives mods the fields they add to the game's classes; and, since 1.7.4998, for
-/// the transformer pipeline the profiler's instrumentation now goes through and the new updater members the Prepatcher
-/// layer's free patches (there since 1.7.4995) now use. The stock runtime has none of that, so they report "not
-/// supported": the profiler keeps its instrumentation off, and the Prepatcher layer finds field injection off and logs
-/// that free patches need WaylithCLR, as on a PC whose runtime has these disabled.
+/// the transformer pipeline the profiler's instrumentation now goes through and the new MethodBodyUpdater members that
+/// the profiler, the Prepatcher layer's free patches (there since 1.7.4995) and its field injection now use. The stock
+/// runtime has none of that, so they report "not supported": the profiler keeps its instrumentation off, and the
+/// Prepatcher layer finds field injection off and logs that free patches need WaylithCLR, as on a PC whose runtime has
+/// these disabled.
 /// patch/Patch.cs retargets the engine's references from System.Runtime to this assembly.
 /// </summary>
 namespace WaylithClr
@@ -107,8 +108,10 @@ namespace WaylithClr
 		}
 
 		// Since 1.7.4998: the engine's profiler reads and rewrites bodies by method handle (MethodBodyTransformer below), and
-		// the game's Prepatcher layer runs mods' free patches through these new members; both ask IsSupported first. What Ludeon's
-		// runtime answers without the feature (handles, tokens resolved through the module) is answered the same way here.
+		// the game's Prepatcher layer runs free patches and field injection through these new members. The profiler and the
+		// free patches ask MethodBodyUpdater.IsSupported first, field injection FieldInjection.IsSupported, so none of this
+		// is reached here. Handles, and tokens of ordinary methods, are answered through reflection with the results
+		// Ludeon's runtime gives; bodies are never read, and dynamic methods and new tokens are refused.
 		public static bool TryGetDefaultMethodBody(RuntimeMethodHandle method, Span<MethodBodyClause> clauses, out MethodBodyView body)
 		{
 			body = default;
