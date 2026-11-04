@@ -101,7 +101,7 @@ host/build-all.sh
 
 ### 6. 可复现性：哪些文件相同，哪些不同
 
-用同一版本的游戏（1.7.4995）和同一份 Harmony，下面这些与开发机上的构建逐字节相同：PortHooks.dll、PortMobile.dll、PortWorkshop.dll、PortSetup.dll、patch.dll、改过的 CoreLib（IL 版和 ReadyToRun 版）、创意工坊下载器的库、classes.dex，以及除 Slang 以外的全部原生库（libvma、libstb、libgli、libimgui、libimgui_freetype、libmonomodc、libmm_exhelper、libwaylithaudio、libportastc、libKtx、libslang 代理、libporthost、libglfw、libvulkan、libportvideo、libportuser32、libsteam_api，以及改过的 libcoreclr）。安装包里 `payload.zip` 解开后的每个文件都相同，规则行（`setup/version.txt`，PortSetup 和 PortHooks 的散列）也就相同。
+用同一版本的游戏（核对时是 1.7.4995）和同一份 Harmony，下面这些与开发机上的构建逐字节相同：PortHooks.dll、PortMobile.dll、PortWorkshop.dll、PortSetup.dll、patch.dll、改过的 CoreLib（IL 版和 ReadyToRun 版）、创意工坊下载器的库、classes.dex，以及除 Slang 以外的全部原生库（libvma、libstb、libgli、libimgui、libimgui_freetype、libmonomodc、libmm_exhelper、libwaylithaudio、libportastc、libKtx、libslang 代理、libporthost、libglfw、libvulkan、libportvideo、libportuser32、libsteam_api，以及改过的 libcoreclr）。安装包里 `payload.zip` 解开后的每个文件都相同，规则行（`setup/version.txt`，PortSetup 和 PortHooks 的散列）也就相同。
 
 不同的有：
 
@@ -245,7 +245,7 @@ The phone needs 64-bit ARM (arm64-v8a), Android 8.0 or later, a Vulkan GPU, and 
 
 ### 6. Reproducibility: what is identical, what differs
 
-With the same game version (1.7.4995) and the same Harmony, these are byte for byte the development machine's: PortHooks.dll, PortMobile.dll, PortWorkshop.dll, PortSetup.dll, patch.dll, the patched CoreLib (IL and ReadyToRun), the Workshop downloader's libraries, classes.dex, and every native library but Slang's (libvma, libstb, libgli, libimgui, libimgui_freetype, libmonomodc, libmm_exhelper, libwaylithaudio, libportastc, libKtx, the libslang proxy, libporthost, libglfw, libvulkan, libportvideo, libportuser32, libsteam_api, and the patched libcoreclr). Every file in the APK's `payload.zip` is the same, so the rules line (`setup/version.txt`, a hash of PortSetup and PortHooks) is the same as well.
+With the same game version (checked with 1.7.4995) and the same Harmony, these are byte for byte the development machine's: PortHooks.dll, PortMobile.dll, PortWorkshop.dll, PortSetup.dll, patch.dll, the patched CoreLib (IL and ReadyToRun), the Workshop downloader's libraries, classes.dex, and every native library but Slang's (libvma, libstb, libgli, libimgui, libimgui_freetype, libmonomodc, libmm_exhelper, libwaylithaudio, libportastc, libKtx, the libslang proxy, libporthost, libglfw, libvulkan, libportvideo, libportuser32, libsteam_api, and the patched libcoreclr). Every file in the APK's `payload.zip` is the same, so the rules line (`setup/version.txt`, a hash of PortSetup and PortHooks) is the same as well.
 
 What differs:
 

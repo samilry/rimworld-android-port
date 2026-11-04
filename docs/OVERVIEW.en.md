@@ -38,7 +38,7 @@ The goal: play 1.7 on Android with **PC mods working unchanged**, added and remo
 
 **No game in the APK.** The ≈55 MB tester APK carries the runtime and the port only. The player picks their game folder or zip; PortSetup prepares it in a separate process (about 8 s) and the game starts: 44 s from picking the zip to the main menu. Real imports on testers' phones and the development phone drove the hardening: foreground services, an 8-thread copy (13.5 min → 97 s for 17,498 files), GBK file names in zips, vendor file pickers, unreadable mod folders. Reports carry a run record (with the moments a tester marked and described), a start-up watchdog, decoded tombstones (naming the methods of compiled code from the runtime's perf map when the crash comes within three days of an earlier native crash), the runtime's last words and an error summary.
 
-**Game updates.** Seven updates (1.7.4976 → 4995) were followed with one recipe: stage the new version beside the old, compare assemblies and the runtime, rebuild, check the build against kept older versions (`host/compat-check.sh`), verify on a side-by-side test package. Examples: 4990 moved engine texture types (bound by name for both versions); 4995 added runtime field injection (stand-ins behave as the PC with the feature off).
+**Game updates.** Eight updates (1.7.4976 → 4998) were followed with one recipe: stage the new version beside the old, compare assemblies and the runtime, rebuild, check the build against kept older versions (`host/compat-check.sh`), verify on a side-by-side test package. Examples: 4990 moved engine texture types (bound by name for both versions); 4995 added runtime field injection and 4998 a new runtime interface for method-body replacement, used by the profiler and by free patches (stand-ins behave as the PC with these features off); 4998 also made the engine's own frame wait precise, so the port no longer replaces it on that build.
 
 ## Testing
 
@@ -48,7 +48,7 @@ PC harnesses on the stock runtime and on the PC's own runtime files (run without
 
 | | |
 |---|---|
-| Scale | 465 commits, 2026-10-13 to 11-03 (300+ of them in this repository's history, the rest only updated the private development log and tester guides; daily changes in [CHANGELOG.en.md](../CHANGELOG.en.md)); about 36k lines of C#, 7.5k C/C++, 6.7k Java |
+| Scale | 470 commits, 2026-10-13 to 11-04 (300+ of them in this repository's history, the rest only updated the private development log and tester guides; daily changes in [CHANGELOG.en.md](../CHANGELOG.en.md)); about 36k lines of C#, 7.5k C/C++, 6.7k Java |
 | Start-up | vanilla 16.7 s to the main menu; 130+ mods about 46–48 s |
 | 3× speed | vanilla 100 colonists 57 FPS / 359 TPS (60 FPS cap); a modded mid-game colony 357–360 TPS, 110–119 FPS (120 cap) |
 | vs. the 1.6 port | 31–36 → 57 FPS; main-thread cycles per tick halved |

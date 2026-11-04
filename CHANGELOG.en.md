@@ -9,6 +9,19 @@ This file lists what changed in Port17 each day, newest first. It is a shorter E
 - **Game versions** are build numbers of RimWorld 1.7 on Steam's unstable branch, for example 1.7.4995.
 - There were no commits on 10-17, 10-18, 10-31 and 11-01.
 
+## 2026-11-04: RimWorld 1.7.4998
+
+Game 1.7.4998 (older builds from 1.7.4982 on also work) · [Commits](https://github.com/samilry/rimworld-android-port/compare/v2026.11.03...v2026.11.04) · [Code at the end of the day](https://github.com/samilry/rimworld-android-port/tree/v2026.11.04)
+
+**RimWorld 1.7.4998**
+- Ludeon's runtime interface for replacing method bodies changed: the profiler's method timing now goes through a new rewriting pipeline, and the game's own Prepatcher layer (there since 4995) runs mods' "free patches", which change the game's code directly, through new members. Both still need Ludeon's runtime to replace method bodies.
+  - The phone gets stand-ins for the 6 new types and 32 new members 4998 refers to, which behave as Ludeon's runtime does when it cannot replace method bodies: the profiler still switches on and off, without method timing, and when a mod has free patches, the log says so in one line and they do not apply.
+  - All 92 WaylithClr references of 4998 resolve.
+- The engine's own wait for the frame rate limit is now precise: it sleeps until shortly before the next frame, then waits on the clock, with a margin learned from how late its sleeps end (the 95th percentile of the last 128, kept within 25–500 µs). The engine used to sleep whole milliseconds and then spin, and the port replaced that wait with its own; on 4998 the engine's is kept, and older builds keep the port's.
+  - The first time it is used, the new wait calls sched_getattr through a raw system call and, if that succeeds, sched_setattr. Android lets apps use only some system calls, and any other one ends the game at once. Both have been on Android's allowlist for apps since 8.0 (bionic's seccomp lists), so no supported Android version blocks them; on the phone the code making these calls ran and the game kept going.
+- The engine now handles folders it cannot list (Android/data is one on Android), where files below used to go missing. The port had its own fix for this; it now steps in only for folders on the paths it knows, and leaves other unlistable folders to the engine.
+- Checked on 4998: the main menu, a 250x250 save at 3× speed (about 360 ticks a second), and the profiler switched on and off, with no errors from the port.
+
 ## 2026-11-03: mouse keys on the key wheel again, a description for "record a problem", mod asset bundles found by Workshop id
 
 Game 1.7.4995 (1.7.4990 also works) · [Commits](https://github.com/samilry/rimworld-android-port/compare/v2026.11.02...v2026.11.03) · [Code at the end of the day](https://github.com/samilry/rimworld-android-port/tree/v2026.11.03)
