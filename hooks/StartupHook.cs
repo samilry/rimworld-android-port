@@ -35,7 +35,8 @@ namespace PortHooks
 		/// The engine resolves a path case-insensitively by listing every ancestor directory; on Android an app cannot
 		/// list "Android/data" (nor some directories above it), the listing comes back "unlistable" and the resolve
 		/// fails for everything below, which is how whole texture folders went missing. For an unlistable directory
-		/// a listing is made up from the paths this process knows it lives in.
+		/// a listing is made up from the paths this process knows it lives in. Since 1.7.4998 the engine itself tries the
+		/// exact path below an unlistable directory; one with none of those paths in it is left to that.
 		/// </summary>
 		public static object GetListingForResolve(string directory)
 		{
@@ -73,7 +74,7 @@ namespace PortHooks
 				addDirectory.Invoke(made, new object[] { child, Path.Combine(directory, child) });
 				diskDirectories.Add(child);
 			}
-			return made;
+			return diskDirectories.Count > 0 ? made : listing;
 		}
 
 		/// <summary>Console.CancelKeyPress registers a POSIX signal handler underneath, which Android's runtime does not support; there is no console to press keys in anyway.</summary>

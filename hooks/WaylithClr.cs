@@ -6,10 +6,11 @@ using System.Reflection;
 /// Stand-ins for the types Ludeon's runtime fork ("WaylithClr", living in its System.Runtime) adds for the engine's
 /// profiler: live method-body replacement for instrumentation, and allocation/pause events; and, since 1.7.4995, for
 /// field injection, through which the game's Prepatcher layer (Waylith.Injection and RimWorldWaylith.PrepatcherCompat,
-/// set up by the launcher at every start) gives mods the fields they add to the game's classes. The stock runtime has
-/// none of that, so they report "not supported": the profiler keeps its instrumentation off, and the Prepatcher layer
-/// finds field injection off, as on a PC whose runtime has it disabled. patch/Patch.cs retargets the engine's
-/// references from System.Runtime to this assembly.
+/// set up by the launcher at every start) gives mods the fields they add to the game's classes; and, since 1.7.4998, for
+/// the profiler's method-body transformers and the Prepatcher layer's free patches. The stock runtime has none of that,
+/// so they report "not supported": the profiler keeps its instrumentation off, and the Prepatcher layer finds field
+/// injection off and logs that free patches need WaylithCLR, as on a PC whose runtime has these disabled.
+/// patch/Patch.cs retargets the engine's references from System.Runtime to this assembly.
 /// </summary>
 namespace WaylithClr
 {
@@ -102,6 +103,291 @@ namespace WaylithClr
 		public static void ReplaceMethodBodies(ReadOnlySpan<MethodBase> methods, ReadOnlySpan<ReadOnlyMemory<byte>> methodBodies, ReadOnlySpan<ReadOnlyMemory<ILOffsetMapEntry>> ilOffsetMaps = default)
 		{
 			throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+		}
+
+		// Since 1.7.4998: the engine's profiler reads and rewrites bodies by method handle (MethodBodyTransformer below), and
+		// the game's Prepatcher layer runs mods' free patches through these; both ask IsSupported first. What Ludeon's
+		// runtime answers without the feature (handles, tokens resolved through the module) is answered the same way here.
+		public static bool TryGetDefaultMethodBody(RuntimeMethodHandle method, Span<MethodBodyClause> clauses, out MethodBodyView body)
+		{
+			body = default;
+			return false;
+		}
+
+		public static bool TryGetCurrentMethodBody(RuntimeMethodHandle method, Span<MethodBodyClause> clauses, out MethodBodyView body)
+		{
+			body = default;
+			return false;
+		}
+
+		public static bool TryGetDefaultMethodBody(MethodBase method, Span<MethodBodyClause> clauses, out MethodBodyView body)
+		{
+			body = default;
+			return false;
+		}
+
+		public static bool TryGetCurrentMethodBody(MethodBase method, Span<MethodBodyClause> clauses, out MethodBodyView body)
+		{
+			body = default;
+			return false;
+		}
+
+		public static object ResolveToken(RuntimeMethodHandle method, int token)
+		{
+			return ResolveToken(GetMethodFromHandle(method), token);
+		}
+
+		public static object ResolveToken(MethodBase method, int token)
+		{
+			ArgumentNullException.ThrowIfNull(method);
+			if (method is System.Reflection.Emit.DynamicMethod)
+			{
+				throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+			}
+			Type declaringType = method.DeclaringType;
+			Type[] typeArguments = declaringType != null && declaringType.IsGenericType ? declaringType.GetGenericArguments() : null;
+			Type[] methodArguments = method.IsGenericMethod ? method.GetGenericArguments() : null;
+			switch (token & unchecked((int)0xFF000000))
+			{
+				case 0x70000000: return method.Module.ResolveString(token);
+				case 0x11000000: return method.Module.ResolveSignature(token);
+				default: return method.Module.ResolveMember(token, typeArguments, methodArguments);
+			}
+		}
+
+		public static RuntimeMethodHandle ResolveMethodDef(Module module, int methodDefToken)
+		{
+			ArgumentNullException.ThrowIfNull(module);
+			return module.ResolveMethod(methodDefToken).MethodHandle;
+		}
+
+		public static RuntimeMethodHandle GetMethodHandle(MethodBase method)
+		{
+			ArgumentNullException.ThrowIfNull(method);
+			return method.MethodHandle;
+		}
+
+		public static MethodBase GetMethodFromHandle(RuntimeMethodHandle method)
+		{
+			return MethodBase.GetMethodFromHandle(method);
+		}
+
+		public static int GetTokenForSignature(Module moduleForIL, ReadOnlySpan<byte> signature)
+		{
+			throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+		}
+
+		public static void ReplaceMethodBody(MethodBase method, ReadOnlySpan<byte> methodBody, ReadOnlySpan<ILOffsetMapEntry> ilOffsetMap = default, object keepAlive = null)
+		{
+			throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+		}
+
+		public static void ReplaceMethodBodies(ReadOnlySpan<RuntimeMethodHandle> methods, ReadOnlySpan<byte> methodBodies, ReadOnlySpan<int> methodBodyLengths, ReadOnlySpan<ILOffsetMapEntry> ilOffsetMaps = default, ReadOnlySpan<int> ilOffsetMapCounts = default, ReadOnlySpan<object> keepAlives = default)
+		{
+			throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+		}
+	}
+
+	/// <summary>
+	/// The pipeline the engine's profiler (since 1.7.4998) hands method bodies through: registered transformers rewrite a
+	/// method's IL in turn, and the runtime swaps the result in. Here, as on a runtime that cannot replace method bodies,
+	/// Register refuses with Ludeon's exception and message, so no transformer ever runs and no builder is ever made.
+	/// </summary>
+	public abstract class MethodBodyTransformer
+	{
+		public int Priority { get; }
+
+		public bool IsRegistered => false;
+
+		protected virtual bool StaysAttached => false;
+
+		protected virtual bool CanTransformConcurrently => false;
+
+		/// <summary>Never raised: no assembly is ever updated in place.</summary>
+		public static event Action<Module, ReadOnlyMemory<int>, ReadOnlyMemory<int>> DefaultBodiesChanged
+		{
+			add { }
+			remove { }
+		}
+
+		public static event Action<Exception> UnobservedException
+		{
+			add { }
+			remove { }
+		}
+
+		protected MethodBodyTransformer(int priority)
+		{
+			Priority = priority;
+		}
+
+		public void Register()
+		{
+			throw new NotSupportedException("Method body replacement not supported in this runtime.");
+		}
+
+		public void Unregister()
+		{
+		}
+
+		public Exception Rebuild(RuntimeMethodHandle method)
+		{
+			MethodBodyTransformFailure[] failures = Rebuild(new[] { method });
+			return failures.Length >= 1 ? failures[0].Exception : null;
+		}
+
+		public MethodBodyTransformFailure[] Rebuild(ReadOnlySpan<RuntimeMethodHandle> methods)
+		{
+			throw new InvalidOperationException("The transformer must be registered first.");
+		}
+
+		public static void ProcessMetadataUpdates()
+		{
+		}
+
+		protected abstract bool TryTransform(RuntimeMethodHandle method, in MethodBodyView body, ReadOnlySpan<MethodBodyClause> clauses, MethodBodyBuilder result);
+
+		protected virtual void Prepare(RuntimeMethodHandle method, in MethodBodyView body, ReadOnlySpan<MethodBodyClause> clauses)
+		{
+		}
+
+		protected virtual bool CanTransform(RuntimeMethodHandle method)
+		{
+			return true;
+		}
+
+		protected virtual void OnTransformFailed(RuntimeMethodHandle method, Exception exception)
+		{
+		}
+
+		protected virtual void OnParticipationChanged(ReadOnlySpan<RuntimeMethodHandle> entered, ReadOnlySpan<RuntimeMethodHandle> left)
+		{
+		}
+
+		protected virtual void OnDefaultBodiesChanged(ReadOnlySpan<RuntimeMethodHandle> methods)
+		{
+		}
+	}
+
+	public sealed class MethodBodyBuilder
+	{
+		public MethodBodyFlags Flags { get; set; }
+
+		internal MethodBodyBuilder()
+		{
+		}
+
+		public void KeepAlive(object value)
+		{
+			throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+		}
+
+		public void SetInputVariant(RuntimeMethodHandle variant)
+		{
+			throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+		}
+
+		public void SetInputVariant(MethodBase variant)
+		{
+			throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+		}
+
+		public void Write(ReadOnlySpan<byte> bytes)
+		{
+			throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+		}
+
+		public void AddOffsetMapEntries(ReadOnlySpan<ILOffsetMapEntry> entries)
+		{
+			throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+		}
+
+		public int GetTokenFor(MethodBase member)
+		{
+			throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+		}
+
+		public int GetTokenFor(FieldInfo field)
+		{
+			throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+		}
+
+		public int GetTokenFor(Type type)
+		{
+			throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+		}
+
+		public int GetTokenFor(string literal)
+		{
+			throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+		}
+
+		public int GetTokenForVarargCall(MethodBase target, Type[] optionalParameterTypes)
+		{
+			throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+		}
+
+		public int GetTokenForSignature(ReadOnlySpan<byte> signature)
+		{
+			throw new NotSupportedException("MethodBodyUpdater is not available on this runtime");
+		}
+	}
+
+	/// <summary>Only ever default here: no body is read.</summary>
+	public readonly struct MethodBodyView
+	{
+		private readonly byte[] il;
+		private readonly byte[] localSignature;
+
+		public ReadOnlySpan<byte> IL => il;
+
+		public ReadOnlySpan<byte> LocalSignature => localSignature;
+
+		public int LocalSignatureToken { get; }
+
+		public int MaxStackSize { get; }
+
+		public bool InitLocals { get; }
+
+		public int ClauseCount { get; }
+
+		public bool IsDefault { get; }
+
+		public MethodBodyFlags Flags { get; }
+	}
+
+	public readonly struct MethodBodyClause
+	{
+		public ExceptionHandlingClauseOptions Flags { get; init; }
+
+		public int TryOffset { get; init; }
+
+		public int TryLength { get; init; }
+
+		public int HandlerOffset { get; init; }
+
+		public int HandlerLength { get; init; }
+
+		public int ClassTokenOrFilterOffset { get; init; }
+	}
+
+	[Flags]
+	public enum MethodBodyFlags
+	{
+		None = 0,
+		Forwarder = 1
+	}
+
+	public readonly struct MethodBodyTransformFailure
+	{
+		public RuntimeMethodHandle Method { get; }
+
+		public Exception Exception { get; }
+
+		internal MethodBodyTransformFailure(RuntimeMethodHandle method, Exception exception)
+		{
+			Method = method;
+			Exception = exception;
 		}
 	}
 

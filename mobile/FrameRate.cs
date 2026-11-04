@@ -36,7 +36,8 @@ namespace PortMobile
 	/// processor time with the game paused at 60 frames a second, 3 % in a scene too heavy to hold 60. This kernel
 	/// sleeps to a fraction of a millisecond, so the wait here sleeps (nanosleep) until a short margin before the
 	/// frame's end and only that margin is spent on the clock: "frameWaitSpin" in mobile.txt, microseconds, default
-	/// 300; 0 leaves the engine's own wait in place.
+	/// 300; 0 leaves the engine's own wait in place. Since 1.7.4998 the engine waits this way itself (clock_nanosleep,
+	/// with a margin it learns from how late its sleeps end), and its wait is left in place.
 	/// </summary>
 	internal static class FrameRate
 	{
@@ -52,6 +53,8 @@ namespace PortMobile
 		[DllImport("libc")] private static extern int nanosleep(ref TimeSpec wanted, IntPtr remaining);
 
 		private static int spinMicros = Mathf.Clamp(Settings.Get("frameWaitSpin", 300), 0, 2000);
+		// Whether the wait below is in place: the engines before 1.7.4998, whose ThrottleToTargetFrameRate takes the frame's start.
+		private static bool ownWait;
 		// For the measuring report: how late the sleeps ended, and how long the loop on the clock ran.
 		private static int waits, sleeps;
 		private static double lateSum, lateMax, spinSum;
@@ -130,7 +133,13 @@ namespace PortMobile
 				harmony.Patch(AccessTools.Method(typeof(Root), nameof(Root.Update)), postfix: new HarmonyMethod(typeof(FrameRate), nameof(EveryFrame)));
 				harmony.Patch(AccessTools.Method(typeof(Root), "OnGUI"), postfix: new HarmonyMethod(typeof(FrameRate), nameof(AfterGui)));
 				harmony.Patch(AccessTools.Method(typeof(Dialog_Options), "DoVideoOptions"), postfix: new HarmonyMethod(typeof(FrameRate), nameof(Options)));
-				harmony.Patch(AccessTools.Method(typeof(Waylith.EngineApplication), "ThrottleToTargetFrameRate"), prefix: new HarmonyMethod(typeof(FrameRate), nameof(WaitForFrameEnd)));
+				MethodInfo throttle = AccessTools.Method(typeof(Waylith.EngineApplication), "ThrottleToTargetFrameRate");
+				ParameterInfo[] throttleParameters = throttle.GetParameters();
+				ownWait = throttleParameters.Length == 1 && throttleParameters[0].ParameterType == typeof(float);
+				if (ownWait)
+				{
+					harmony.Patch(throttle, prefix: new HarmonyMethod(typeof(FrameRate), nameof(WaitForFrameEnd)));
+				}
 				Console.WriteLine("[mobile] frame rate limit " + limit + ", schedule " + schedule + " (options, graphics page)");
 			}
 			catch (Exception e)
@@ -212,7 +221,7 @@ namespace PortMobile
 		/// <summary>For the measuring report, since the last call: "wait=300 (sleeps late 85/410 us, clock loop 0.21 ms a frame)".</summary>
 		public static string DescribeWait()
 		{
-			string text = "wait=" + spinMicros;
+			string text = ownWait ? "wait=" + spinMicros : "wait=engine";
 			if (waits > 0)
 			{
 				text += " (sleeps late " + (sleeps > 0 ? lateSum / sleeps * 1e6 : 0).ToString("F0") + "/" + (lateMax * 1e6).ToString("F0") + " us, clock loop " + (spinSum / waits * 1e3).ToString("F2") + " ms a frame)";
