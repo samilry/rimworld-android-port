@@ -30,6 +30,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -937,38 +938,7 @@ public final class MainActivity extends NativeActivity
             }
             try
             {
-                into.mkdirs();
-                String base = into.getCanonicalPath() + File.separator;
-                java.util.Enumeration<? extends ZipEntry> entries = zip.entries();
-                while (entries.hasMoreElements())
-                {
-                    ZipEntry entry = entries.nextElement();
-                    String name = ZipNames.decode(entry.getName());
-                    File out = new File(into, name.replace('\\', '/'));
-                    if (!out.getCanonicalPath().startsWith(base))
-                    {
-                        continue;
-                    }
-                    if (entry.isDirectory() || name.endsWith("/") || name.endsWith("\\"))
-                    {
-                        out.mkdirs();
-                        continue;
-                    }
-                    File parent = out.getParentFile();
-                    if (parent != null)
-                    {
-                        parent.mkdirs();
-                    }
-                    InputStream in = zip.getInputStream(entry);
-                    try
-                    {
-                        write(in, out);
-                    }
-                    finally
-                    {
-                        in.close();
-                    }
-                }
+                unpackEntries(zip, into);
             }
             finally
             {
@@ -980,6 +950,144 @@ public final class MainActivity extends NativeActivity
             descriptor.close();
             copy.delete();
         }
+    }
+
+    /** Every entry of an archive read by its central directory, into a folder (none may climb out of it). */
+    private void unpackEntries(java.util.zip.ZipFile zip, File into) throws IOException
+    {
+        into.mkdirs();
+        String base = into.getCanonicalPath() + File.separator;
+        java.util.Enumeration<? extends ZipEntry> entries = zip.entries();
+        while (entries.hasMoreElements())
+        {
+            ZipEntry entry = entries.nextElement();
+            String name = ZipNames.decode(entry.getName());
+            File out = new File(into, name.replace('\\', '/'));
+            if (!out.getCanonicalPath().startsWith(base))
+            {
+                continue;
+            }
+            if (entry.isDirectory() || name.endsWith("/") || name.endsWith("\\"))
+            {
+                out.mkdirs();
+                continue;
+            }
+            File parent = out.getParentFile();
+            if (parent != null)
+            {
+                parent.mkdirs();
+            }
+            InputStream in = zip.getInputStream(entry);
+            try
+            {
+                write(in, out);
+            }
+            finally
+            {
+                in.close();
+            }
+        }
+    }
+
+    /**
+     * When the game is not in what was copied, the biggest archive in it (over 100 MB, a few levels down): a tester's
+     * "RimWorld.zip" held nothing but RimWorld.rar, 2026-11-04, and the import only said that no game was found. Null
+     * when there is none.
+     */
+    private static File innerArchive(File dir, int depth)
+    {
+        File best = null;
+        File[] children = dir.listFiles();
+        if (children == null)
+        {
+            return null;
+        }
+        for (File child : children)
+        {
+            File candidate = null;
+            if (child.isDirectory())
+            {
+                candidate = depth > 1 ? innerArchive(child, depth - 1) : null;
+            }
+            else if (child.length() > (100L << 20) && kindOf(child) != null)
+            {
+                candidate = child;
+            }
+            if (candidate != null && (best == null || candidate.length() > best.length()))
+            {
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    /** "zip" for a zip archive, what it is for another kind of archive or a program, else null: by the file's first bytes. */
+    private static String kindOf(File file)
+    {
+        byte[] head = new byte[6];
+        int n = 0;
+        try
+        {
+            InputStream in = new FileInputStream(file);
+            try
+            {
+                n = in.read(head);
+            }
+            finally
+            {
+                in.close();
+            }
+        }
+        catch (IOException ignored)
+        {
+        }
+        return kindOf(head, n);
+    }
+
+    private static String kindOf(byte[] head, int n)
+    {
+        if (n >= 4 && head[0] == 'P' && head[1] == 'K' && head[2] == 3 && head[3] == 4)
+        {
+            return "zip";
+        }
+        if (n >= 2 && head[0] == 'M' && head[1] == 'Z')
+        {
+            return "一个 Windows 程序（.exe，多半是自解压包）";
+        }
+        if (n >= 4 && head[0] == 'R' && head[1] == 'a' && head[2] == 'r' && head[3] == '!')
+        {
+            return "一个 RAR 压缩包";
+        }
+        if (n >= 6 && head[0] == '7' && head[1] == 'z' && (head[2] & 0xff) == 0xbc && (head[3] & 0xff) == 0xaf)
+        {
+            return "一个 7z 压缩包";
+        }
+        return null;
+    }
+
+    /** The folder below dir (or dir itself) that is RimWorld's own data folder (Saves and Config), not the game. */
+    private static File dataFolder(File dir, int depth)
+    {
+        if (new File(dir, "Saves").isDirectory() && new File(dir, "Config").isDirectory())
+        {
+            return dir;
+        }
+        File[] inside = depth > 0 ? dir.listFiles() : null;
+        if (inside != null)
+        {
+            for (File child : inside)
+            {
+                if (child.isDirectory())
+                {
+                    File found = dataFolder(child, depth - 1);
+                    if (found != null)
+                    {
+                        return found;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     /** What a chosen file is when its first bytes say it is another kind of archive or a program, else null. */
@@ -999,19 +1107,8 @@ public final class MainActivity extends NativeActivity
         catch (IOException ignored)
         {
         }
-        if (n >= 2 && head[0] == 'M' && head[1] == 'Z')
-        {
-            return "一个 Windows 程序（.exe，多半是自解压包）";
-        }
-        if (n >= 4 && head[0] == 'R' && head[1] == 'a' && head[2] == 'r' && head[3] == '!')
-        {
-            return "一个 RAR 压缩包";
-        }
-        if (n >= 6 && head[0] == '7' && head[1] == 'z' && (head[2] & 0xff) == 0xbc && (head[3] & 0xff) == 0xaf)
-        {
-            return "一个 7z 压缩包";
-        }
-        return null;
+        String kind = kindOf(head, n);
+        return "zip".equals(kind) ? null : kind;
     }
 
     /** The size of a chosen file and its first bytes, for telling what it is. */
@@ -1702,15 +1799,50 @@ public final class MainActivity extends NativeActivity
                             }
                         }
                     }
-                    copying[0] = false;
                     File root = findGame(into, 4);
+                    String reason = null;
+                    if (root == null)
+                    {
+                        File inner = innerArchive(into, 4);
+                        String kind = inner != null ? kindOf(inner) : null;
+                        if ("zip".equals(kind))
+                        {
+                            // An archive in the archive: unpacked next to itself, as a file manager would.
+                            Diagnostics.trail(MainActivity.this, "copied " + pickCount.get() + " files, " + (pickBytes.get() >> 20) + " MB: no game, but " + inner.getName() + " (" + (inner.length() >> 20) + " MB) is a zip: unpacked too");
+                            String name = inner.getName();
+                            int dot = name.lastIndexOf('.');
+                            File next = new File(inner.getParentFile(), safeName(dot > 0 ? name.substring(0, dot) : name + " unpacked"));
+                            java.util.zip.ZipFile zip = new java.util.zip.ZipFile(inner, java.util.zip.ZipFile.OPEN_READ, ZipNames.RAW);
+                            try
+                            {
+                                unpackEntries(zip, next);
+                            }
+                            finally
+                            {
+                                zip.close();
+                            }
+                            inner.delete();
+                            root = findGame(into, 6);
+                        }
+                        else if (kind != null)
+                        {
+                            reason = (request == PICK_GAME_FOLDER ? "所选的文件夹里" : "压缩包里") + "没有直接放着游戏文件，只有" + kind + "（" + inner.getName() + "，" + (inner.length() >> 20) + " MB），游戏文件在它里面。手机上的导入只能解开 zip。\n\n"
+                                + "可以用手机的文件管理器把 " + inner.getName() + " 解压成文件夹，再在这里选“文件夹”，选中解出来的游戏文件夹；也可以在电脑上把游戏文件夹直接压缩成 zip 再传到手机上。";
+                        }
+                        else if (dataFolder(into, 4) != null)
+                        {
+                            reason = "选的是 RimWorld 的存档和设置文件夹（里面有 Saves、Config，电脑上叫“RimWorld by Ludeon Studios”），不是游戏本体。游戏在电脑上 Steam 的 steamapps/common/RimWorld 文件夹里，请选它或它的压缩包。\n\n"
+                                + "存档可以在进入游戏以后，到“载入”页面用“导入存档…”导入。";
+                        }
+                    }
+                    copying[0] = false;
                     hideBusy();
                     Diagnostics.trail(MainActivity.this, "copied " + pickCount.get() + " files, " + (pickBytes.get() >> 20) + " MB; the game " + (root != null ? "at " + root : "not found in: " + outline(into, 3)));
                     if (root == null)
                     {
                         delete(into);
                         gamePickRunning = false;
-                        gameEvents.offer(new String[] { "failed", "所选的文件里没有找到 RimWorld 的游戏文件（应包含 Version.txt、Assembly-CSharp.dll、Data 文件夹等）。请选择 Steam 里 RimWorld 的整个游戏文件夹或它的压缩包。" });
+                        gameEvents.offer(new String[] { "failed", reason != null ? reason : "所选的文件里没有找到 RimWorld 的游戏文件（应包含 Version.txt、Assembly-CSharp.dll、Data 文件夹等）。请选择 Steam 里 RimWorld 的整个游戏文件夹或它的压缩包。" });
                     }
                     else
                     {
