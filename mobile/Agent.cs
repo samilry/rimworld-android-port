@@ -328,6 +328,7 @@ namespace PortMobile
 				case "tune": return Tune(args);
 				case "worldtarget": return TestWorldTarget();
 				case "compat": return TestCompat(args);
+				case "fallbacktest": return TestFallbacks();
 				case "xmltest": return XmlSerializerTest.Run();
 				case "mpctl": return MultiplayerPawnControl(args);
 				case "onscreen": return ThingsOnScreen();
@@ -1408,6 +1409,37 @@ namespace PortMobile
 
 		/// <summary>The rituals of the colony's primary ideoligion: label, def, and what they take place at.</summary>
 		/// <summary>TEST ONLY: shows the world and picks a tile there as a shuttle does (the choice is only logged).</summary>
+		/// <summary>
+		/// TEST ONLY: what RimUnity's screen effects do (PortHooks.SharedFallbacks): a mesh renderer of its own takes the
+		/// white fallback textures every renderer shares and is let go while the game runs. Answers whether the shared
+		/// texture still has its image afterwards (the engine's own Dispose takes it, mobile.txt sharedFallbacks=0).
+		/// </summary>
+		private static string TestFallbacks()
+		{
+			Waylith.EngineApplication app = Waylith.EngineApplication.Instance;
+			if (app?.GraphicsDevice == null || app.RenderContext == null)
+			{
+				return Failure("no graphics device yet");
+			}
+			Type rendererType = typeof(Waylith.Rendering.MeshBatchRenderer);
+			System.Reflection.MethodInfo take = AccessTools.Method(rendererType, "GetFallbackTexture");
+			Type kind = take.GetParameters()[1].ParameterType;
+			// By reflection: 1.7.4998 added an optional third parameter to the constructor.
+			System.Reflection.ConstructorInfo make = rendererType.GetConstructors().First(c => c.GetParameters().Length >= 2 && c.GetParameters()[0].ParameterType == typeof(Waylith.Graphics.GraphicsDevice));
+			object[] values = make.GetParameters().Select((p, i) => i == 0 ? app.GraphicsDevice : i == 1 ? (object)app.RenderContext : p.DefaultValue).ToArray();
+			var renderer = (Waylith.Rendering.MeshBatchRenderer)make.Invoke(values);
+			object shared = take.Invoke(renderer, new object[] { false, Enum.Parse(kind, "White") });
+			object sharedArray = take.Invoke(renderer, new object[] { true, Enum.Parse(kind, "White") });
+			renderer.Dispose();
+			bool kept = ((Waylith.Rendering.Texture)shared).GpuResource != null, arrayKept = ((Waylith.Rendering.Texture)sharedArray).GpuResource != null;
+			Console.WriteLine("[mobile] agent: fallback test: a renderer was let go; Core.WhiteFallback " + (kept ? "kept" : "lost its image") + ", Core.WhiteArrayFallback " + (arrayKept ? "kept" : "lost its image"));
+			return Answer(w =>
+			{
+				w.WriteBoolean("whiteKept", kept);
+				w.WriteBoolean("whiteArrayKept", arrayKept);
+			});
+		}
+
 		/// <summary>
 		/// Test: what the phone's CoreLib has from Ludeon's (patch/Patch.cs AddLudeonMembers), called the way mods and the
 		/// engine call them, and the engine's frame profiler switched on ("profiler": true; false switches it off again),

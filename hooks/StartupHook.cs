@@ -639,6 +639,8 @@ internal static class StartupHook
 		PortHooks.PortPatches.Keep(new HarmonyLib.Harmony("port17.keeppatches"));
 		PortHooks.Textures.Start();
 		PortHooks.UiDescriptors.Start();
+		// A mod's mesh renderer let go while the game runs must not take the white fallback textures every renderer shares.
+		PortHooks.SharedFallbacks.Start(new HarmonyLib.Harmony("port17.sharedfallbacks"));
 		PortHooks.AndroidFonts.Start();
 		// Mods' asset bundles name their assets after the Workshop folder the PC has, which a mod's folder here may not be.
 		PortHooks.BundlePaths.Start(new HarmonyLib.Harmony("port17.bundlepaths"));
