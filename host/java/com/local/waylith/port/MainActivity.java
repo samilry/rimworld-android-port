@@ -990,7 +990,7 @@ public final class MainActivity extends NativeActivity
     }
 
     /**
-     * When the game is not in what was copied, the biggest archive in it (over 100 MB, a few levels down): a tester's
+     * When the game is not in what was copied, the biggest archive in it (over 100 MB, a few levels down): a player's
      * "RimWorld.zip" held nothing but RimWorld.rar, 2026-11-04, and the import only said that no game was found. Null
      * when there is none.
      */
