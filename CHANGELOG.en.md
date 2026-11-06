@@ -7,9 +7,21 @@ This file lists what changed in Port17 each day, newest first. It is a shorter E
 - Each day has its own section. "Commits" links to all of that day's commits on GitHub. The code as it stood at the end of each day is tagged `vYYYY.MM.DD`, and each day has an entry on the [Releases](https://github.com/samilry/rimworld-android-port/releases) page.
 - The **tester APK** has no game files in it; players import their own copy of the game. This repository does not ship APKs: build one yourself with [BUILDING.md](BUILDING.md).
 - **Game versions** are build numbers of RimWorld 1.7 on Steam's unstable branch, for example 1.7.4995.
-- There were no commits on 10-17, 10-18, 10-31 and 11-01.
+- There were no commits on 10-17, 10-18, 10-31, 11-01 and 11-05.
 
-## 2026-11-04: RimWorld 1.7.4998
+## 2026-11-06: crashes with Nivarian Race: the WhiteFallback exception fixed, the GPU loss very likely too
+
+Game 1.7.4998 (older builds from 1.7.4982 on also work) · [Commits](https://github.com/samilry/rimworld-android-port/compare/v2026.11.04...v2026.11.06) · [Code at the end of the day](https://github.com/samilry/rimworld-android-port/tree/v2026.11.06)
+
+**Fixed**
+- With Nivarian Race the game crashed: the GPU was lost while the mod's research window was open, or "Texture 'Core.WhiteFallback' does not have a sampled GPU image" ended it on a return from the background.
+  - For a material's empty texture slots the engine binds white fallback textures (a plain one and an array one) that all its renderers share, yet a renderer that is let go disposes them. The game lets its own renderers go only when it quits, so the game alone never meets this.
+  - RimUnity, which comes with Nivarian, lets its own renderers go: the screen effects' ones when an effect has finished, and those and its HDR map renderer whenever the picture is rebuilt (on the phone at every return from the background). The map's renderers still pointed at the freed image: reading it can lose the GPU, which is very likely what happened on a tester's Adreno, and materials prepared afterwards found no image and raised the exception.
+  - A renderer that is let go now only drops its hold on the two shared fallbacks instead of disposing them; the engine still frees them when it quits. The mod is unchanged.
+  - Checked on the test package by letting a renderer go the way RimUnity does: before the fix the same exception ended the game 17 ms later; after it both textures kept their image, and the game ran on at 3× speed, went to the background and came back (rebuilding the picture twice) without an error.
+  - The GPU loss itself did not happen on the development phone (it met the exception first); whether it is gone too waits for the tester.
+
+## 2026-11-04: RimWorld 1.7.4998, archives inside the chosen zip
 
 Game 1.7.4998 (older builds from 1.7.4982 on also work) · [Commits](https://github.com/samilry/rimworld-android-port/compare/v2026.11.03...v2026.11.04) · [Code at the end of the day](https://github.com/samilry/rimworld-android-port/tree/v2026.11.04)
 
@@ -21,6 +33,12 @@ Game 1.7.4998 (older builds from 1.7.4982 on also work) · [Commits](https://git
   - The first time it is used, the new wait calls sched_getattr through a raw system call and, if that succeeds, sched_setattr. Android lets apps use only some system calls, and any other one ends the game at once. Both have been on Android's allowlist for apps since 8.0 (bionic's seccomp lists), so no supported Android version blocks them; on the phone the code making these calls ran and the game kept going.
 - The engine now handles folders it cannot list (Android/data is one on Android), where files below used to go missing. The port had its own fix for this; it now steps in only for folders on the paths it knows, and leaves other unlistable folders to the engine.
 - Checked on 4998: the main menu, a 250x250 save at 3× speed (about 360 ticks a second), and the profiler switched on and off, with no errors from the port.
+
+**Improved**
+- When the chosen zip or folder holds another archive instead of the game, the import now goes on or says what to do:
+  - Someone chose a RimWorld.zip that held only RimWorld.rar, with the game inside the RAR. The import only said that no game files were found, which looked as if zips were no longer read; the phone's import has never unpacked RAR.
+  - When the game is not found, the biggest archive over 100 MB inside is looked at. A zip is unpacked as well and the import goes on. A RAR, 7z or EXE (self-extracting) is named with its size, with the way on: unpack it into a folder with the phone's file manager and choose "folder", or zip the game folder on the PC.
+  - RimWorld's own save and settings folder (with Saves and Config) is named as such: it is not the game, which is in Steam's steamapps/common/RimWorld; saves go in through the load page's "Import saves..." (导入存档…) once in the game.
 
 ## 2026-11-03: mouse keys on the key wheel again, a description for "record a problem", mod asset bundles found by Workshop id
 
